@@ -1,0 +1,9 @@
+target
+node_modules
+dist
+.DS_Store
+.idea
+.vscode
+frontend-template/.next
+frontend-template/node_modules
+
