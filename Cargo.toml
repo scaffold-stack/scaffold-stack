@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "cli",
+    "crates/scaffold",
+    "crates/parser",
+    "crates/codegen",
+    "crates/watcher",
+    "crates/deployer",
+    "crates/process_supervisor",
+]
+
+[workspace.dependencies]
+tokio          = { version = "1", features = ["full"] }
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+anyhow         = "1"
+thiserror      = "1"
+tera           = "1"
+clap           = { version = "4", features = ["derive"] }
+reqwest        = { version = "0.12", features = ["json", "rustls-tls"] }
+notify         = "6"
+indicatif      = "0.17"
+colored        = "2"
+which          = "6"
+dirs           = "5"
+fs_extra       = "1"
+tempfile       = "3"
+
