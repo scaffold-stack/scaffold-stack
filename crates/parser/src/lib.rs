@@ -39,8 +39,19 @@ pub struct AbiArg {
 #[serde(untagged)]
 pub enum AbiType {
     Simple(String),
-    StringAscii { string_ascii: StringLen },
-    StringUtf8 { string_utf8: StringLen },
+    // SDK emits "string-ascii" (hyphen) — rename to match
+    StringAscii {
+        #[serde(rename = "string-ascii")]
+        string_ascii: StringLen,
+    },
+    // SDK emits "string-utf8" (hyphen) — rename to match
+    StringUtf8 {
+        #[serde(rename = "string-utf8")]
+        string_utf8: StringLen,
+    },
+    // SDK emits { "buffer": { "length": N } }
+    Buffer { buffer: StringLen },
+    // Legacy { "buff": N }
     Buff { buff: u32 },
     List { list: ListDef },
     Tuple { tuple: Vec<TupleEntry> },
@@ -94,28 +105,40 @@ pub struct AbiNft {
 pub async fn parse_project(contracts_dir: &Path) -> Result<Vec<ContractAbi>> {
     use tokio::process::Command;
 
-    if !contracts_dir.join("Clarinet.toml").exists() {
+    let clarinet_toml = contracts_dir.join("Clarinet.toml");
+    if !clarinet_toml.exists() {
         return Err(anyhow!(
             "No scaffold-stacks project found. Run from the directory created by stacks-dapp new"
         ));
     }
 
-    // Frontend dir: project root is parent of contracts/, so frontend is sibling of contracts/
+    // The export-abi script lives in frontend/scripts/ but must be run
+    // with CWD = contracts/ so that initSimnet() finds Clarinet.toml and
+    // settings/Devnet.toml in the current directory — exactly where they are.
     let project_root = contracts_dir
         .parent()
         .ok_or_else(|| anyhow!("Invalid contracts path"))?;
-    let frontend_dir = project_root.join("frontend");
-    let script = frontend_dir.join("scripts").join("export-abi.mjs");
+    let script = project_root
+        .join("frontend")
+        .join("scripts")
+        .join("export-abi.mjs");
+
     if !script.exists() {
         return Err(anyhow!(
-            "Frontend ABI script not found at {}. Re-scaffold with stacks-dapp new or add scripts/export-abi.mjs.",
+            "ABI export script not found at {}. Re-scaffold or add frontend/scripts/export-abi.mjs.",
             script.display()
         ));
     }
 
+    // Resolve the script path to an absolute path before changing CWD.
+    let script_abs = script
+        .canonicalize()
+        .map_err(|e| anyhow!("Cannot resolve script path {}: {e}", script.display()))?;
+
+    // Run from contracts/ so initSimnet() resolves Clarinet.toml + settings/Devnet.toml correctly.
     let output = Command::new("node")
-        .arg(script.as_os_str())
-        .current_dir(&frontend_dir)
+        .arg(&script_abs)
+        .current_dir(contracts_dir) // <-- KEY FIX: CWD must be contracts/
         .output()
         .await
         .map_err(|e| {
@@ -130,18 +153,42 @@ pub async fn parse_project(contracts_dir: &Path) -> Result<Vec<ContractAbi>> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!(
             "Failed to export contract ABIs. Run clarinet check to validate contracts.\n{}",
-            if stderr.is_empty() { "Script exited non-zero." } else { stderr.trim() }
+            if stderr.is_empty() {
+                "Script exited non-zero.".to_string()
+            } else {
+                stderr.trim().to_string()
+            }
         ));
     }
 
-    let json = String::from_utf8(output.stdout)?;
-    parse_abi_list(&json)
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Print stderr always so the developer sees what the script actually said
+    if !stderr.trim().is_empty() {
+        eprintln!("[export-abi] {}", stderr.trim());
+    }
+
+    // initSimnet() writes status lines like "Updated deployment plan file"
+    // to stdout before the JSON array. Find the first '[' and slice from there.
+    let json_start = stdout.find('[').ok_or_else(|| anyhow!(
+        "export-abi.mjs produced no JSON. Run: cd contracts && node ../frontend/scripts/export-abi.mjs\nOutput: {}",
+        &stdout[..stdout.len().min(300)]
+    ))?;
+    let json = stdout[json_start..].trim();
+
+    parse_abi_list(json)
 }
 
 /// Parse a JSON array of ContractAbi (e.g. from export-abi.mjs stdout).
 pub fn parse_abi_list(json: &str) -> Result<Vec<ContractAbi>> {
-    let abis: Vec<ContractAbi> = serde_json::from_str(json)?;
-    Ok(abis)
+    serde_json::from_str(json).map_err(|e| {
+        anyhow!(
+            "Failed to parse ABI JSON: {e}.
+             First 200 chars of output: {}",
+            &json[..json.len().min(200)]
+        )
+    })
 }
 
 /// Parse a single ABI JSON string (for testing).
@@ -160,7 +207,7 @@ pub fn abi_type_to_ts(t: &AbiType) -> String {
             _ => "unknown".to_string(),
         },
         AbiType::StringAscii { .. } | AbiType::StringUtf8 { .. } => "string".to_string(),
-        AbiType::Buff { .. } => "Uint8Array".to_string(),
+        AbiType::Buffer { .. } | AbiType::Buff { .. } => "Uint8Array".to_string(),
         AbiType::List { list } => {
             let inner = abi_type_to_ts(&list.r#type);
             format!("Array<{inner}>")
@@ -180,4 +227,3 @@ pub fn abi_type_to_ts(t: &AbiType) -> String {
         }
     }
 }
-
