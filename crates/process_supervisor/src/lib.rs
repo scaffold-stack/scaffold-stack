@@ -4,7 +4,6 @@ use tokio::{fs, process::Command};
 
 pub async fn dev() -> Result<()> {
     ensure_project_root()?;
-
     codegen::generate_all().await?;
 
     tokio::try_join!(
@@ -21,7 +20,7 @@ fn ensure_project_root() -> Result<()> {
         || !Path::new("frontend/package.json").exists()
     {
         return Err(anyhow!(
-            "No scaffold-stacks project found. Run from the directory created by stacks-dapp new"
+            "No scaffold-stacks project found. Run from the directory created by stacksdapp new"
         ));
     }
     Ok(())
@@ -38,7 +37,6 @@ async fn spawn_clarinet_devnet() -> Result<()> {
 }
 
 async fn spawn_next_dev() -> Result<()> {
-    // Ensure frontend dependencies are installed
     if fs::metadata("frontend/node_modules").await.is_err() {
         println!("Installing frontend dependencies with npm install...");
         Command::new("npm")
@@ -57,4 +55,3 @@ async fn spawn_next_dev() -> Result<()> {
         .await?;
     Ok(())
 }
-
