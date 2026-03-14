@@ -5,11 +5,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "vitest",
-    "export-abi": "node scripts/export-abi.mjs"
+    "test": "vitest"
   },
   "dependencies": {
-    "next": "14.2.0",
+    "next": "^15",
     "react": "^18",
     "react-dom": "^18",
     "@stacks/connect": "^7",
@@ -19,8 +18,7 @@
   "devDependencies": {
     "typescript": "^5",
     "tailwindcss": "^3",
-    "@hirosystems/clarinet-sdk": "^2",
+    "@stacks/clarinet-sdk": "^3",
     "vitest": "^1"
   }
 }
-
