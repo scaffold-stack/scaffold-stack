@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 
 #[derive(Parser)]
-#[command(name = "stacksdapp", version, about = "Scaffold-Stacks CLI")]
+#[command(name = "stacks-dapp", version, about = "Scaffold-Stacks CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -19,8 +19,15 @@ enum Commands {
         #[arg(long)]
         no_git: bool,
     },
-    /// Start devnet + frontend + file watcher
-    Dev,
+    /// Start dev environment — devnet/testnet/mainnet
+    ///
+    /// devnet  (default): spins up local Clarinet chain + Next.js + watcher
+    /// testnet/mainnet:   runs Next.js pointed at remote network (no local chain)
+    Dev {
+        /// Network to target: devnet | testnet | mainnet
+        #[arg(long, default_value = "devnet")]
+        network: String,
+    },
     /// Parse contracts and regenerate TypeScript bindings
     Generate,
     /// Add a new Clarity contract: stacks-dapp add <name> [--template blank|sip010|sip009]
@@ -49,7 +56,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::New { name, no_git } => scaffold::new_project(&name, !no_git).await,
-        Commands::Dev => process_supervisor::dev().await,
+        Commands::Dev { network } => process_supervisor::dev(&network).await,
         Commands::Generate => codegen::generate_all().await,
         Commands::Add { name, template } => scaffold::add_contract(&name, &template).await,
         Commands::Deploy { network } => deployer::deploy(&network).await,
