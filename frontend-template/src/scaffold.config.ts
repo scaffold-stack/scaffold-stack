@@ -1,33 +1,20 @@
-import { StacksTestnet, StacksDevnet, StacksMainnet } from '@stacks/network';
+// Network is driven by NEXT_PUBLIC_NETWORK env var.
+// stacksdapp dev --network testnet sets this automatically in frontend/.env.local
 
-const network = process.env.NEXT_PUBLIC_NETWORK ?? 'devnet';
-
-const nodeUrls: Record<string, { stacks: string; bitcoin: string }> = {
-  devnet: {
-    stacks:  process.env.NEXT_PUBLIC_STACKS_NODE_URL ?? 'http://localhost:3999',
-    bitcoin: 'http://localhost:18443',
-  },
-  testnet: {
-    stacks:  process.env.NEXT_PUBLIC_STACKS_NODE_URL ?? 'https://api.testnet.hiro.so',
-    bitcoin: 'https://blockstream.info/testnet/api',
-  },
-  mainnet: {
-    stacks:  process.env.NEXT_PUBLIC_STACKS_NODE_URL ?? 'https://api.hiro.so',
-    bitcoin: 'https://blockstream.info/api',
-  },
-};
+const network = (process.env.NEXT_PUBLIC_NETWORK ?? 'devnet') as 'devnet' | 'testnet' | 'mainnet';
 
 export const scaffoldConfig = {
-  targetNetwork: network,
+  // targetNetwork: string used by request() and fetchCallReadOnlyFunction() in v8/v7
+  targetNetwork: network === 'devnet' ? 'testnet' : network,
 
-  stacksNetwork:
-    network === 'mainnet' ? new StacksMainnet()
-    : network === 'testnet' ? new StacksTestnet()
-    : new StacksDevnet(),
+  // Node URL for direct API calls
+  nodeUrl:
+    network === 'mainnet'
+      ? (process.env.NEXT_PUBLIC_STACKS_NODE_URL ?? 'https://api.hiro.so')
+      : network === 'testnet'
+      ? (process.env.NEXT_PUBLIC_STACKS_NODE_URL ?? 'https://api.testnet.hiro.so')
+      : (process.env.NEXT_PUBLIC_STACKS_NODE_URL ?? 'http://localhost:3999'),
 
-  nodeUrl: nodeUrls[network] ?? nodeUrls.devnet,
-
-  // Convenience flags
   isDevnet:  network === 'devnet',
   isTestnet: network === 'testnet',
   isMainnet: network === 'mainnet',
