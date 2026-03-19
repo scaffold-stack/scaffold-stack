@@ -11,13 +11,19 @@
     "next": "^15",
     "react": "^18",
     "react-dom": "^18",
-    "@stacks/connect": "^7",
-    "@stacks/transactions": "^6",
-    "@stacks/network": "^6"
+    "@stacks/connect": "^8",
+    "@stacks/transactions": "^7",
+    "@stacks/network": "^6",
+    "pino-pretty": "^11"
   },
   "devDependencies": {
     "typescript": "^5",
     "tailwindcss": "^3",
+    "autoprefixer": "^10",
+    "postcss": "^8",
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
     "@stacks/clarinet-sdk": "^3",
     "vitest": "^1"
   }
