@@ -25,7 +25,7 @@ clarinet --version   # clarinet 3.x
 ## Install the CLI
 
 ```bash
-git clone https://github.com/stackscaffold/stackscaffold.git
+git clone https://github.com/scaffold-stack/scaffold-stack.git
 cd stackscaffold
 cargo install --path cli
 stacksdapp --version
@@ -257,7 +257,7 @@ frontend-template/      # copied into every new project
 ## Contributing
 
 ```bash
-git clone https://github.com/stackscaffold/stackscaffold.git
+git clone https://github.com/scaffold-stack/scaffold-stack.git
 cd stackscaffold
 cargo build
 cargo test --all
