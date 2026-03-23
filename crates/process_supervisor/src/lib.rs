@@ -2,14 +2,52 @@ use anyhow::{anyhow, Result};
 use std::path::Path;
 use tokio::{fs, process::Command};
 
-/// dev() behaviour by network:
-///
-///  devnet  → codegen + clarinet devnet start + next dev + file watcher
-///            (full local stack, requires Docker)
-///
-///  testnet → codegen + next dev pointed at testnet API
-///  mainnet → codegen + next dev pointed at mainnet API
-///            (no local chain — contracts are already deployed on-chain)
+
+/// Returns true if Clarinet.toml contains any [[project.requirements]] entries.
+async fn has_requirements() -> bool {
+    let Ok(raw) = fs::read_to_string("contracts/Clarinet.toml").await else {
+        return false;
+    };
+    // A [[project.requirements]] section always contains a contract_id line
+    raw.contains("[[project.requirements]]")
+}
+
+async fn prefetch_requirements() -> Result<()> {
+    if !has_requirements().await {
+        return Ok(()); // nothing to do
+    }
+
+    println!(
+        "[dev] Detected [[project.requirements]] in Clarinet.toml — fetching external contracts..."
+    );
+    println!("[dev] This requires internet access. Run once; results are cached in ./.cache/");
+
+    let status = tokio::process::Command::new("clarinet")
+        .args(["requirements"])
+        .current_dir("contracts")
+        .status()
+        .await
+        .map_err(|_| anyhow!(
+            "clarinet is required. Install: brew install clarinet  OR  cargo install clarinet"
+        ))?;
+
+    if !status.success() {
+        return Err(anyhow!(
+            "Failed to fetch contract requirements.\n\
+             \n\
+             This usually means:\n\
+             • No internet connection — requirements must be fetched online at least once\n\
+             • Hiro API is temporarily down — try again in a few minutes\n\
+             \n\
+             Once fetched, requirements are cached in contracts/.cache/ and work offline.\n\
+             Check which contracts you depend on in contracts/Clarinet.toml under [[project.requirements]]."
+        ));
+    }
+
+    println!("[dev] ✔ Requirements fetched and cached.");
+    Ok(())
+}
+
 pub async fn dev(network: &str) -> Result<()> {
     ensure_project_root()?;
 
@@ -46,6 +84,7 @@ async fn dev_devnet() -> Result<()> {
     // Set NEXT_PUBLIC_NETWORK=devnet in the frontend env
     write_network_env("devnet").await?;
 
+    prefetch_requirements().await?;
     codegen::generate_all().await?;
 
     tokio::try_join!(
