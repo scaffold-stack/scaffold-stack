@@ -1,6 +1,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+mod commands {
+    pub mod doctor;
+}
+use commands::doctor;
+
 
 #[derive(Parser)]
 #[command(name = "stacks-dapp", version, about = "Scaffold-Stacks CLI")]
@@ -49,6 +54,8 @@ enum Commands {
     Check,
     /// Remove generated files and devnet state
     Clean,
+    /// Check all prerequisites and print a status report
+    Doctor,
 }
 
 #[tokio::main]
@@ -63,6 +70,7 @@ async fn main() -> Result<()> {
         Commands::Test => run_test().await,
         Commands::Check => run_check().await,
         Commands::Clean => run_clean().await,
+        Commands::Doctor => doctor::run().await,
     }
 }
 
