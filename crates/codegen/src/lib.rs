@@ -120,6 +120,13 @@ pub async fn generate_all() -> Result<()> {
         println!("[generate] Done — {written} file(s) written.");
     }
 
+    let network = std::env::var("NEXT_PUBLIC_NETWORK")
+        .unwrap_or_else(|_| "<network>".into());
+    let stale = find_stale_deployments(&abis, &out_dir);
+    if !stale.is_empty() {
+        warn_redeploy_required(&stale, &network);
+    }
+
     Ok(())
 }
 
@@ -195,6 +202,33 @@ fn hash_bytes(bytes: &[u8]) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
+fn find_stale_deployments(abis: &[ContractAbi], out_dir: &Path) -> Vec<String> {
+    let deployments_path = out_dir.join("deployments.json");
+    let Ok(raw) = std::fs::read_to_string(&deployments_path) else {
+        return vec![]; // no deployments yet — nothing to compare
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return vec![];
+    };
+
+    let deployed = json["contracts"].as_object();
+
+    abis.iter()
+        .filter(|abi| {
+            match deployed.and_then(|d| d.get(&abi.contract_name)) {
+                None => true, // never deployed
+                Some(entry) => {
+                    let deployed_id = entry["contract_id"].as_str().unwrap_or("");
+                    // If the deployed name doesn't end with the current contract name,
+                    // the contract has been renamed (versioned) and needs redeployment
+                    !deployed_id.ends_with(&format!(".{}", abi.contract_name))
+                }
+            }
+        })
+        .map(|abi| abi.contract_name.clone())
+        .collect()
+}
+
 /// Write file only if content changed. Returns 1 if written, 0 if skipped.
 fn write_if_changed(path: PathBuf, contents: &str) -> Result<usize> {
     let new_bytes = contents.as_bytes();
@@ -213,4 +247,23 @@ fn write_if_changed(path: PathBuf, contents: &str) -> Result<usize> {
     file.write_all(new_bytes)?;
     println!("[generated] {}", path.display());
     Ok(1)
+}
+
+/// Print a prominent redeployment warning.
+fn warn_redeploy_required(stale: &[String], network: &str) {
+    let names = stale.join(", ");
+    eprintln!("\n{}", "━".repeat(60));
+    eprintln!("  ⚠  REDEPLOYMENT REQUIRED");
+    eprintln!("{}", "━".repeat(60));
+    eprintln!("  Contracts on-chain are out of sync with local source:");
+    eprintln!("  {}", names);
+    eprintln!();
+    eprintln!("  Clarity contracts are immutable. Your changes won't take");
+    eprintln!("  effect until you redeploy:");
+    eprintln!();
+    eprintln!("    stacksdapp deploy --network {network}");
+    eprintln!("    where network is either devnet/testnet/mainnet");
+    eprintln!();
+    eprintln!("  Until then, calls to new/changed functions will fail.");
+    eprintln!("{}\n", "━".repeat(60));
 }
