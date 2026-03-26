@@ -455,7 +455,7 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
     let clarinet_toml_path = Path::new("contracts/Clarinet.toml");
     let mut existing = tokio::fs::read_to_string(clarinet_toml_path).await?;
     existing.push_str(&format!(
-        "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = 3\nepoch = \"3.0\"\n"
+        "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = 4\nepoch = \"latest\"\n\n[repl.costs_version]\nversion = 2\n"
     ));
     tokio::fs::write(clarinet_toml_path, existing).await?;
 
