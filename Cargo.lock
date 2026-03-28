@@ -1836,6 +1836,7 @@ dependencies = [
  "codegen",
  "fs_extra",
  "include_dir",
+ "indicatif",
  "tokio",
  "which",
 ]
