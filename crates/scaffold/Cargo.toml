@@ -10,4 +10,5 @@ fs_extra.workspace   = true
 which.workspace      = true
 codegen             = { path = "../codegen" }
 include_dir = "0.7"
+indicatif.workspace = true
 
