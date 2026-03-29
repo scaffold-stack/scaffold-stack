@@ -118,18 +118,16 @@ function FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | up
   const setArg = (name: string, value: string) => setArgs(a => Object.assign({}, a, { [name]: value }));
   {% endif %}
 
-  const onSubmit = async (e: React.FormEvent) => {
+const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    {% if fn.args %}
     const clarityArgs = [
+      {% if fn.args %}
       {% for arg in fn.args %}
       toClarityValue(args['{{ arg.name }}'] ?? '', '{{ arg.type_str }}'),
       {% endfor %}
+      {% endif %}
     ];
-    await call(clarityArgs);
-    {% else %}
-    await call([]);
-    {% endif %}
+    await call(clarityArgs); 
   };
 
   return (
