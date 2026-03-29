@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Result};
 use include_dir::{include_dir, Dir};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
+use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
 use which::which;
 
@@ -8,31 +11,156 @@ static FRONTEND_TEMPLATE: Dir =
     include_dir!("$CARGO_MANIFEST_DIR/../../frontend-template");
 
 pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
-    println!("⚡ scaffold-stacks — creating {name}");
+    println!();
+    println!("   \x1b[1;33mscaffold-stacks\x1b[0m  \x1b[2mv0.1.0\x1b[0m");
+    println!("  \x1b[2m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m");
+    println!("  \x1b[1mCreating\x1b[0m  \x1b[1;36m{name}\x1b[0m");
+    println!();
 
     ensure_prerequisites().await?;
 
     let root = Path::new(name);
     if root.exists() {
-        return Err(anyhow!("Target directory '{}' already exists", name));
+        return Err(anyhow!("  \x1b[31m✗\x1b[0m Directory '{name}' already exists"));
     }
+
+    let style = ProgressStyle::with_template(
+        "  {spinner:.yellow} {wide_msg:.dim}  \x1b[2m[{elapsed}]\x1b[0m"
+    )
+    .unwrap()
+    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(style);
+    pb.enable_steady_tick(Duration::from_millis(80));
+
+    // ── Step 1: Scaffold files ────────────────────────────────────────────────
+    pb.set_message("Scaffolding project structure...");
+
     tokio::fs::create_dir_all(root).await?;
-
-    // Copy frontend template into <name>/frontend
     let frontend_dir = root.join("frontend");
-    tokio::fs::create_dir_all(&frontend_dir).await?;
-    FRONTEND_TEMPLATE
-        .extract(&frontend_dir)
-        .map_err(|e| anyhow!("Failed to copy frontend template: {e}"))?;
-
-    // Contracts layout
     let contracts_root = root.join("contracts");
+    tokio::fs::create_dir_all(&frontend_dir).await?;
     tokio::fs::create_dir_all(contracts_root.join("contracts")).await?;
     tokio::fs::create_dir_all(contracts_root.join("settings")).await?;
     tokio::fs::create_dir_all(contracts_root.join("tests")).await?;
 
-    // contracts/package.json
-    let contracts_package = r#"{
+    FRONTEND_TEMPLATE
+        .extract(&frontend_dir)
+        .map_err(|e| anyhow!("Failed to copy frontend template: {e}"))?;
+
+    write_project_files(name, root, &frontend_dir, &contracts_root).await?;
+
+    pb.println(format!("  \x1b[32m✔\x1b[0m  \x1b[1mScaffolded\x1b[0m   {name}/"));
+
+    // ── Step 2: Install dependencies (parallel) ───────────────────────────────
+    pb.set_message("Installing dependencies...");
+
+    let fe_dir = frontend_dir.clone();
+    let ct_dir = contracts_root.clone();
+
+    let frontend_install = tokio::spawn(async move {
+        Command::new("npm")
+            .arg("install")
+            .current_dir(&fe_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+    });
+
+    let contracts_install = tokio::spawn(async move {
+        Command::new("npm")
+            .arg("install")
+            .current_dir(&ct_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+    });
+
+    let (fe, ct) = tokio::join!(frontend_install, contracts_install);
+
+    match fe.unwrap() {
+        Ok(s) if s.success() => {}
+        _ => return Err(anyhow!("npm install failed in frontend/")),
+    }
+    match ct.unwrap() {
+        Ok(s) if s.success() => {}
+        _ => return Err(anyhow!("npm install failed in contracts/")),
+    }
+
+    pb.println("  \x1b[32m✔\x1b[0m  \x1b[1mInstalled\x1b[0m    node_modules");
+
+    // ── Step 3: Git init ──────────────────────────────────────────────────────
+    if git_init {
+        pb.set_message("Initialising git repository...");
+
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await?;
+
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await?;
+
+        Command::new("git")
+            .args(["commit", "-m", "scaffold-stacks init"])
+            .current_dir(root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await?;
+
+        pb.println("  \x1b[32m✔\x1b[0m  \x1b[1mInitialised\x1b[0m  git (main)");
+    }
+
+    pb.finish_and_clear();
+
+    // ── Success output ────────────────────────────────────────────────────────
+    println!("  \x1b[1;32m✔ Done!\x1b[0m  Project \x1b[1;36m{name}\x1b[0m is ready.");
+    println!("  \x1b[2m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m");
+    println!();
+    println!("  \x1b[1;33m Recommended\x1b[0m  Deploy to testnet \x1b[2m(no Docker needed)\x1b[0m");
+    println!();
+    println!("     \x1b[1;36m1\x1b[0m  cd {name}");
+    println!("     \x1b[1;36m2\x1b[0m  Get testnet STX \x1b[2m→\x1b[0m  https://explorer.hiro.so/sandbox/faucet?chain=testnet");
+    println!("     \x1b[1;36m3\x1b[0m  Add mnemonic to \x1b[1mcontracts/settings/Testnet.toml\x1b[0m");
+    println!("        \x1b[2m[accounts.deployer]\x1b[0m");
+    println!("        \x1b[2mmnemonic = \"your 24 words here\"\x1b[0m");
+    println!("     \x1b[1;36m4\x1b[0m  \x1b[1mstacksdapp deploy --network testnet\x1b[0m");
+    println!("     \x1b[1;36m5\x1b[0m  \x1b[1mstacksdapp dev --network testnet\x1b[0m");
+    println!();
+    println!("  \x1b[2m───────────────────────────────────────\x1b[0m");
+    println!();
+    println!("  \x1b[1;34m Alternative\x1b[0m  Local devnet \x1b[2m(Docker required)\x1b[0m");
+    println!();
+    println!("     \x1b[1;36m1\x1b[0m  cd {name}  \x1b[2m+\x1b[0m  Start Docker Desktop");
+    println!("     \x1b[1;36m2\x1b[0m  \x1b[1mstacksdapp dev\x1b[0m                               \x1b[2m← starts local chain + frontend\x1b[0m");
+    println!("     \x1b[1;36m3\x1b[0m  \x1b[1mstacksdapp deploy --network devnet\x1b[0m           \x1b[2m← second terminal\x1b[0m");
+    println!();
+    println!("  \x1b[2m───────────────────────────────────────\x1b[0m");
+    println!("  \x1b[2m  https://github.com/scaffold-stack/scaffold-stack\x1b[0m");
+    println!();
+
+    Ok(())
+}
+
+async fn write_project_files(
+    name: &str,
+    root: &Path,
+    frontend_dir: &Path,
+    contracts_root: &Path,
+) -> Result<()> {
+    tokio::fs::write(contracts_root.join("package.json"), r#"{
   "name": "contracts",
   "private": true,
   "type": "module",
@@ -46,19 +174,15 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
     "vitest": "^1"
   }
 }
-"#;
-    tokio::fs::write(contracts_root.join("package.json"), contracts_package).await?;
+"#).await?;
 
-    // contracts/vitest.config.ts
-    let vitest_config = r#"import { defineConfig } from 'vitest/config';
+    tokio::fs::write(contracts_root.join("vitest.config.ts"), r#"import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: { environment: 'node' },
 });
-"#;
-    tokio::fs::write(contracts_root.join("vitest.config.ts"), vitest_config).await?;
+"#).await?;
 
-    // contracts/tsconfig.json
-    let contracts_tsconfig = r#"{
+    tokio::fs::write(contracts_root.join("tsconfig.json"), r#"{
   "compilerOptions": {
     "target": "ES2020",
     "module": "ESNext",
@@ -68,12 +192,9 @@ export default defineConfig({
   },
   "include": ["tests/**/*.ts"]
 }
-"#;
-    tokio::fs::write(contracts_root.join("tsconfig.json"), contracts_tsconfig).await?;
+"#).await?;
 
-    // Clarinet.toml
-    let clarinet_toml = format!(
-        r#"[project]
+    tokio::fs::write(contracts_root.join("Clarinet.toml"), format!(r#"[project]
 name = "{name}"
 description = ""
 authors = []
@@ -88,20 +209,9 @@ epoch = "latest"
 
 [repl.costs_version]
 version = 2
-"#
-    );
-    tokio::fs::write(contracts_root.join("Clarinet.toml"), clarinet_toml).await?;
+"#)).await?;
 
-    // --- FIX: settings files must have [network] + funded accounts ---
-    // These are the standard Clarinet devnet mnemonics (same as `clarinet new` generates).
-    // Settings files — match exactly what `clarinet new` generates.
-    // KEY FIXES vs previous versions:
-    //   1. Devnet.toml includes sbtc_balance and [devnet] section with stacking orders.
-    //   2. Testnet/Mainnet use placeholder mnemonic text (not empty string "").
-    //      Clarinet rejects "" as invalid bip39 but accepts placeholder text fine.
-    //   3. Testnet/Mainnet include stacks_node_rpc_address.
-    //   4. Simnet.toml is intentionally NOT created — clarinet 3.x rejects it.
-    let devnet_toml = r#"[network]
+    tokio::fs::write(contracts_root.join("settings/Devnet.toml"), r#"[network]
 name = "devnet"
 deployment_fee_rate = 10
 
@@ -192,34 +302,27 @@ auto_extend = true
 wallet = "wallet_3"
 slots = 2
 btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"
-"#;
+"#).await?;
 
-    let testnet_toml = r#"[network]
+    tokio::fs::write(contracts_root.join("settings/Testnet.toml"), r#"[network]
 name = "testnet"
 stacks_node_rpc_address = "https://api.testnet.hiro.so"
 deployment_fee_rate = 10
 
 [accounts.deployer]
 mnemonic = "<YOUR PRIVATE TESTNET MNEMONIC HERE>"
-"#;
+"#).await?;
 
-    let mainnet_toml = r#"[network]
+    tokio::fs::write(contracts_root.join("settings/Mainnet.toml"), r#"[network]
 name = "mainnet"
 stacks_node_rpc_address = "https://api.hiro.so"
 deployment_fee_rate = 10
 
 [accounts.deployer]
 mnemonic = "<YOUR PRIVATE MAINNET MNEMONIC HERE>"
-"#;
+"#).await?;
 
-    // Only write the 3 files clarinet new creates — Simnet.toml must NOT exist.
-    // Clarinet 3.x parses every *.toml in settings/ and rejects Simnet.toml.
-    tokio::fs::write(contracts_root.join("settings/Devnet.toml"), devnet_toml).await?;
-    tokio::fs::write(contracts_root.join("settings/Testnet.toml"), testnet_toml).await?;
-    tokio::fs::write(contracts_root.join("settings/Mainnet.toml"), mainnet_toml).await?;
-
-    // counter.clar
-    let counter_clar = r#";; counter.clar sample contract scaffolded by scaffold-stacks
+    tokio::fs::write(contracts_root.join("contracts/counter.clar"), r#";; counter.clar scaffolded by scaffold-stacks
 
 (define-data-var counter uint u0)
 
@@ -241,11 +344,9 @@ mnemonic = "<YOUR PRIVATE MAINNET MNEMONIC HERE>"
   (begin
     (var-set counter u0)
     (ok u0)))
-"#;
-    tokio::fs::write(contracts_root.join("contracts/counter.clar"), counter_clar).await?;
+"#).await?;
 
-    // counter.test.ts
-    let counter_test = r#"import { describe, expect, it } from 'vitest';
+    tokio::fs::write(contracts_root.join("tests/counter.test.ts"), r#"import { describe, expect, it } from 'vitest';
 import { initSimnet } from '@stacks/clarinet-sdk';
 import { Cl } from '@stacks/transactions';
 
@@ -267,17 +368,13 @@ describe('counter', () => {
     expect(result).toBeOk(Cl.uint(0));
   });
 });
-"#;
-    tokio::fs::write(contracts_root.join("tests/counter.test.ts"), counter_test).await?;
+"#).await?;
 
-    // root package.json
-    let root_package = format!(
+    tokio::fs::write(root.join("package.json"), format!(
         "{{\n  \"name\": \"{name}\",\n  \"private\": true,\n  \"scripts\": {{\n    \"dev\": \"stacksdapp dev\",\n    \"generate\": \"stacksdapp generate\",\n    \"deploy\": \"stacksdapp deploy\",\n    \"test\": \"stacksdapp test\",\n    \"check\": \"stacksdapp check\"\n  }}\n}}\n"
-    );
-    tokio::fs::write(root.join("package.json"), root_package).await?;
+    )).await?;
 
-    // .gitignore files — prevent node_modules, .env, generated files from being committed
-    let root_gitignore = r#"# Rust
+    tokio::fs::write(root.join(".gitignore"), r#"# Rust
 target/
 
 # Node
@@ -298,60 +395,39 @@ contracts/settings
 frontend/.next/
 frontend/out/
 
-
 # OS
 .DS_Store
 *.pem
-"#;
-    tokio::fs::write(root.join(".gitignore"), root_gitignore).await?;
+"#).await?;
 
-    let frontend_gitignore = r#"# dependencies
-node_modules/
-
-# environment variables — never commit real keys
+    tokio::fs::write(frontend_dir.join(".gitignore"), r#"node_modules/
 .env
 .env.local
 .env.*.local
-
-# Next.js
 .next/
 out/
-
-# misc
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts
-"#;
-    tokio::fs::write(frontend_dir.join(".gitignore"), frontend_gitignore).await?;
+"#).await?;
 
-    let contracts_gitignore = r#"# dependencies
-node_modules/
-
-# Clarinet cache and devnet state
+    tokio::fs::write(contracts_root.join(".gitignore"), r#"node_modules/
 .cache/
 .devnet/
 settings/Simnet.toml
-
-# environment variables
 .env
 .env.local
 .env.*.local
-
-# OS
 .DS_Store
-"#;
-    tokio::fs::write(contracts_root.join(".gitignore"), contracts_gitignore).await?;
+"#).await?;
 
-    // .env.local — copy from example so the dev can switch networks immediately
-    // We write devnet as the default so `stacksdapp dev` works out of the box.
-    let env_local = r#"# Network: devnet | testnet | mainnet
+    tokio::fs::write(frontend_dir.join(".env.local"), r#"# Network: devnet | testnet | mainnet
 NEXT_PUBLIC_NETWORK=devnet
 
 # Required for testnet/mainnet deploy:
 # DEPLOYER_PRIVATE_KEY=your_private_key_hex
-"#;
-    tokio::fs::write(frontend_dir.join(".env.local"), env_local).await?;
-    // Also write the example file so devs know what's available
+"#).await?;
+
     tokio::fs::write(frontend_dir.join(".env.local.example"), r#"# Network: devnet | testnet | mainnet
 NEXT_PUBLIC_NETWORK=devnet
 
@@ -362,72 +438,6 @@ NEXT_PUBLIC_NETWORK=devnet
 # NEXT_PUBLIC_STACKS_NODE_URL=https://api.testnet.hiro.so
 "#).await?;
 
-    // npm install in frontend
-    Command::new("npm")
-        .arg("install")
-        .current_dir(&frontend_dir)
-        .spawn()?
-        .wait()
-        .await?;
-
-    // npm install in contracts (for vitest + clarinet-sdk tests)
-    Command::new("npm")
-        .arg("install")
-        .current_dir(&contracts_root)
-        .spawn()?
-        .wait()
-        .await?;
-
-    if git_init {
-        Command::new("git")
-            .arg("init")
-            .current_dir(root)
-            .spawn()?
-            .wait()
-            .await?;
-        Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(root)
-            .spawn()?
-            .wait()
-            .await?;
-        Command::new("git")
-            .args(["commit", "-m", "scaffold-stacks init"])
-            .current_dir(root)
-            .spawn()?
-            .wait()
-            .await?;
-    }
-
-    println!(
-        "\n✅ Project '{name}' created successfully!\n\
-         \n\
-         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
-         \n\
-         👉 Recommended — deploy to testnet (no Docker needed):\n\
-         \n\
-         \t1. cd {name}\n\
-         \t2. Get testnet STX from the faucet:\n\
-         \t   https://explorer.hiro.so/sandbox/faucet?chain=testnet\n\
-         \t3. Add your mnemonic to contracts/settings/Testnet.toml:\n\
-         \t   [accounts.deployer]\n\
-         \t   mnemonic = \"your 24 words here\"\n\
-         \t4. stacksdapp deploy --network testnet\n\
-         \t5. stacksdapp dev --network testnet\n\
-         \n\
-         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
-         \n\
-         🐳 Alternative — run locally with devnet (Docker required):\n\
-         \n\
-         \t1. cd {name}\n\
-         \t2. Start Docker Desktop\n\
-         \t3. stacksdapp dev               ← starts local chain + frontend\n\
-         \t4. stacksdapp deploy --network devnet   ← in a second terminal\n\
-         \n\
-         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
-         \n\
-         📖 Docs: https://github.com/scaffold-stack/scaffold-stack\n"
-    );
     Ok(())
 }
 
@@ -444,14 +454,372 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
         return Err(anyhow!("Contract '{}' already exists", name));
     }
 
-    let contents = match template {
-        "blank" | _ => format!(
-            ";; {name}.clar\n\n(define-read-only (get-info)\n  (ok \"{name} contract\"))\n"
+    // ── Contract source ───────────────────────────────────────────────────────
+    let (contract_source, test_source) = match template {
+
+        "sip010" => (
+            // SIP-010 Fungible Token
+            // Trait: SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard
+            format!(r#";; {name}.clar SIP-010 Fungible Token
+(impl-trait 'SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard.sip-010-trait)
+
+;; Define the FT with no maximum supply
+(define-fungible-token {name})
+
+;; Error constants
+(define-constant ERR_OWNER_ONLY (err u100))
+(define-constant ERR_NOT_TOKEN_OWNER (err u101))
+
+;; Contract constants
+(define-constant CONTRACT_OWNER tx-sender)
+(define-constant TOKEN_NAME "{name}")
+(define-constant TOKEN_SYMBOL "{name}")
+(define-constant TOKEN_DECIMALS u6)
+
+(define-data-var token-uri (string-utf8 256) u"https://example.com/token-metadata.json")
+
+;; SIP-010: Get token balance of a principal
+(define-read-only (get-balance (who principal))
+  (ok (ft-get-balance {name} who)))
+
+;; SIP-010: Get total supply
+(define-read-only (get-total-supply)
+  (ok (ft-get-supply {name})))
+
+;; SIP-010: Get human-readable token name
+(define-read-only (get-name)
+  (ok TOKEN_NAME))
+
+;; SIP-010: Get ticker symbol
+(define-read-only (get-symbol)
+  (ok TOKEN_SYMBOL))
+
+;; SIP-010: Get number of decimals
+(define-read-only (get-decimals)
+  (ok TOKEN_DECIMALS))
+
+;; SIP-010: Get token metadata URI
+(define-read-only (get-token-uri)
+  (ok (some (var-get token-uri))))
+
+;; Update token URI emits SIP-019 metadata update notification
+(define-public (set-token-uri (value (string-utf8 256)))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (var-set token-uri value)
+    (ok (print {{
+      notification: "token-metadata-update",
+      payload: {{
+        contract-id: current-contract,
+        token-class: "ft"
+      }}
+    }}))))
+
+;; Mint new tokens only contract owner
+(define-public (mint (amount uint) (recipient principal))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (ft-mint? {name} amount recipient)))
+
+;; SIP-010: Transfer tokens
+;; Sender must be tx-sender or contract-caller to prevent unauthorised transfers
+(define-public (transfer
+  (amount uint)
+  (sender principal)
+  (recipient principal)
+  (memo (optional (buff 34))))
+  (begin
+    ;; #[filter(amount, recipient)]
+    (asserts! (or (is-eq tx-sender sender) (is-eq contract-caller sender)) ERR_NOT_TOKEN_OWNER)
+    (try! (ft-transfer? {name} amount sender recipient))
+    (match memo to-print (print to-print) 0x)
+    (ok true)))
+"#),
+            // SIP-010 test
+            format!(r#"import {{ describe, expect, it }} from 'vitest';
+import {{ initSimnet }} from '@stacks/clarinet-sdk';
+import {{ Cl, ClarityType }} from '@stacks/transactions';
+
+const simnet = await initSimnet();
+const accounts = simnet.getAccounts();
+const deployer = accounts.get('deployer')!;
+const address1 = accounts.get('wallet_1')!;
+const address2 = accounts.get('wallet_2')!;
+
+describe('{name} (SIP-010)', () => {{
+  it('mints tokens to a recipient', () => {{
+    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [
+      Cl.uint(1_000_000),
+      Cl.principal(address1),
+    ], deployer);
+    expect(result).toBeOk(Cl.bool(true));
+  }});
+
+  it('only owner can mint', () => {{
+    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [
+      Cl.uint(1_000_000),
+      Cl.principal(address1),
+    ], address1);
+    expect(result).toBeErr(Cl.uint(100));
+  }});
+
+  it('get-balance returns correct amount after mint', () => {{
+    simnet.callPublicFn('{name}', 'mint', [Cl.uint(1_000_000), Cl.principal(address1)], deployer);
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-balance', [
+      Cl.principal(address1),
+    ], address1);
+    expect(result).toBeOk(Cl.uint(1_000_000));
+  }});
+
+  it('get-total-supply returns total minted', () => {{
+    simnet.callPublicFn('{name}', 'mint', [Cl.uint(500_000), Cl.principal(address1)], deployer);
+    simnet.callPublicFn('{name}', 'mint', [Cl.uint(500_000), Cl.principal(address2)], deployer);
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-total-supply', [], address1);
+    expect(result).toBeOk(Cl.uint(1_000_000));
+  }});
+
+  it('transfers tokens between principals', () => {{
+    simnet.callPublicFn('{name}', 'mint', [Cl.uint(1_000_000), Cl.principal(address1)], deployer);
+    const {{ result }} = simnet.callPublicFn('{name}', 'transfer', [
+      Cl.uint(250_000),
+      Cl.principal(address1),
+      Cl.principal(address2),
+      Cl.none(),
+    ], address1);
+    expect(result).toBeOk(Cl.bool(true));
+  }});
+
+  it('prevents transfer from non-owner', () => {{
+    simnet.callPublicFn('{name}', 'mint', [Cl.uint(1_000_000), Cl.principal(address1)], deployer);
+    const {{ result }} = simnet.callPublicFn('{name}', 'transfer', [
+      Cl.uint(250_000),
+      Cl.principal(address1),
+      Cl.principal(address2),
+      Cl.none(),
+    ], address2);
+    expect(result).toBeErr(Cl.uint(101));
+  }});
+
+  it('get-name returns token name', () => {{
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-name', [], address1);
+    expect(result).toBeOk(Cl.stringAscii('{name}'));
+  }});
+
+  it('get-symbol returns token symbol', () => {{
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-symbol', [], address1);
+    expect(result).toBeOk(Cl.stringAscii('{name}'));
+  }});
+
+  it('get-decimals returns 6', () => {{
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-decimals', [], address1);
+    expect(result).toBeOk(Cl.uint(6));
+  }});
+
+  it('get-token-uri returns some uri', () => {{
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-token-uri', [], address1);
+    expect(result).toHaveClarityType(ClarityType.ResponseOk);
+  }});
+
+  it('only owner can set-token-uri', () => {{
+    const {{ result }} = simnet.callPublicFn('{name}', 'set-token-uri', [
+      Cl.stringUtf8('https://new-uri.com/metadata.json'),
+    ], address1);
+    expect(result).toBeErr(Cl.uint(100));
+  }});
+}});
+"#),
+        ),
+
+        "sip009" => (
+            // SIP-009 NFT
+            // Trait: SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait.nft-trait
+            format!(r#";; {name}.clar SIP-009 Non-Fungible Token
+;; Implements the SIP-009 community-standard Non-Fungible Token trait.
+(impl-trait 'SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait.nft-trait)
+
+;; Define the NFT
+(define-non-fungible-token {name} uint)
+
+;; Keep track of the last minted token ID
+(define-data-var last-token-id uint u0)
+
+;; Error constants
+(define-constant ERR_OWNER_ONLY (err u100))
+(define-constant ERR_NOT_TOKEN_OWNER (err u101))
+(define-constant ERR_SOLD_OUT (err u300))
+
+;; Contract constants
+(define-constant CONTRACT_OWNER tx-sender)
+(define-constant COLLECTION_LIMIT u1000)
+
+(define-data-var base-uri (string-ascii 256) "https://example.com/nft/{{id}}")
+
+;; SIP-009: Get the last minted token ID
+(define-read-only (get-last-token-id)
+  (ok (var-get last-token-id)))
+
+;; SIP-009: Get token metadata URI
+(define-read-only (get-token-uri (token-id uint))
+  (ok (some (var-get base-uri))))
+
+;; SIP-009: Get the owner of a given token
+(define-read-only (get-owner (token-id uint))
+  (ok (nft-get-owner? {name} token-id)))
+
+;; Update base URI — emits SIP-019 metadata update notification
+(define-public (set-base-uri (value (string-ascii 256)))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (var-set base-uri value)
+    (ok (print {{
+      notification: "token-metadata-update",
+      payload: {{
+        token-class: "nft",
+        contract-id: current-contract,
+      }}
+    }}))))
+
+;; SIP-009: Transfer NFT to another owner
+(define-public (transfer (token-id uint) (sender principal) (recipient principal))
+  (begin
+    ;; #[filter(sender)]
+    (asserts! (is-eq tx-sender sender) ERR_NOT_TOKEN_OWNER)
+    (nft-transfer? {name} token-id sender recipient)))
+
+;; Mint a new NFT only contract owner, up to COLLECTION_LIMIT
+(define-public (mint (recipient principal))
+  (let ((token-id (+ (var-get last-token-id) u1)))
+    (asserts! (< (var-get last-token-id) COLLECTION_LIMIT) ERR_SOLD_OUT)
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (try! (nft-mint? {name} token-id recipient))
+    (var-set last-token-id token-id)
+    (ok token-id)))
+"#),
+            // SIP-009 test
+            format!(r#"import {{ describe, expect, it }} from 'vitest';
+import {{ initSimnet }} from '@stacks/clarinet-sdk';
+import {{ Cl, ClarityType }} from '@stacks/transactions';
+
+const simnet = await initSimnet();
+const accounts = simnet.getAccounts();
+const deployer = accounts.get('deployer')!;
+const address1 = accounts.get('wallet_1')!;
+const address2 = accounts.get('wallet_2')!;
+
+describe('{name} (SIP-009)', () => {{
+  it('mints an NFT and returns token id 1', () => {{
+    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [
+      Cl.principal(address1),
+    ], deployer);
+    expect(result).toBeOk(Cl.uint(1));
+  }});
+
+  it('only owner can mint', () => {{
+    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [
+      Cl.principal(address1),
+    ], address1);
+    expect(result).toBeErr(Cl.uint(100));
+  }});
+
+  it('get-last-token-id increments after mint', () => {{
+    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
+    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-last-token-id', [], address1);
+    expect(result).toBeOk(Cl.uint(2));
+  }});
+
+  it('get-owner returns correct owner after mint', () => {{
+    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-owner', [
+      Cl.uint(1),
+    ], address1);
+    expect(result).toBeOk(Cl.some(Cl.principal(address1)));
+  }});
+
+  it('get-owner returns none for unminted token', () => {{
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-owner', [
+      Cl.uint(999),
+    ], address1);
+    expect(result).toBeOk(Cl.none());
+  }});
+
+  it('transfers NFT to new owner', () => {{
+    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
+    const {{ result }} = simnet.callPublicFn('{name}', 'transfer', [
+      Cl.uint(1),
+      Cl.principal(address1),
+      Cl.principal(address2),
+    ], address1);
+    expect(result).toBeOk(Cl.bool(true));
+  }});
+
+  it('prevents transfer from non-owner', () => {{
+    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
+    const {{ result }} = simnet.callPublicFn('{name}', 'transfer', [
+      Cl.uint(1),
+      Cl.principal(address1),
+      Cl.principal(address2),
+    ], address2);
+    expect(result).toBeErr(Cl.uint(101));
+  }});
+
+  it('get-owner updates after transfer', () => {{
+    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
+    simnet.callPublicFn('{name}', 'transfer', [
+      Cl.uint(1),
+      Cl.principal(address1),
+      Cl.principal(address2),
+    ], address1);
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-owner', [Cl.uint(1)], address1);
+    expect(result).toBeOk(Cl.some(Cl.principal(address2)));
+  }});
+
+  it('get-token-uri returns some uri', () => {{
+    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-token-uri', [Cl.uint(1)], address1);
+    expect(result).toHaveClarityType(ClarityType.ResponseOk);
+  }});
+
+  it('only owner can set-base-uri', () => {{
+    const {{ result }} = simnet.callPublicFn('{name}', 'set-base-uri', [
+      Cl.stringAscii('https://new-api.com/nft/{{id}}'),
+    ], address1);
+    expect(result).toBeErr(Cl.uint(100));
+  }});
+}});
+"#),
+        ),
+
+        // blank template
+        _ => (
+            format!(";; {name}.clar\n\n(define-read-only (get-info)\n  (ok \"{name} contract\"))\n"),
+            format!(r#"import {{ describe, expect, it }} from 'vitest';
+import {{ initSimnet }} from '@stacks/clarinet-sdk';
+import {{ Cl }} from '@stacks/transactions';
+
+const simnet = await initSimnet();
+const accounts = simnet.getAccounts();
+const address1 = accounts.get('wallet_1')!;
+
+describe('{name}', () => {{
+  it('returns contract info', () => {{
+    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-info', [], address1);
+    expect(result).toBeOk(Cl.stringAscii('{name} contract'));
+  }});
+}});
+"#),
         ),
     };
-    tokio::fs::write(&path, contents).await?;
 
-    // Append [contracts.<name>] to Clarinet.toml
+    tokio::fs::write(&path, contract_source).await?;
+
+    // Write test file
+    let test_path = Path::new("contracts/tests").join(format!("{name}.test.ts"));
+    if !test_path.exists() {
+        tokio::fs::write(&test_path, test_source).await?;
+    }
+
+    // Update Clarinet.toml
     let clarinet_toml_path = Path::new("contracts/Clarinet.toml");
     let mut existing = tokio::fs::read_to_string(clarinet_toml_path).await?;
     existing.push_str(&format!(
@@ -459,22 +827,26 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
     ));
     tokio::fs::write(clarinet_toml_path, existing).await?;
 
-    // Regenerate bindings
     codegen::generate_all().await?;
 
-    println!("[added] contracts/contracts/{name}.clar — bindings regenerated");
+    println!(
+        "  \x1b[32m✔\x1b[0m  \x1b[1mAdded\x1b[0m  contracts/contracts/{name}.clar"
+    );
+    println!(
+        "  \x1b[32m✔\x1b[0m  \x1b[1mAdded\x1b[0m  contracts/tests/{name}.test.ts  \x1b[2m(bindings regenerated)\x1b[0m"
+    );
     Ok(())
 }
 
 async fn ensure_prerequisites() -> Result<()> {
     if which("node").is_err() {
         return Err(anyhow!(
-            "Node.js >=20 is required. Install from nodejs.org"
+            "\x1b[31m✗\x1b[0m Node.js >=20 is required. Install from https://nodejs.org"
         ));
     }
     if which("clarinet").is_err() {
         return Err(anyhow!(
-            "clarinet is required. Install: brew install clarinet  OR  cargo install clarinet"
+            "\x1b[31m✗\x1b[0m clarinet is required.\n  Install: brew install clarinet  OR  cargo install clarinet"
         ));
     }
     Ok(())

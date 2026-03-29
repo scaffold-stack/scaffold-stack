@@ -5,6 +5,8 @@ use std::path::Path;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use std::process::Stdio;
+use tokio::io::AsyncBufReadExt;
 
 pub struct NetworkConfig {
     pub stacks_node: String,
@@ -176,47 +178,44 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str) -> Result<String>
         ));
     }
 
-    // Sanity-check the generated plan fee before applying.
-    // If total cost exceeds 50 STX, something is wrong with fee estimation.
     check_plan_fee(network)?;
 
     println!("[deploy] Applying deployment plan to {}...", network);
     let mut child = Command::new("clarinet")
         .args(["deployments", "apply", "--no-dashboard", &format!("--{network}")])
         .current_dir("contracts")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|_| anyhow!(
-            "clarinet is required. Install: brew install clarinet OR cargo install clarinet"
-        ))?;
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit()) 
+        .spawn()?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        // "n" keeps our generated plan if costs differ; "y" confirms deployment
-        stdin.write_all(b"n\ny\n").await?;
+    let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("Failed to open stdin"))?;
+    let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to open stdout"))?;
+    
+    let mut reader = tokio::io::BufReader::new(stdout).lines();
+    let mut captured_stdout = String::new();
+
+    
+    while let Ok(Some(line)) = reader.next_line().await {
+        println!("{}", line);
+        captured_stdout.push_str(&line);
+        captured_stdout.push('\n');
+
+        // Handle interactive fee prompts
+        if line.contains("Overwrite?") || line.contains("Confirm?") || line.contains("[Y/n]") {
+            let _ = stdin.write_all(b"y\n").await;
+            let _ = stdin.flush().await;
+        }
+
+        //exit early on broadcasted string
+        if line.contains("Broadcasted") {
+            println!("[deploy] Transaction broadcasted successfully. Finalizing...");
+            let _ = child.kill().await;
+            break; 
+        }
     }
 
-    let output = child.wait_with_output().await?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-
-    if !stdout.is_empty() {
-        print!("{stdout}");
-    }
-
-    if !output.status.success() && !stdout.contains("ContractAlreadyExists") {
-        let hint = if network == "testnet" || network == "mainnet" {
-            format!(
-                "• Ensure settings/{}.toml has a funded mnemonic.\n\
-                 • Get testnet STX: https://explorer.hiro.so/sandbox/faucet?chain=testnet",
-                capitalize(network)
-            )
-        } else {
-            "• Ensure `stacksdapp dev` is running and devnet is ready.".to_string()
-        };
-        return Err(anyhow!("Deployment failed.\n{hint}"));
-    }
-
-    Ok(stdout)
+    Ok(captured_stdout)
 }
 
 pub async fn resolve_deployment_order(contracts_dir: &std::path::Path) -> anyhow::Result<Vec<String>> {
@@ -499,35 +498,47 @@ async fn wait_for_node(url: &str) -> Result<()> {
 }
 
 async fn write_deployments_json_from_output(network: &str, output: &str) -> Result<()> {
+    let mut txid_map: HashMap<String, String> = HashMap::new();
+    let mut actual_deployer = None;
+    for line in output.lines() {
+        if line.contains("Broadcasted") {
+            // Extract Deployer Address: Look for StandardPrincipalData(ADDRESS)
+            if let Some(start) = line.find("StandardPrincipalData(") {
+                let rest = &line[start + "StandardPrincipalData(".len()..];
+                if let Some(end) = rest.find(')') {
+                    actual_deployer = Some(rest[..end].to_string());
+                }
+            }
+
+            // Extract Contract Name: Look for ContractName("NAME")
+            let cn_marker = "ContractName(\"";
+            if let Some(pos) = line.find(cn_marker) {
+                let rest = &line[pos + cn_marker.len()..];
+                if let Some(end) = rest.find('"') {
+                    let contract_name = rest[..end].to_string();
+                    
+                    // Extract TXID: It's the 64-char hex string inside quotes at the end
+                    // Format: ...), "TXID") Publish ...
+                    let parts: Vec<&str> = line.split('"').collect();
+                    for part in parts {
+                        if part.len() == 64 && part.chars().all(|c| c.is_ascii_hexdigit()) {
+                            txid_map.insert(contract_name.clone(), part.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
     let settings_file = format!("contracts/settings/{}.toml", capitalize(network));
     let settings_raw = fs::read_to_string(&settings_file).await.unwrap_or_default();
 
-    let deployer_address = parse_deployer_address_from_output(output)
+    let deployer_address = actual_deployer
         .or_else(|| parse_deployer_address_from_settings(&settings_raw))
         .unwrap_or_else(|| "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM".to_string());
 
     let clarinet_raw = fs::read_to_string("contracts/Clarinet.toml").await?;
     let clarinet: ClarinetToml = toml::from_str(&clarinet_raw)
         .map_err(|e| anyhow!("Failed to parse Clarinet.toml: {e}"))?;
-
-    let mut txid_map: HashMap<String, String> = HashMap::new();
-    for line in output.lines() {
-        if !line.contains("Broadcasted") { continue; }
-        let cn_marker = r#"ContractName(""#;
-        if let Some(pos) = line.find(cn_marker) {
-            let rest = &line[pos + cn_marker.len()..];
-            if let Some(end) = rest.find('"') {
-                let contract_name = rest[..end].to_string();
-                let parts: Vec<&str> = line.split('"').collect();
-                if parts.len() >= 3 {
-                    let txid = parts[parts.len() - 2].to_string();
-                    if txid.len() == 64 {
-                        txid_map.insert(contract_name, txid);
-                    }
-                }
-            }
-        }
-    }
 
     let mut contracts_map = HashMap::new();
     let timestamp = chrono::Utc::now().to_rfc3339();
@@ -557,22 +568,6 @@ async fn write_deployments_json_from_output(network: &str, output: &str) -> Resu
     Ok(())
 }
 
-fn parse_deployer_address_from_output(output: &str) -> Option<String> {
-    for line in output.lines() {
-        if line.contains("Publish ") {
-            if let Some(start) = line.rfind("Publish ") {
-                let after = line[start + 8..].trim();
-                if let Some(dot) = after.find('.') {
-                    let addr = &after[..dot];
-                    if addr.starts_with("ST") || addr.starts_with("SP") || addr.starts_with("SM") {
-                        return Some(addr.to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
-}
 
 fn parse_deployer_address_from_settings(toml_raw: &str) -> Option<String> {
     for line in toml_raw.lines() {
