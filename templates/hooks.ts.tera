@@ -20,13 +20,20 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
     setError(null);
     setTxid(null);
     try {
-      const result = await (contracts as any).{{ contract.contract_name | camel }}_{{ fn.name | camel }}(functionArgs);
-      {% if fn.access == "public" %}
-      if (result?.txid) setTxid(result.txid);
-      {% endif %}
+      const fn = (contracts as any).{{ contract.contract_name | camel }}_{{ fn.name | camel }};
+      const isReadOnly = "{{ fn.access }}" === "read_only";
+      const result = isReadOnly 
+        ? await fn(functionArgs) 
+        : await fn(functionArgs, []); // Default empty post-conditions for public
+
+      if (!isReadOnly && result?.txid) {
+        setTxid(result.txid);
+      }
+      
       setData(result ?? null);
       return result;
     } catch (e) {
+      console.error(e);
       setError(e as Error);
     } finally {
       setLoading(false);

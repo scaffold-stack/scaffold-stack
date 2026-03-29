@@ -24,7 +24,8 @@ function getContractId(name: string): { address: string; contractName: string } 
 {% for fn in contract.functions %}
 {% if fn.access == "public" %}
 export async function {{ contract.contract_name | camel }}_{{ fn.name | camel }}(
-  functionArgs: ClarityValue[] = []
+  functionArgs: ClarityValue[] = [],
+  postConditions: any[] = [],
 ): Promise<any> {
   const { address, contractName } = getContractId('{{ contract.contract_name }}');
   if (!address) return undefined;
@@ -33,6 +34,8 @@ export async function {{ contract.contract_name | camel }}_{{ fn.name | camel }}
     contract: `${address}.${contractName}`,
     functionName: '{{ fn.name }}',
     functionArgs,
+    postConditions,
+    postConditionMode : 'allow',
     network: scaffoldConfig.targetNetwork,
   });
 }
