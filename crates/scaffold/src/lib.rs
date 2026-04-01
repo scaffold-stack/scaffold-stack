@@ -454,239 +454,107 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
         return Err(anyhow!("Contract '{}' already exists", name));
     }
 
-    // ── Contract source ───────────────────────────────────────────────────────
-    let (contract_source, test_source) = match template {
-
+    // ── Template Selection ───────────────────────────────────────────────────
+    let (contract_source, test_source, contract_id) = match template {
         "sip010" => (
-            // SIP-010 Fungible Token
-            // Trait: SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard
-            format!(r#";; {name}.clar SIP-010 Fungible Token
-(impl-trait 'SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard.sip-010-trait)
+            format!(r#";; {name}.clar Fungible Token
 
-;; Define the FT with no maximum supply
 (define-fungible-token {name})
 
-;; Error constants
+;; Constants
+(define-constant CONTRACT_OWNER tx-sender)
 (define-constant ERR_OWNER_ONLY (err u100))
 (define-constant ERR_NOT_TOKEN_OWNER (err u101))
 
-;; Contract constants
-(define-constant CONTRACT_OWNER tx-sender)
-(define-constant TOKEN_NAME "{name}")
-(define-constant TOKEN_SYMBOL "{name}")
-(define-constant TOKEN_DECIMALS u6)
+(define-data-var token-uri (string-utf8 256) u"https://hiro.so")
 
-(define-data-var token-uri (string-utf8 256) u"https://example.com/token-metadata.json")
+;; SIP-010 Functions
+(define-read-only (get-name) (ok "{name}"))
+(define-read-only (get-symbol) (ok "{name}"))
+(define-read-only (get-decimals) (ok u6))
+(define-read-only (get-balance (who principal)) (ok (ft-get-balance {name} who)))
+(define-read-only (get-total-supply) (ok (ft-get-supply {name})))
+(define-read-only (get-token-uri) (ok (some (var-get token-uri))))
 
-;; SIP-010: Get token balance of a principal
-(define-read-only (get-balance (who principal))
-  (ok (ft-get-balance {name} who)))
-
-;; SIP-010: Get total supply
-(define-read-only (get-total-supply)
-  (ok (ft-get-supply {name})))
-
-;; SIP-010: Get human-readable token name
-(define-read-only (get-name)
-  (ok TOKEN_NAME))
-
-;; SIP-010: Get ticker symbol
-(define-read-only (get-symbol)
-  (ok TOKEN_SYMBOL))
-
-;; SIP-010: Get number of decimals
-(define-read-only (get-decimals)
-  (ok TOKEN_DECIMALS))
-
-;; SIP-010: Get token metadata URI
-(define-read-only (get-token-uri)
-  (ok (some (var-get token-uri))))
-
-;; Update token URI emits SIP-019 metadata update notification
+;; Public Functions
 (define-public (set-token-uri (value (string-utf8 256)))
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
-    (var-set token-uri value)
-    (ok (print {{
-      notification: "token-metadata-update",
-      payload: {{
-        contract-id: current-contract,
-        token-class: "ft"
-      }}
-    }}))))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+        (var-set token-uri value)
+        (ok (print {{
+              notification: "token-metadata-update",
+              payload: {{
+                contract-id: current-contract,
+                token-class: "ft"
+              }}
+            }}))))
 
-;; Mint new tokens only contract owner
 (define-public (mint (amount uint) (recipient principal))
   (begin
     (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
     (ft-mint? {name} amount recipient)))
 
-;; SIP-010: Transfer tokens
-;; Sender must be tx-sender or contract-caller to prevent unauthorised transfers
-(define-public (transfer
-  (amount uint)
-  (sender principal)
-  (recipient principal)
-  (memo (optional (buff 34))))
+(define-public (transfer (amount uint) (sender principal) (recipient principal) (memo (optional (buff 34))))
   (begin
-    ;; #[filter(amount, recipient)]
     (asserts! (or (is-eq tx-sender sender) (is-eq contract-caller sender)) ERR_NOT_TOKEN_OWNER)
     (try! (ft-transfer? {name} amount sender recipient))
     (match memo to-print (print to-print) 0x)
     (ok true)))
 "#),
-            // SIP-010 test
             format!(r#"import {{ describe, expect, it }} from 'vitest';
 import {{ initSimnet }} from '@stacks/clarinet-sdk';
-import {{ Cl, ClarityType }} from '@stacks/transactions';
+import {{ Cl }} from '@stacks/transactions';
 
 const simnet = await initSimnet();
 const accounts = simnet.getAccounts();
 const deployer = accounts.get('deployer')!;
-const address1 = accounts.get('wallet_1')!;
-const address2 = accounts.get('wallet_2')!;
+const wallet1 = accounts.get('wallet_1')!;
 
-describe('{name} (SIP-010)', () => {{
-  it('mints tokens to a recipient', () => {{
-    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [
-      Cl.uint(1_000_000),
-      Cl.principal(address1),
-    ], deployer);
+describe('{name} FT', () => {{
+  it('mints tokens', () => {{
+    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [Cl.uint(100), Cl.principal(wallet1)], deployer);
     expect(result).toBeOk(Cl.bool(true));
-  }});
-
-  it('only owner can mint', () => {{
-    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [
-      Cl.uint(1_000_000),
-      Cl.principal(address1),
-    ], address1);
-    expect(result).toBeErr(Cl.uint(100));
-  }});
-
-  it('get-balance returns correct amount after mint', () => {{
-    simnet.callPublicFn('{name}', 'mint', [Cl.uint(1_000_000), Cl.principal(address1)], deployer);
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-balance', [
-      Cl.principal(address1),
-    ], address1);
-    expect(result).toBeOk(Cl.uint(1_000_000));
-  }});
-
-  it('get-total-supply returns total minted', () => {{
-    simnet.callPublicFn('{name}', 'mint', [Cl.uint(500_000), Cl.principal(address1)], deployer);
-    simnet.callPublicFn('{name}', 'mint', [Cl.uint(500_000), Cl.principal(address2)], deployer);
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-total-supply', [], address1);
-    expect(result).toBeOk(Cl.uint(1_000_000));
-  }});
-
-  it('transfers tokens between principals', () => {{
-    simnet.callPublicFn('{name}', 'mint', [Cl.uint(1_000_000), Cl.principal(address1)], deployer);
-    const {{ result }} = simnet.callPublicFn('{name}', 'transfer', [
-      Cl.uint(250_000),
-      Cl.principal(address1),
-      Cl.principal(address2),
-      Cl.none(),
-    ], address1);
-    expect(result).toBeOk(Cl.bool(true));
-  }});
-
-  it('prevents transfer from non-owner', () => {{
-    simnet.callPublicFn('{name}', 'mint', [Cl.uint(1_000_000), Cl.principal(address1)], deployer);
-    const {{ result }} = simnet.callPublicFn('{name}', 'transfer', [
-      Cl.uint(250_000),
-      Cl.principal(address1),
-      Cl.principal(address2),
-      Cl.none(),
-    ], address2);
-    expect(result).toBeErr(Cl.uint(101));
-  }});
-
-  it('get-name returns token name', () => {{
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-name', [], address1);
-    expect(result).toBeOk(Cl.stringAscii('{name}'));
-  }});
-
-  it('get-symbol returns token symbol', () => {{
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-symbol', [], address1);
-    expect(result).toBeOk(Cl.stringAscii('{name}'));
-  }});
-
-  it('get-decimals returns 6', () => {{
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-decimals', [], address1);
-    expect(result).toBeOk(Cl.uint(6));
-  }});
-
-  it('get-token-uri returns some uri', () => {{
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-token-uri', [], address1);
-    expect(result).toHaveClarityType(ClarityType.ResponseOk);
-  }});
-
-  it('only owner can set-token-uri', () => {{
-    const {{ result }} = simnet.callPublicFn('{name}', 'set-token-uri', [
-      Cl.stringUtf8('https://new-uri.com/metadata.json'),
-    ], address1);
-    expect(result).toBeErr(Cl.uint(100));
   }});
 }});
 "#),
+            Some("SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard")
         ),
 
         "sip009" => (
-            // SIP-009 NFT
-            // Trait: SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait.nft-trait
-            format!(r#";; {name}.clar SIP-009 Non-Fungible Token
-;; Implements the SIP-009 community-standard Non-Fungible Token trait.
-(impl-trait 'SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait.nft-trait)
+            format!(r#";; {name}.clar Non-Fungible Token
 
-;; Define the NFT
 (define-non-fungible-token {name} uint)
 
-;; Keep track of the last minted token ID
 (define-data-var last-token-id uint u0)
+(define-data-var base-uri (string-ascii 256) "https://api.example.com/metadata/{{id}}")
 
-;; Error constants
+(define-constant CONTRACT_OWNER tx-sender)
+(define-constant COLLECTION_LIMIT u1000)
 (define-constant ERR_OWNER_ONLY (err u100))
 (define-constant ERR_NOT_TOKEN_OWNER (err u101))
 (define-constant ERR_SOLD_OUT (err u300))
 
-;; Contract constants
-(define-constant CONTRACT_OWNER tx-sender)
-(define-constant COLLECTION_LIMIT u1000)
+(define-read-only (get-last-token-id) (ok (var-get last-token-id)))
+(define-read-only (get-token-uri (token-id uint)) (ok (some (var-get base-uri))))
+(define-read-only (get-owner (token-id uint)) (ok (nft-get-owner? {name} token-id)))
 
-(define-data-var base-uri (string-ascii 256) "https://example.com/nft/{{id}}")
-
-;; SIP-009: Get the last minted token ID
-(define-read-only (get-last-token-id)
-  (ok (var-get last-token-id)))
-
-;; SIP-009: Get token metadata URI
-(define-read-only (get-token-uri (token-id uint))
-  (ok (some (var-get base-uri))))
-
-;; SIP-009: Get the owner of a given token
-(define-read-only (get-owner (token-id uint))
-  (ok (nft-get-owner? {name} token-id)))
-
-;; Update base URI — emits SIP-019 metadata update notification
 (define-public (set-base-uri (value (string-ascii 256)))
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
-    (var-set base-uri value)
-    (ok (print {{
-      notification: "token-metadata-update",
-      payload: {{
-        token-class: "nft",
-        contract-id: current-contract,
-      }}
-    }}))))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+        (var-set base-uri value)
+        (ok (print {{
+              notification: "token-metadata-update",
+              payload: {{
+                token-class: "nft",
+                contract-id: current-contract,
+              }}
+            }}))))
 
-;; SIP-009: Transfer NFT to another owner
 (define-public (transfer (token-id uint) (sender principal) (recipient principal))
   (begin
-    ;; #[filter(sender)]
-    (asserts! (is-eq tx-sender sender) ERR_NOT_TOKEN_OWNER)
+    (asserts! (or (is-eq tx-sender sender) (is-eq contract-caller sender)) ERR_NOT_TOKEN_OWNER)
     (nft-transfer? {name} token-id sender recipient)))
 
-;; Mint a new NFT only contract owner, up to COLLECTION_LIMIT
 (define-public (mint (recipient principal))
   (let ((token-id (+ (var-get last-token-id) u1)))
     (asserts! (< (var-get last-token-id) COLLECTION_LIMIT) ERR_SOLD_OUT)
@@ -695,102 +563,24 @@ describe('{name} (SIP-010)', () => {{
     (var-set last-token-id token-id)
     (ok token-id)))
 "#),
-            // SIP-009 test
             format!(r#"import {{ describe, expect, it }} from 'vitest';
 import {{ initSimnet }} from '@stacks/clarinet-sdk';
-import {{ Cl, ClarityType }} from '@stacks/transactions';
+import {{ Cl }} from '@stacks/transactions';
 
 const simnet = await initSimnet();
 const accounts = simnet.getAccounts();
 const deployer = accounts.get('deployer')!;
-const address1 = accounts.get('wallet_1')!;
-const address2 = accounts.get('wallet_2')!;
 
-describe('{name} (SIP-009)', () => {{
-  it('mints an NFT and returns token id 1', () => {{
-    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [
-      Cl.principal(address1),
-    ], deployer);
+describe('{name} NFT', () => {{
+  it('mints a token', () => {{
+    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [Cl.principal(deployer)], deployer);
     expect(result).toBeOk(Cl.uint(1));
-  }});
-
-  it('only owner can mint', () => {{
-    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [
-      Cl.principal(address1),
-    ], address1);
-    expect(result).toBeErr(Cl.uint(100));
-  }});
-
-  it('get-last-token-id increments after mint', () => {{
-    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
-    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-last-token-id', [], address1);
-    expect(result).toBeOk(Cl.uint(2));
-  }});
-
-  it('get-owner returns correct owner after mint', () => {{
-    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-owner', [
-      Cl.uint(1),
-    ], address1);
-    expect(result).toBeOk(Cl.some(Cl.principal(address1)));
-  }});
-
-  it('get-owner returns none for unminted token', () => {{
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-owner', [
-      Cl.uint(999),
-    ], address1);
-    expect(result).toBeOk(Cl.none());
-  }});
-
-  it('transfers NFT to new owner', () => {{
-    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
-    const {{ result }} = simnet.callPublicFn('{name}', 'transfer', [
-      Cl.uint(1),
-      Cl.principal(address1),
-      Cl.principal(address2),
-    ], address1);
-    expect(result).toBeOk(Cl.bool(true));
-  }});
-
-  it('prevents transfer from non-owner', () => {{
-    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
-    const {{ result }} = simnet.callPublicFn('{name}', 'transfer', [
-      Cl.uint(1),
-      Cl.principal(address1),
-      Cl.principal(address2),
-    ], address2);
-    expect(result).toBeErr(Cl.uint(101));
-  }});
-
-  it('get-owner updates after transfer', () => {{
-    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
-    simnet.callPublicFn('{name}', 'transfer', [
-      Cl.uint(1),
-      Cl.principal(address1),
-      Cl.principal(address2),
-    ], address1);
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-owner', [Cl.uint(1)], address1);
-    expect(result).toBeOk(Cl.some(Cl.principal(address2)));
-  }});
-
-  it('get-token-uri returns some uri', () => {{
-    simnet.callPublicFn('{name}', 'mint', [Cl.principal(address1)], deployer);
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-token-uri', [Cl.uint(1)], address1);
-    expect(result).toHaveClarityType(ClarityType.ResponseOk);
-  }});
-
-  it('only owner can set-base-uri', () => {{
-    const {{ result }} = simnet.callPublicFn('{name}', 'set-base-uri', [
-      Cl.stringAscii('https://new-api.com/nft/{{id}}'),
-    ], address1);
-    expect(result).toBeErr(Cl.uint(100));
   }});
 }});
 "#),
+            Some("SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait")
         ),
 
-        // blank template
         _ => (
             format!(";; {name}.clar\n\n(define-read-only (get-info)\n  (ok \"{name} contract\"))\n"),
             format!(r#"import {{ describe, expect, it }} from 'vitest';
@@ -808,33 +598,43 @@ describe('{name}', () => {{
   }});
 }});
 "#),
+            None
         ),
     };
 
+    // 1. Write clarity contract and test files
     tokio::fs::write(&path, contract_source).await?;
-
-    // Write test file
     let test_path = Path::new("contracts/tests").join(format!("{name}.test.ts"));
     if !test_path.exists() {
         tokio::fs::write(&test_path, test_source).await?;
     }
 
-    // Update Clarinet.toml
+    // 2. Update Clarinet.toml
     let clarinet_toml_path = Path::new("contracts/Clarinet.toml");
     let mut existing = tokio::fs::read_to_string(clarinet_toml_path).await?;
+
+    
+    existing = existing.replace("requirements = []", "");
+
+    // Add remote requirement if specified
+    if let Some(req_id) = contract_id {
+        let req_block = format!("\n[[project.requirements]]\ncontract_id = \"{}\"\n", req_id);
+        if !existing.contains(&format!("contract_id = \"{}\"", req_id)) {
+            existing.push_str(&req_block);
+        }
+    }
+
+    // Add the new contract definition
     existing.push_str(&format!(
         "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = 4\nepoch = \"latest\"\n"
     ));
+    
     tokio::fs::write(clarinet_toml_path, existing).await?;
 
+    // Regenerate Bindings
     codegen::generate_all().await?;
 
-    println!(
-        "  \x1b[32m✔\x1b[0m  \x1b[1mAdded\x1b[0m  contracts/contracts/{name}.clar"
-    );
-    println!(
-        "  \x1b[32m✔\x1b[0m  \x1b[1mAdded\x1b[0m  contracts/tests/{name}.test.ts  \x1b[2m(bindings regenerated)\x1b[0m"
-    );
+    println!("  \x1b[32m✔\x1b[0m  \x1b[1mAdded\x1b[0m  contracts/contracts/{name}.clar");
     Ok(())
 }
 
