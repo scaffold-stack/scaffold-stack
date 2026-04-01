@@ -192,6 +192,13 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str) -> Result<String>
     let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("Failed to open stdin"))?;
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to open stdout"))?;
     
+
+    let contracts_dir = std::path::Path::new("contracts");
+    let expected_count = resolve_deployment_order(contracts_dir).await?.len();
+    
+    let mut confirmed_count = 0;
+
+
     let mut reader = tokio::io::BufReader::new(stdout).lines();
     let mut captured_stdout = String::new();
 
@@ -206,15 +213,22 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str) -> Result<String>
             let _ = stdin.write_all(b"y\n").await;
             let _ = stdin.flush().await;
         }
+        if line.contains("Confirmed Publish") {
+            confirmed_count += 1;
+            println!("[deploy] Confirmation progress: {}/{}", confirmed_count, expected_count);
+        }
 
-        //exit early on broadcasted string
-        if line.contains("Broadcasted") {
-            println!("[deploy] Transaction broadcasted successfully. Finalizing...");
-            let _ = child.kill().await;
+        if confirmed_count >= expected_count {
+            println!("[deploy] All contracts confirmed. Finalizing JSON...");
+            let _ = child.kill().await; // Kill the hang
             break; 
         }
-    }
 
+    }
+    // let status = child.wait().await?;
+    // if !status.success() {
+    //     return Err(anyhow!("Clarinet deployment failed during apply stage."));
+    // }
     Ok(captured_stdout)
 }
 
@@ -291,106 +305,111 @@ fn check_plan_fee(network: &str) -> Result<()> {
     Ok(())
 }
 
-/// Check every contract in Clarinet.toml against the live network.
-/// Rebuilds the correct versioned state from scratch on every call —
-/// never relies on previous partial mutations of Clarinet.toml.
-///
-/// Algorithm:
-///   1. Read Clarinet.toml
-///   2. For each contract, strip any existing -vN suffix to get the base name
-///   3. Find the next free version on-chain for that base name
-///   4. If the current name in Clarinet.toml != the correct versioned name, rename
+
 async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
     let config = network_config(network);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
 
-    let settings_path = format!("contracts/settings/{}.toml", capitalize(network));
-    let settings_raw = fs::read_to_string(&settings_path).await.unwrap_or_default();
-    let deployer = parse_deployer_address_from_settings(&settings_raw)
-        .unwrap_or_else(|| "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM".to_string());
+    let _ = Command::new("clarinet")
+        .args(["deployments", "generate", &format!("--{}", network), "--low-cost"])
+        .current_dir("contracts")
+        .status()
+        .await;
 
-    let clarinet_path = "contracts/Clarinet.toml";
-    let clarinet_raw = fs::read_to_string(clarinet_path).await?;
-    let clarinet: ClarinetToml = toml::from_str(&clarinet_raw)
-        .map_err(|e| anyhow!("Failed to parse Clarinet.toml: {e}"))?;
+    let deployer = get_deployer_from_plan(network).await?;
+    println!("[deploy] Using derived deployer address: {}", deployer);
 
-    let contracts = clarinet.contracts.unwrap_or_default();
-    let mut updated_toml = clarinet_raw.clone();
-    let mut any_renamed = false;
+    let base_dir = Path::new("contracts");
+    let clarinet_path = base_dir.join("Clarinet.toml");
+    let clarinet_raw = fs::read_to_string(&clarinet_path).await?;
+    let mut clarinet_content = clarinet_raw.clone();
+    
+    let clarinet_struct: ClarinetToml = toml::from_str(&clarinet_raw)?;
+    let contracts = clarinet_struct.contracts.unwrap_or_default();
+    
+    let mut any_changes = false;
 
     for (current_name, entry) in &contracts {
-        // Always work from the base name — strip any existing -vN suffix.
-        // This handles inconsistent states left by previous partial runs.
         let base_name = strip_version_suffix(current_name);
-
-        // Find the next free version for this base name on-chain.
-        // Start from v1 (unversioned) — if base_name itself is free, use it.
+        
+        // Find the next available name on the network
         let correct_name = find_next_free_name(&client, &config.stacks_node, &deployer, &base_name).await?;
 
-        // If the current name in Clarinet.toml already matches, nothing to do.
         if current_name == &correct_name {
             continue;
         }
 
-        println!("[deploy] ℹ  '{current_name}' → correct name is '{correct_name}'");
+        println!("[deploy] Conflict detected: '{}' already exists on-chain. Renaming to '{}'", current_name, correct_name);
 
-        // Copy .clar file — source is entry.path (the actual file on disk),
-        // destination is the correct versioned name.
-        let old_clar = Path::new("contracts").join(&entry.path);
-        let contracts_dir = old_clar.parent()
-            .unwrap_or(Path::new("contracts/contracts"));
-        let new_clar = contracts_dir.join(format!("{correct_name}.clar"));
+        let old_file_path = base_dir.join(&entry.path); 
+        let new_rel_path = format!("contracts/{}.clar", correct_name);
+        let new_file_path = base_dir.join(&new_rel_path);
 
-        if !old_clar.exists() {
-            eprintln!("[deploy] Warning: source file {} not found, skipping copy", old_clar.display());
-        } else if old_clar != new_clar {
-            fs::copy(&old_clar, &new_clar).await
-                .map_err(|e| anyhow!("Failed to copy {} → {}: {e}", old_clar.display(), new_clar.display()))?;
-            println!("[deploy] Copied {} → {}", old_clar.display(), new_clar.display());
+        if old_file_path.exists() {
+            fs::rename(&old_file_path, &new_file_path).await?;
+            println!("[deploy] Renamed file: {} -> {}", entry.path, new_rel_path);
         }
 
-        // Patch Clarinet.toml — replace section header and path.
-        // Use entry.path directly (not constructed from name) since they
-        // may have diverged due to previous partial mutations.
-        let old_path_value = format!("path = \"{}\"", entry.path);
-        let new_path_value = format!("path = \"contracts/{correct_name}.clar\"");
+        let old_header = format!("[contracts.{}]", current_name);
+        let new_header = format!("[contracts.{}]", correct_name);
+        clarinet_content = clarinet_content.replace(&old_header, &new_header);
 
-        updated_toml = updated_toml
-            .replace(
-                &format!("[contracts.{current_name}]"),
-                &format!("[contracts.{correct_name}]"),
-            )
-            .replace(&old_path_value, &new_path_value);
+        let old_path_line = format!("path = \"{}\"", entry.path);
+        let new_path_line = format!("path = \"{}\"", new_rel_path);
+        clarinet_content = clarinet_content.replace(&old_path_line, &new_path_line);
 
-        // Also handle bare filename paths (without "contracts/" prefix)
-        let bare = entry.path.trim_start_matches("contracts/");
-        let bare_old = format!("path = \"{bare}\"");
-        if updated_toml.contains(&bare_old) {
-            updated_toml = updated_toml.replace(&bare_old, &new_path_value);
+        let dot_old_name = format!(".{}", current_name);
+        let dot_new_name = format!(".{}", correct_name);
+
+        for (_, other_entry) in &contracts {
+            let p = base_dir.join(&other_entry.path);
+            
+            let target_file = if p == old_file_path { &new_file_path } else { &p };
+
+            if target_file.exists() {
+                let source = fs::read_to_string(target_file).await?;
+                if source.contains(&dot_old_name) {
+                    let updated_source = source.replace(&dot_old_name, &dot_new_name);
+                    fs::write(target_file, updated_source).await?;
+                    println!("[deploy] Updated internal reference in {}", target_file.display());
+                }
+            }
         }
 
-        any_renamed = true;
+        any_changes = true;
     }
 
-    if any_renamed {
-        fs::write(clarinet_path, &updated_toml).await?;
-        println!("[deploy] Clarinet.toml updated. Regenerating bindings...");
-        let regen = Command::new("stacksdapp").arg("generate").status().await;
-        match regen {
-            Ok(s) if s.success() => println!("[deploy] ✔ Bindings updated."),
-            _ => eprintln!(
-                "[deploy] Warning: could not regenerate bindings.                  Run `stacksdapp generate` manually."
-            ),
-        }
-    } else {
-        println!("[deploy] No conflicts found.");
+    if any_changes {
+        fs::write(&clarinet_path, &clarinet_content).await?;
+        
+        // Remove the stale plan so the final deployment uses the new names
+        let plan_path = base_dir.join(format!("deployments/default.{}-plan.yaml", network));
+        let _ = fs::remove_file(plan_path).await;
+
+        println!("[deploy] Clarinet.toml updated with new versions.");       
+        // Regenerate bindings so the frontend/tests use the new names
+        let _ = Command::new("stacksdapp").arg("generate").status().await;
     }
 
     Ok(())
 }
 
+/// Helper to parse the address Clarinet derived in the plan file
+async fn get_deployer_from_plan(network: &str) -> Result<String> {
+    let plan_path = format!("contracts/deployments/default.{}-plan.yaml", network);
+    let content = fs::read_to_string(&plan_path).await
+        .map_err(|_| anyhow!("Clarinet plan not found at {}. Is the path correct?", plan_path))?;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("expected-sender:") {
+            return Ok(trimmed.split(':').nth(1).unwrap_or("").trim().to_string());
+        }
+    }
+    Err(anyhow!("Could not find 'expected-sender' in the deployment plan. Check your mnemonic in settings."))
+}
 /// Find the next free contract name starting from base_name (unversioned),
 /// then base_name-v2, base_name-v3, etc.
 async fn find_next_free_name(
@@ -400,7 +419,7 @@ async fn find_next_free_name(
     base_name: &str,
 ) -> Result<String> {
     // Check unversioned first (e.g. "counter")
-    let url = format!("{node}/v2/contracts/interface/{deployer}/{base_name}");
+    let url = format!("{node}/v2/contracts/source/{deployer}/{base_name}");
     let base_free = !client.get(&url).send().await
         .map(|r| r.status().is_success())
         .unwrap_or(false);
