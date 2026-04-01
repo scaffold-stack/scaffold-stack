@@ -312,16 +312,20 @@ async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
 
-    let settings_path = format!("contracts/settings/{}.toml", capitalize(network));
-    let settings_raw = fs::read_to_string(&settings_path).await.unwrap_or_default();
-    let deployer = parse_deployer_address_from_settings(&settings_raw)
-        .unwrap_or_else(|| "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM".to_string());
+    let _ = Command::new("clarinet")
+        .args(["deployments", "generate", &format!("--{}", network), "--low-cost"])
+        .current_dir("contracts")
+        .status()
+        .await;
 
-    let clarinet_path = "contracts/Clarinet.toml";
-    let clarinet_raw = fs::read_to_string(clarinet_path).await?;
+    let deployer = get_deployer_from_plan(network).await?;
+    println!("[deploy] Using derived deployer address: {}", deployer);
+
+    let base_dir = Path::new("contracts");
+    let clarinet_path = base_dir.join("Clarinet.toml");
+    let clarinet_raw = fs::read_to_string(&clarinet_path).await?;
     let mut clarinet_content = clarinet_raw.clone();
     
-    // Parse to get the list of contracts to iterate
     let clarinet_struct: ClarinetToml = toml::from_str(&clarinet_raw)?;
     let contracts = clarinet_struct.contracts.unwrap_or_default();
     
@@ -339,41 +343,37 @@ async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
 
         println!("[deploy] Conflict detected: '{}' already exists on-chain. Renaming to '{}'", current_name, correct_name);
 
-       
-        let old_path = Path::new("contracts").join(&entry.path);
+        let old_file_path = base_dir.join(&entry.path); 
         let new_rel_path = format!("contracts/{}.clar", correct_name);
-        let new_path = Path::new("contracts").join(&new_rel_path);
+        let new_file_path = base_dir.join(&new_rel_path);
 
-        if old_path.exists() {
-            fs::rename(&old_path, &new_path).await?;
+        if old_file_path.exists() {
+            fs::rename(&old_file_path, &new_file_path).await?;
             println!("[deploy] Renamed file: {} -> {}", entry.path, new_rel_path);
         }
 
-        
         let old_header = format!("[contracts.{}]", current_name);
         let new_header = format!("[contracts.{}]", correct_name);
         clarinet_content = clarinet_content.replace(&old_header, &new_header);
 
-    
         let old_path_line = format!("path = \"{}\"", entry.path);
         let new_path_line = format!("path = \"{}\"", new_rel_path);
         clarinet_content = clarinet_content.replace(&old_path_line, &new_path_line);
 
-    
         let dot_old_name = format!(".{}", current_name);
         let dot_new_name = format!(".{}", correct_name);
 
-        for (other_name, _other_entry) in &contracts {
-            // Determine path to the file (it might have been renamed already in this loop)
-            let check_name = if other_name == current_name { &correct_name } else { other_name };
-            let p = Path::new("contracts/contracts").join(format!("{}.clar", check_name));
+        for (_, other_entry) in &contracts {
+            let p = base_dir.join(&other_entry.path);
             
-            if p.exists() {
-                let source = fs::read_to_string(&p).await?;
+            let target_file = if p == old_file_path { &new_file_path } else { &p };
+
+            if target_file.exists() {
+                let source = fs::read_to_string(target_file).await?;
                 if source.contains(&dot_old_name) {
                     let updated_source = source.replace(&dot_old_name, &dot_new_name);
-                    fs::write(&p, updated_source).await?;
-                    println!("[deploy] Updated internal reference in {}", p.display());
+                    fs::write(target_file, updated_source).await?;
+                    println!("[deploy] Updated internal reference in {}", target_file.display());
                 }
             }
         }
@@ -382,9 +382,13 @@ async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
     }
 
     if any_changes {
-        fs::write(clarinet_path, &clarinet_content).await?;
-        println!("[deploy] Clarinet.toml updated with new versions.");
+        fs::write(&clarinet_path, &clarinet_content).await?;
         
+        // Remove the stale plan so the final deployment uses the new names
+        let plan_path = base_dir.join(format!("deployments/default.{}-plan.yaml", network));
+        let _ = fs::remove_file(plan_path).await;
+
+        println!("[deploy] Clarinet.toml updated with new versions.");       
         // Regenerate bindings so the frontend/tests use the new names
         let _ = Command::new("stacksdapp").arg("generate").status().await;
     }
@@ -392,6 +396,20 @@ async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
     Ok(())
 }
 
+/// Helper to parse the address Clarinet derived in the plan file
+async fn get_deployer_from_plan(network: &str) -> Result<String> {
+    let plan_path = format!("contracts/deployments/default.{}-plan.yaml", network);
+    let content = fs::read_to_string(&plan_path).await
+        .map_err(|_| anyhow!("Clarinet plan not found at {}. Is the path correct?", plan_path))?;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("expected-sender:") {
+            return Ok(trimmed.split(':').nth(1).unwrap_or("").trim().to_string());
+        }
+    }
+    Err(anyhow!("Could not find 'expected-sender' in the deployment plan. Check your mnemonic in settings."))
+}
 /// Find the next free contract name starting from base_name (unversioned),
 /// then base_name-v2, base_name-v3, etc.
 async fn find_next_free_name(
@@ -401,7 +419,7 @@ async fn find_next_free_name(
     base_name: &str,
 ) -> Result<String> {
     // Check unversioned first (e.g. "counter")
-    let url = format!("{node}/v2/contracts/interface/{deployer}/{base_name}");
+    let url = format!("{node}/v2/contracts/source/{deployer}/{base_name}");
     let base_free = !client.get(&url).send().await
         .map(|r| r.status().is_success())
         .unwrap_or(false);
