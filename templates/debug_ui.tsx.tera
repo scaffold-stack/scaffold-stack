@@ -107,7 +107,7 @@ function ContractPanel({ name, children }: { name: string; children: React.React
 {% if fn.access == "public" or fn.access == "read_only" %}
 function FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}() {
   const { data, loading, error, txid, call } = use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}();
-  const isReadOnly = "{{ fn.access }}" === "read_only";
+  const isReadOnly = {% if fn.access == "read_only" %}true{% else %}false{% endif %};
 
   // One state entry per argument, keyed by arg name
   {% if fn.args %}
@@ -120,14 +120,14 @@ function FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | up
 
 const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const clarityArgs = [
-      {% if fn.args %}
-      {% for arg in fn.args %}
-      toClarityValue(args['{{ arg.name }}'] ?? '', '{{ arg.type_str }}'),
-      {% endfor %}
-      {% endif %}
-    ];
-    await call(clarityArgs); 
+    const clarityArgs: import('@stacks/transactions').ClarityValue[] = [
+  {% if fn.args %}
+  {% for arg in fn.args %}
+  toClarityValue(args['{{ arg.name }}'] ?? '', '{{ arg.type_str }}'),
+  {% endfor %}
+  {% endif %}
+];
+  await call(clarityArgs);
   };
 
   return (

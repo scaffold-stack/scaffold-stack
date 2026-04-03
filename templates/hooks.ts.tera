@@ -15,13 +15,17 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
   const [error, setError] = useState<Error | null>(null);
   const [txid, setTxid] = useState<string | null>(null);
 
+  
+  const isReadOnly = {% if fn.access == "read_only" %}true{% else %}false{% endif %};
+
   const call = useCallback(async (functionArgs: ClarityValue[] = []) => {
     setLoading(true);
     setError(null);
     setTxid(null);
     try {
+      // Use the generated contract function from the index
       const fn = (contracts as any).{{ contract.contract_name | camel }}_{{ fn.name | camel }};
-      const isReadOnly = "{{ fn.access }}" === "read_only";
+      
       const result = isReadOnly 
         ? await fn(functionArgs) 
         : await fn(functionArgs, []); // Default empty post-conditions for public
@@ -35,10 +39,12 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
     } catch (e) {
       console.error(e);
       setError(e as Error);
+      throw e; // Re-throw so the caller can handle it if needed
     } finally {
       setLoading(false);
     }
-  }, []);
+    // Dependency array is stable because isReadOnly is a constant literal
+  }, [isReadOnly]); 
 
   return { data, loading, error, txid, call };
 }
