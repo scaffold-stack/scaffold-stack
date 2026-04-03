@@ -14,7 +14,8 @@
     "@stacks/connect": "^8",
     "@stacks/transactions": "^7",
     "@stacks/network": "^6",
-    "pino-pretty": "^11"
+    "pino-pretty": "^11",
+    "jotai": "^2.19.0"
   },
   "devDependencies": {
     "typescript": "^5",
