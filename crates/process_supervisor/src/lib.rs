@@ -85,12 +85,12 @@ async fn dev_devnet() -> Result<()> {
     write_network_env("devnet").await?;
 
     prefetch_requirements().await?;
-    codegen::generate_all().await?;
+    stacksdapp_codegen::generate_all().await?;
 
     tokio::try_join!(
         spawn_clarinet_devnet(),
         spawn_next_dev("devnet"),
-        watcher::watch_contracts(Path::new("contracts/contracts")),
+        stacksdapp_watcher::watch_contracts(Path::new("contracts/contracts")),
     )?;
 
     Ok(())
@@ -110,7 +110,7 @@ async fn dev_remote(network: &str) -> Result<()> {
     write_network_env(network).await?;
 
     // Regenerate bindings so they reflect the current contracts
-    codegen::generate_all().await?;
+    stacksdapp_codegen::generate_all().await?;
 
     // Just run Next.js — no devnet, no watcher needed
     spawn_next_dev(network).await?;

@@ -632,7 +632,7 @@ describe('{name}', () => {{
     tokio::fs::write(clarinet_toml_path, existing).await?;
 
     // Regenerate Bindings
-    codegen::generate_all().await?;
+    stacksdapp_codegen::generate_all().await?;
 
     println!("  \x1b[32m✔\x1b[0m  \x1b[1mAdded\x1b[0m  contracts/contracts/{name}.clar");
     Ok(())

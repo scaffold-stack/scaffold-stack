@@ -1,5 +1,5 @@
 use anyhow::Result;
-use parser::ContractAbi;
+use stacksdapp_parser::ContractAbi;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -87,7 +87,7 @@ pub async fn generate_all() -> Result<()> {
     }
 
     println!("[generate] Parsing contract ABIs...");
-    let abis = parser::parse_project(&contracts_dir).await?;
+    let abis = stacksdapp_parser::parse_project(&contracts_dir).await?;
 
     if abis.is_empty() {
         println!("[generate] No user contracts found in Clarinet.toml — nothing to generate.");

@@ -8,15 +8,14 @@ name = "stacksdapp"
 path = "src/main.rs"
 
 [dependencies]
-scaffold            = { path = "../crates/scaffold" }
-parser              = { path = "../crates/parser" }
-codegen             = { path = "../crates/codegen" }
-watcher             = { path = "../crates/watcher" }
-deployer            = { path = "../crates/deployer" }
-process_supervisor  = { path = "../crates/process_supervisor" }
+stacksdapp-scaffold           = { path = "../crates/scaffold" }
+stacksdapp-parser             = { path = "../crates/parser" }
+stacksdapp-codegen            = { path = "../crates/codegen" }
+stacksdapp-watcher            = { path = "../crates/watcher" }
+stacksdapp-deployer           = { path = "../crates/deployer" }
+stacksdapp-process-supervisor = { path = "../crates/process_supervisor" }
 clap.workspace      = true
 tokio.workspace     = true
 anyhow.workspace    = true
 colored.workspace   = true
 indicatif.workspace = true
-

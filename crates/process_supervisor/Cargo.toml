@@ -1,5 +1,5 @@
 [package]
-name = "process_supervisor"
+name = "stacksdapp-process-supervisor"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,6 +8,5 @@ anyhow.workspace = true
 tokio.workspace  = true
 serde_json.workspace = true
 which.workspace     = true
-codegen          = { path = "../codegen" }
-watcher          = { path = "../watcher" }
-
+stacksdapp-codegen = { path = "../codegen" }
+stacksdapp-watcher = { path = "../watcher" }

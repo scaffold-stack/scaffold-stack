@@ -23,7 +23,7 @@ pub async fn watch_contracts(contracts_dir: &Path) -> Result<()> {
                     .unwrap_or(false)
             }) {
                 println!("[watcher] .clar change detected — regenerating...");
-                if let Err(e) = codegen::generate_all().await {
+                if let Err(e) = stacksdapp_codegen::generate_all().await {
                     eprintln!("[watcher] codegen error: {e}");
                 }
             }
@@ -32,4 +32,3 @@ pub async fn watch_contracts(contracts_dir: &Path) -> Result<()> {
 
     Ok(())
 }
-
