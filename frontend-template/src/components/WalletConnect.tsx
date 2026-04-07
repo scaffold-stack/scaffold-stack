@@ -3,6 +3,12 @@ import { createContext, useContext, useState, useEffect, ReactNode } from 'react
 import { connect, disconnect, isConnected, getLocalStorage } from '@stacks/connect';
 import { addressAtom, isMountedAtom } from '../store/wallet';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import { scaffoldConfig } from '../scaffold.config';
+import {
+  ensureDefaultBurner,
+  getDevnetBurners,
+  setSelectedBurner,
+} from '../lib/devnet';
 
 
 type WalletContextValue = {
@@ -20,7 +26,15 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     setMounted(true);
-    
+
+    if (scaffoldConfig.isDevnet) {
+      const burner = ensureDefaultBurner();
+      if (burner.address !== address) {
+        setAddress(burner.address);
+      }
+      return;
+    }
+
     // If Stacks says we are connected but Jotai is empty (e.g. first load)
     if (isConnected()) {
       const stored = getLocalStorage();
@@ -48,8 +62,25 @@ export function WalletConnect() {
   const isMounted = useAtomValue(isMountedAtom);
   const setAddress = useSetAtom(addressAtom);
   const [connecting, setConnecting] = useState(false);
+  const [burnerId, setBurnerId] = useState<string>('wallet_1');
+
+  useEffect(() => {
+    if (!isMounted || !scaffoldConfig.isDevnet) return;
+    const burner = ensureDefaultBurner();
+    setBurnerId(burner.id);
+    if (burner.address !== address) {
+      setAddress(burner.address);
+    }
+  }, [address, isMounted, setAddress]);
 
   const handleConnect = async () => {
+    if (scaffoldConfig.isDevnet) {
+      const burner = ensureDefaultBurner();
+      setBurnerId(burner.id);
+      setAddress(burner.address);
+      return;
+    }
+
     setConnecting(true);
     try {
       const response = await connect();
@@ -63,13 +94,57 @@ export function WalletConnect() {
   };
 
   const handleDisconnect = () => {
+    if (scaffoldConfig.isDevnet) return;
     disconnect();
     setAddress(null);
     // Optional: window.location.reload() to hard-clear all state
   };
 
+  const handleBurnerChange = (value: string) => {
+    const burner = setSelectedBurner(value);
+    setBurnerId(burner.id);
+    setAddress(burner.address);
+  };
+
   // 1. Prevents SSR Flash: Render nothing or a skeleton until client-side mount
   if (!isMounted) return <div style={{ width: '140px', height: '38px' }} />;
+
+  if (scaffoldConfig.isDevnet) {
+    const burners = getDevnetBurners();
+    const selected = burners.find(burner => burner.id === burnerId) ?? ensureDefaultBurner();
+    const short = `${selected.address.slice(0, 6)}…${selected.address.slice(-4)}`;
+
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <select
+          value={selected.id}
+          onChange={e => handleBurnerChange(e.target.value)}
+          style={{
+            padding: '8px 12px',
+            borderRadius: '8px',
+            background: '#111827',
+            color: '#fff',
+            border: '1px solid #1f2937',
+          }}
+        >
+          {burners.map(burner => (
+            <option key={burner.id} value={burner.id}>
+              {burner.label}
+            </option>
+          ))}
+        </select>
+        <div style={{
+          padding: '6px 12px',
+          borderRadius: '8px',
+          background: '#111827',
+          border: '1px solid #1f2937',
+          color: '#34d399'
+        }}>
+          {short}
+        </div>
+      </div>
+    );
+  }
 
   // 2. Disconnected UI
   if (!address) {
