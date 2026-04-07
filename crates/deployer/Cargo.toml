@@ -12,3 +12,7 @@ reqwest.workspace    = true
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 hex = "0.4"
+serde_yaml = "0.9"
+bip39 = "2"
+bitcoin = "0.32"
+tempfile.workspace = true
