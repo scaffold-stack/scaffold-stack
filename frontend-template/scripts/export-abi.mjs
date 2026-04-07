@@ -4,9 +4,17 @@
 
 import { initSimnet } from "@stacks/clarinet-sdk";
 import { resolve } from "path";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync, unlinkSync } from "fs";
 
 const manifestPath = resolve("Clarinet.toml");
+const simnetPlanPath = resolve("deployments/default.simnet-plan.yaml");
+
+// initSimnet() can reuse a stale on-disk plan that still references renamed
+// contract files. Removing the cached simnet plan forces Clarinet SDK to
+// regenerate it from the current Clarinet.toml contract list.
+if (existsSync(simnetPlanPath)) {
+  unlinkSync(simnetPlanPath);
+}
 
 // Parse Clarinet.toml to get the exact list of user contracts.
 // Only these appear in output — boot contracts (pox, costs, etc.) are excluded.

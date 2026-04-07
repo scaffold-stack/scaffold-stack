@@ -2,8 +2,9 @@
 // Re-run `stacksdapp generate` to update.
 
 import { request } from '@stacks/connect';
-import { fetchCallReadOnlyFunction, cvToValue, Cl, ClarityValue } from '@stacks/transactions';
+import { fetchCallReadOnlyFunction, cvToValue, ClarityValue } from '@stacks/transactions';
 import { scaffoldConfig } from '../scaffold.config';
+import { callDevnetContract, getDevnetSenderAddress } from '../lib/devnet';
 
 let _deployments: Record<string, any> = { contracts: {} };
 try { _deployments = require('./deployments.json'); } catch {}
@@ -29,6 +30,14 @@ export async function {{ contract.contract_name | camel }}_{{ fn.name | camel }}
 ): Promise<any> {
   const { address, contractName } = getContractId('{{ contract.contract_name }}');
   if (!address) return undefined;
+  if (scaffoldConfig.isDevnet) {
+    return callDevnetContract({
+      contract: `${address}.${contractName}`,
+      functionName: '{{ fn.name }}',
+      functionArgs,
+      postConditions,
+    });
+  }
   // v8: request() accepts ClarityValue[] directly — no serialization needed
   return request('stx_callContract', {
     contract: `${address}.${contractName}`,
@@ -52,8 +61,8 @@ export async function {{ contract.contract_name | camel }}_{{ fn.name | camel }}
     contractName,
     functionName: '{{ fn.name }}',
     functionArgs,
-    network: scaffoldConfig.targetNetwork,
-    senderAddress: senderAddress ?? address,
+    network: scaffoldConfig.isDevnet ? 'devnet' : scaffoldConfig.targetNetwork,
+    senderAddress: senderAddress ?? getDevnetSenderAddress() ?? address,
   });
   return cvToValue(result);
 }
