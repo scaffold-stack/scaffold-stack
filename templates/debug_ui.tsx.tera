@@ -4,6 +4,7 @@
 
 import { useState } from 'react';
 import { Cl } from '@stacks/transactions';
+import Message from '@/components/Message';
 {% for contract in contracts %}
 {% for fn in contract.functions %}
 {% if fn.access == "public" or fn.access == "read_only" %}
@@ -14,37 +15,152 @@ import { use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel 
 
 {% raw %}
 const S = {
-  page:        { padding: '24px', display: 'flex', flexDirection: 'column' as const, gap: '24px', minHeight: '100vh', background: '#030712' },
-  header:      { display: 'flex', alignItems: 'center', gap: '12px', paddingBottom: '16px', borderBottom: '1px solid #1f2937' },
+  page:        { padding: '24px', display: 'flex', flexDirection: 'column' as const, gap: '24px', alignItems: 'center'},
+  header:      { display: 'flex', alignItems: 'center', gap: '25px', paddingBottom: '16px', width: '428px' },
   headerDot:   { width: '8px', height: '8px', borderRadius: '50%', background: '#34d399' },
-  headerTitle: { fontSize: '20px', fontWeight: 700, color: '#fff', margin: 0 },
+  headerTitle: { fontSize: '12px', fontWeight: 500, margin: 0, fontFamily: 'JetBrains Mono'  },
+ tab: { 
+    fontSize: '12px', 
+    margin: 0, 
+    fontFamily: 'JetBrains Mono', 
+    background: 'transparent', 
+    border: '1px solid transparent', 
+    padding: 0, 
+    cursor: 'pointer', 
+    transition: 'all 0.15s ease',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  tabActive: { 
+    background: '#434242', 
+    width: '135px', 
+    height: '40px', 
+    borderRadius: '25px', 
+    border: '1px solid #1F1E1F', 
+    color: '#F4F3EF',
+    lineHeight: '1',
+    fontWeight: 400 // font-mono usually maps to normal weight unless specified
+  },
+  tabIdle: { 
+    color: '#908E8E',
+    width: '135px', // Keep width consistent so tabs don't jump when switching
+    height: '40px'
+  },
+  tabHover: {
+    color: '#FFFFFF'
+  },
   headerTag:   { fontSize: '12px', color: '#6b7280', fontFamily: 'monospace', marginLeft: 'auto' },
-  panel:       { borderRadius: '12px', border: '1px solid #1f2937', overflow: 'hidden' },
-  panelBtn:    { width: '100%', textAlign: 'left' as const, padding: '16px 20px', background: 'rgba(17,24,39,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', border: 'none' },
-  panelBtnL:   { display: 'flex', alignItems: 'center', gap: '12px' },
-  panelBar:    { width: '6px', height: '20px', borderRadius: '3px', background: 'rgba(16,185,129,0.6)' },
-  panelName:   { fontFamily: 'monospace', fontWeight: 600, color: '#34d399', fontSize: '14px' },
+ panel:       { borderRadius: '12px', border: '1px solid #1f2937', overflow: 'hidden', width: '428px', marginBottom: '12px' },
+  panelBtn:    { width: '100%', textAlign: 'left' as const, padding: '16px 20px', background: '#1F1F1F', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', border: 'none' },
+  panelBtnL:   { display: 'flex', alignItems: 'center' },
+  panelBar:    { width: '6px', height: '20px', borderRadius: '3px', background: '#FF550E', marginRight: '12px' },
+  panelName:   { fontWeight: 500, color: '#F4F3EF', fontSize: '14px', fontFamily: 'Instrument Sans'  },
   panelExt:    { fontSize: '12px', color: '#374151', fontFamily: 'monospace' },
-  panelGrid:   { padding: '20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px', background: 'rgba(3,7,18,0.6)' },
-  card:        { borderRadius: '8px', border: '1px solid rgba(31,41,55,0.8)', background: 'rgba(17,24,39,0.5)', padding: '16px', display: 'flex', flexDirection: 'column' as const, gap: '12px' },
-  cardHead:    { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
-  fnName:      { fontFamily: 'monospace', fontSize: '14px', fontWeight: 600, color: '#fff' },
-  badgeRead:   { fontSize: '11px', padding: '2px 8px', borderRadius: '999px', fontFamily: 'monospace', fontWeight: 500, border: '1px solid rgba(59,130,246,0.2)', background: 'rgba(59,130,246,0.1)', color: '#60a5fa' },
-  badgeWrite:  { fontSize: '11px', padding: '2px 8px', borderRadius: '999px', fontFamily: 'monospace', fontWeight: 500, border: '1px solid rgba(16,185,129,0.2)', background: 'rgba(16,185,129,0.1)', color: '#34d399' },
-  argLabel:    { fontSize: '11px', color: '#9ca3af', fontFamily: 'monospace', marginBottom: '3px' },
-  argType:     { fontSize: '10px', color: '#4b5563', fontFamily: 'monospace', marginLeft: '6px' },
-  argInput:    { width: '100%', borderRadius: '6px', background: 'rgba(31,41,55,0.8)', border: '1px solid #374151', padding: '6px 10px', fontSize: '13px', fontFamily: 'monospace', color: '#fff', outline: 'none', boxSizing: 'border-box' as const },
-  form:        { display: 'flex', flexDirection: 'column' as const, gap: '8px' },
-  btnRead:     { width: '100%', padding: '8px', borderRadius: '8px', fontSize: '14px', fontWeight: 600, border: 'none', background: '#2563eb', color: '#fff', transition: 'all 0.15s' },
-  btnWrite:    { width: '100%', padding: '8px', borderRadius: '8px', fontSize: '14px', fontWeight: 600, border: 'none', background: '#059669', color: '#fff', transition: 'all 0.15s' },
-  errBox:      { borderRadius: '8px', background: 'rgba(127,29,29,0.2)', border: '1px solid rgba(153,27,27,0.5)', padding: '8px 12px' },
-  errText:     { color: '#f87171', fontSize: '12px', fontFamily: 'monospace', margin: 0 },
-  resBox:      { borderRadius: '8px', background: 'rgba(31,41,55,0.6)', border: '1px solid rgba(55,65,81,0.5)', padding: '8px 12px' },
+  panelGrid:   { padding: '20px', width:'100%' },
   resLabel:    { fontSize: '11px', color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: '4px' },
-  resPre:      { fontSize: '12px', color: '#6ee7b7', overflowX: 'auto' as const, whiteSpace: 'pre-wrap' as const, wordBreak: 'break-word' as const, margin: 0 },
-  txBox:       { borderRadius: '8px', background: 'rgba(6,78,59,0.2)', border: '1px solid rgba(16,185,129,0.3)', padding: '8px 12px' },
+  resPre:      { fontSize: '12px', color: '#F4F3EF', overflowX: 'auto' as const, whiteSpace: 'pre-wrap' as const, wordBreak: 'break-word' as const, margin: 0 },
+  txBox:       { borderRadius: '8px', background: 'rgba(6,78,59,0.2)', border: '1px solid #2E2D2E', padding: '8px 12px' },
   txLabel:     { fontSize: '11px', color: '#34d399', fontWeight: 600, marginBottom: '4px' },
-  txHash:      { fontSize: '12px', color: '#6ee7b7', fontFamily: 'monospace', wordBreak: 'break-all' as const, margin: 0 },
+  txHash:      { fontSize: '12px', color: '#F4F3EF', fontFamily: 'monospace', wordBreak: 'break-all' as const, margin: 0 },
+  fnNumber:    { fontFamily: 'JetBrains Mono', fontSize: '12px', color: '#4B4B4B', marginRight: '12px' },
+  card:        { borderRadius: '12px', border: '1px solid #1F1E1F', background: '#1A1B1E', padding: '24px', display: 'flex', flexDirection: 'column' as const, transition: 'all 0.3s ease' },
+  formContainer: { overflow: 'hidden', transition: 'max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease' },
+  cardHead: { 
+    display: 'flex', 
+    alignItems: 'center', 
+    justifyContent: 'space-between',
+    marginBottom: '4px'
+  },
+  fnName: { 
+    fontFamily: 'Instrument Sans',
+    fontSize: '12px', 
+    fontWeight: 500, 
+    color: '#908E8E' 
+  },
+  badgeRead: { 
+    fontSize: '10px', 
+    padding: '4px 10px', 
+    borderRadius: '4px', 
+    fontFamily: 'JetBrains Mono', 
+    color: '#908E8E',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px'
+  },
+  badgeWrite: { 
+    fontSize: '10px', 
+    padding: '4px 10px', 
+    borderRadius: '4px', 
+    fontFamily: 'JetBrains Mono',  
+    color: '#908E8E',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px'
+  },
+  form: { display: 'flex', flexDirection: 'column' as const, gap: '16px' },
+  argLabel: { 
+    fontSize: '11px', 
+    color: '#908E8E', 
+    fontFamily: 'JetBrains Mono', 
+    marginBottom: '8px',
+    display: 'block' 
+  },
+  argType: { 
+    fontSize: '11px', 
+    color: '#4B4B4B', 
+    marginLeft: '8px' 
+  },
+  argInput: { 
+    width: '100%', 
+    borderRadius: '8px', 
+    background: '#131416', // Deep dark input
+    border: '1px solid #2C2C2C', 
+    padding: '12px 16px', 
+    fontSize: '14px', 
+    fontFamily: 'JetBrains Mono', 
+    color: '#FFFFFF', 
+    outline: 'none', 
+    boxSizing: 'border-box' as const 
+  },
+  btnRead: { 
+    width: '100%', 
+    padding: '12px', 
+    borderRadius: '8px', 
+    fontSize: '14px', 
+    fontWeight: 600, 
+    border: 'none', 
+    background: '#FF550E',
+    color: '#fff', 
+    fontFamily: 'Instrument Sans',
+    marginTop: '8px'
+  },
+  btnWrite: { 
+    width: '100%', 
+    padding: '12px', 
+    borderRadius: '8px', 
+    fontSize: '14px', 
+    fontWeight: 600, 
+    border: 'none', 
+    background: '#FF550E',
+    color: '#fff', 
+    fontFamily: 'Instrument Sans',
+    marginTop: '8px'
+  },
+  resBox: { 
+    marginTop: '12px',
+    borderRadius: '8px', 
+    background: '#131416', 
+    border: '1px solid #3B82F6', // Outline matches the action type
+    padding: '12px' 
+  },
+  badgeDot: { 
+    width: '6px', 
+    height: '6px', 
+    borderRadius: '50%', 
+    background: 'currentColor', 
+    marginRight: '6px' 
+  },
 } as const;
 
 // Convert a raw string value to the appropriate ClarityValue based on the type hint
@@ -65,22 +181,79 @@ function toClarityValue(value: string, typeHint: string): import('@stacks/transa
 {% endraw %}
 
 export default function DebugContracts() {
+  const [activeTab, setActiveTab] = useState<'write' | 'read'>('write');
+  const [hoveredTab, setHoveredTab] = useState<'write' | 'read' | null>(null);
+  // Initialize with the first contract name to drop it down on load
+  const [openContract, setOpenContract] = useState<string | null>("{{ contracts[0].contract_name }}");
+  const [openFunction, setOpenFunction] = useState<string | null>(null);
+
   return (
     <div style={S.page}>
       <div style={S.header}>
-        <div style={S.headerDot} />
-        <h2 style={S.headerTitle}>Debug Contracts</h2>
-        <span style={S.headerTag}>scaffold-stacks</span>
+        <button type="button" onMouseEnter={() => setHoveredTab('write')}
+          onMouseLeave={() => setHoveredTab(null)} style={Object.assign({}, S.tab, activeTab === 'write' ? S.tabActive : S.tabIdle, (hoveredTab === 'write' && activeTab !== 'write') ? S.tabHover : {})} onClick={() => setActiveTab('write')}>
+          Write Contracts
+        </button>
+        <button onMouseEnter={() => setHoveredTab('read')}
+          onMouseLeave={() => setHoveredTab(null)} type="button" style={Object.assign({}, S.tab, activeTab === 'read' ? S.tabActive : S.tabIdle, (hoveredTab === 'read' && activeTab !== 'read') ? S.tabHover : {})} onClick={() => setActiveTab('read')}>
+          Read Contracts
+        </button>
       </div>
+
       {% for contract in contracts %}
-      <ContractPanel name="{{ contract.contract_name }}">
-        {% for fn in contract.functions %}
-        {% if fn.access == "public" or fn.access == "read_only" %}
-        <FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }} />
-        {% endif %}
-        {% endfor %}
-      </ContractPanel>
+      <div style={S.panel}>
+        <button 
+          style={S.panelBtn} 
+          onClick={() => {
+            setOpenContract(openContract === "{{ contract.contract_name }}" ? null : "{{ contract.contract_name }}");
+            setOpenFunction(null); // Close functions when switching contracts
+          }}
+        >
+          <div style={Object.assign({ display: 'flex', alignItems: 'center' })}>
+            <div style={S.panelBar} />
+            <span style={S.panelName}>{{ contract.contract_name | capitalize }}</span>
+            <span style={S.panelExt}>.clar</span>
+          </div>
+          <span style={S.headerTag}>{openContract === "{{ contract.contract_name }}" ? '▲' : '▼'}</span>
+        </button>
+
+        {openContract === "{{ contract.contract_name }}" && (
+          <div style={Object.assign({ padding: '20px', width:'100%' })} className='space-y-4'>
+            {% for fn in contract.functions %}
+            {% if fn.access == "public" or fn.access == "read_only" %}
+              {% set fn_id = contract.contract_name ~ "_" ~ fn.name %}
+              {% set current_idx = loop.index0 %}
+{# Manual padding logic #}
+{% if current_idx < 10 %}
+  {% set padded_idx = "0" ~ current_idx %}
+{% else %}
+  {% set padded_idx = current_idx %}
+{% endif %}
+              
+              {% if fn.access == "read_only" %}
+  {activeTab === 'read' && (
+    <FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }} 
+      num="{{ padded_idx }}"
+      isOpen={openFunction === "{{ fn_id }}"}
+      onToggle={() => setOpenFunction(openFunction === "{{ fn_id }}" ? null : "{{ fn_id }}")}
+    />
+  )}
+              {% else %}
+                {activeTab === 'write' && (
+                  <FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }} 
+                    num="{{ padded_idx }}"
+                    isOpen={openFunction === "{{ fn_id }}"}
+                    onToggle={() => setOpenFunction(openFunction === "{{ fn_id }}" ? null : "{{ fn_id }}")}
+                  />
+                )}
+              {% endif %}
+            {% endif %}
+            {% endfor %}
+          </div>
+        )}
+      </div>
       {% endfor %}
+      <Message />
     </div>
   );
 }
@@ -97,7 +270,7 @@ function ContractPanel({ name, children }: { name: string; children: React.React
         </div>
         <span style={S.headerTag}>{open ? '▲' : '▼'}</span>
       </button>
-      {open && <div style={S.panelGrid}>{children}</div>}
+      {open && <div style={S.panelGrid} className='space-y-4'>{children}</div>}
     </div>
   );
 }
@@ -105,80 +278,52 @@ function ContractPanel({ name, children }: { name: string; children: React.React
 {% for contract in contracts %}
 {% for fn in contract.functions %}
 {% if fn.access == "public" or fn.access == "read_only" %}
-function FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}() {
-  const { data, loading, error, txid, call } = use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}();
+function FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}({ num, isOpen, onToggle }: { num: string, isOpen: boolean, onToggle: () => void }) {
+  const { data, loading, call } = use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}();
   const isReadOnly = {% if fn.access == "read_only" %}true{% else %}false{% endif %};
 
-  // One state entry per argument, keyed by arg name
   {% if fn.args %}
   const [args, setArgs] = useState<Record<string, string>>({
-    {% for arg in fn.args %}'{{ arg.name }}': '',
-    {% endfor %}
+    {% for arg in fn.args %}'{{ arg.name }}': '', {% endfor %}
   });
   const setArg = (name: string, value: string) => setArgs(a => Object.assign({}, a, { [name]: value }));
   {% endif %}
 
-const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const clarityArgs: import('@stacks/transactions').ClarityValue[] = [
-  {% if fn.args %}
-  {% for arg in fn.args %}
-  toClarityValue(args['{{ arg.name }}'] ?? '', '{{ arg.type_str }}'),
-  {% endfor %}
-  {% endif %}
-];
-  await call(clarityArgs);
-  };
-
   return (
-    <div style={S.card}>
-      <div style={S.cardHead}>
-        <span style={S.fnName}>{{ fn.name }}</span>
-        <span style={isReadOnly ? S.badgeRead : S.badgeWrite}>
-          {isReadOnly ? '📖 read' : '✍️ write'}
-        </span>
+    <div style={Object.assign({}, S.card, { border: isOpen ? '1px solid #FF550E' : S.card.border })}>
+      <div style={Object.assign({ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' })} onClick={onToggle}>
+        <div style={Object.assign({ display: 'flex', alignItems: 'center' })}>
+          <span style={S.fnNumber}>{num}</span>
+          <span style={S.fnName}>{{ fn.name | upper }}</span>
+        </div>
+        <div style={isReadOnly ? S.badgeRead : S.badgeWrite}>
+          <div style={S.badgeDot} />
+          {isReadOnly ? 'READ' : 'WRITE'}
+          <span style={Object.assign({ marginLeft: '8px', transition: '0.3s' }, { transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' })}>▼</span>
+        </div>
       </div>
-      <form style={S.form} onSubmit={onSubmit}>
-        {% if fn.args %}
-        {% for arg in fn.args %}
-        <div>
-          <div style={S.argLabel}>
-            {{ arg.name }}<span style={S.argType}>{{ arg.type_str }}</span>
-          </div>
-          <input
-            style={S.argInput}
-            placeholder="{{ arg.name }}"
-            value={args['{{ arg.name }}']}
-            onChange={e => setArg('{{ arg.name }}', e.target.value)}
-          />
-        </div>
-        {% endfor %}
-        {% endif %}
-        <button
-          type="submit"
-          disabled={loading}
-          style={Object.assign({}, isReadOnly ? S.btnRead : S.btnWrite, { opacity: loading ? 0.4 : 1, cursor: loading ? 'not-allowed' : 'pointer' })}
-        >
-          {loading ? (isReadOnly ? 'Reading...' : 'Waiting for wallet...') : (isReadOnly ? 'Read' : 'Call')}
-        </button>
-      </form>
-      {error && (
-        <div style={S.errBox}>
-          <p style={S.errText}>{String(error.message)}</p>
-        </div>
-      )}
-      {txid && (
-        <div style={S.txBox}>
-          <p style={S.txLabel}>Transaction submitted</p>
-          <p style={S.txHash}>{txid}</p>
-        </div>
-      )}
-      {data !== null && data !== undefined && !txid && (
-        <div style={S.resBox}>
-          <p style={S.resLabel}>Result</p>
-          <pre style={S.resPre}>{JSON.stringify(data, null, 2)}</pre>
-        </div>
-      )}
+
+      <div style={Object.assign({}, S.formContainer, { maxHeight: isOpen ? '1000px' : '0px', opacity: isOpen ? 1 : 0, marginTop: isOpen ? '20px' : '0px' })}>
+        <form style={S.form} onSubmit={async (e) => { e.preventDefault(); await call([{% if fn.args %}{% for arg in fn.args %}toClarityValue(args['{{ arg.name }}'] ?? '', '{{ arg.type_str }}'),{% endfor %}{% endif %}]); }}>
+          {% if fn.args %}
+            {% for arg in fn.args %}
+            <div>
+              <label style={S.argLabel}>{{ arg.name }} <span style={S.argType}>{{ arg.type_str | upper }}</span></label>
+              <input style={S.argInput} value={args['{{ arg.name }}']} onChange={e => setArg('{{ arg.name }}', e.target.value)} />
+            </div>
+            {% endfor %}
+          {% endif %}
+          <button type="submit" disabled={loading} style={Object.assign({}, isReadOnly ? S.btnRead : S.btnWrite, { opacity: loading ? 0.5 : 1 })}>
+            {loading ? 'PROCESSING...' : (isReadOnly ? 'READ' : 'CALL')}
+          </button>
+          {!!data && (
+            <div style={Object.assign({}, S.resBox, { borderColor: isReadOnly ? '#2E2D2E' : '#2E2D2E' })}>
+              <p style={S.resLabel}>RESULT</p>
+              <pre style={S.resPre}>{JSON.stringify(data, null, 2)}</pre>
+            </div>
+          )}
+        </form>
+      </div>
     </div>
   );
 }
