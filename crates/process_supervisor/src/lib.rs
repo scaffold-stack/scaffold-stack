@@ -81,16 +81,21 @@ async fn dev_devnet() -> Result<()> {
     // Check Docker is available before wasting time on codegen
     ensure_docker()?;
 
+    // Clarinet devnet can get stuck on stale cached chainstate snapshots.
+    // Starting from a clean local devnet state avoids reorg-corrupted API
+    // indexes and frozen tips that block contract deployments from finalizing.
+    reset_local_devnet_state().await?;
+
     // Set NEXT_PUBLIC_NETWORK=devnet in the frontend env
     write_network_env("devnet").await?;
 
     prefetch_requirements().await?;
-    codegen::generate_all().await?;
+    stacksdapp_codegen::generate_all().await?;
 
     tokio::try_join!(
         spawn_clarinet_devnet(),
         spawn_next_dev("devnet"),
-        watcher::watch_contracts(Path::new("contracts/contracts")),
+        stacksdapp_watcher::watch_contracts(Path::new("contracts/contracts")),
     )?;
 
     Ok(())
@@ -110,7 +115,7 @@ async fn dev_remote(network: &str) -> Result<()> {
     write_network_env(network).await?;
 
     // Regenerate bindings so they reflect the current contracts
-    codegen::generate_all().await?;
+    stacksdapp_codegen::generate_all().await?;
 
     // Just run Next.js — no devnet, no watcher needed
     spawn_next_dev(network).await?;
@@ -195,6 +200,16 @@ async fn spawn_clarinet_devnet() -> Result<()> {
         .spawn()?
         .wait()
         .await?;
+    Ok(())
+}
+
+async fn reset_local_devnet_state() -> Result<()> {
+    for path in ["contracts/.cache", "contracts/.devnet"] {
+        if fs::metadata(path).await.is_ok() {
+            fs::remove_dir_all(path).await?;
+            println!("[dev] Removed stale {path}");
+        }
+    }
     Ok(())
 }
 

@@ -1,5 +1,5 @@
 [package]
-name = "watcher"
+name = "stacksdapp-watcher"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,5 +7,4 @@ edition = "2021"
 anyhow.workspace = true
 notify.workspace = true
 tokio.workspace  = true
-codegen          = { path = "../codegen" }
-
+stacksdapp-codegen = { path = "../codegen" }

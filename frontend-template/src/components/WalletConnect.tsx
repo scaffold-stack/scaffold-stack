@@ -14,23 +14,59 @@ type WalletContextValue = {
 
 const WalletContext = createContext<WalletContextValue | undefined>(undefined);
 
+function getStoredStxAddress() {
+  const stored = getLocalStorage();
+  if (!stored) return null;
+
+  return (
+    stored.addresses?.stx?.find(entry => entry.address.startsWith('S'))?.address ??
+    stored.addresses?.stx?.[0]?.address ??
+    null
+  );
+}
+
+function getResponseStxAddress(addresses: Array<{ address: string; symbol?: string }>) {
+  return (
+    addresses.find(entry => entry.symbol === 'STX')?.address ??
+    addresses.find(entry => entry.address.startsWith('S'))?.address ??
+    addresses[0]?.address ??
+    null
+  );
+}
+
 export function WalletProvider({ children }: { children: React.ReactNode }) {
-  const [address, setAddress] = useAtom(addressAtom);
+  const [, setAddress] = useAtom(addressAtom);
   const [, setMounted] = useAtom(isMountedAtom);
 
   useEffect(() => {
-    setMounted(true);
-    
-    // If Stacks says we are connected but Jotai is empty (e.g. first load)
-    if (isConnected()) {
-      const stored = getLocalStorage();
-      //@ts-ignore
-      const addr = stored?.addresses?.[2]?.address ?? null;
-      if (addr && addr !== address) {
-        setAddress(addr);
+    const syncWalletState = () => {
+      if (!isConnected()) {
+        setAddress(null);
+        return;
       }
-    }
-  }, [address, setAddress, setMounted]);
+
+      setAddress(getStoredStxAddress());
+    };
+
+    setMounted(true);
+    syncWalletState();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncWalletState();
+      }
+    };
+
+    window.addEventListener('focus', syncWalletState);
+    window.addEventListener('storage', syncWalletState);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('focus', syncWalletState);
+      window.removeEventListener('storage', syncWalletState);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [setAddress, setMounted]);
 
   return <>{children}</>;
 }
@@ -53,7 +89,7 @@ export function WalletConnect() {
     setConnecting(true);
     try {
       const response = await connect();
-      const addr = response.addresses[2]?.address ?? null;
+      const addr = getResponseStxAddress(response.addresses);
       setAddress(addr);
     } catch (e) {
       console.error('[scaffold-stacks] connection failed:', e);
@@ -62,10 +98,10 @@ export function WalletConnect() {
     }
   };
 
-  const handleDisconnect = () => {
+  const handleDisconnect = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
     disconnect();
     setAddress(null);
-    // Optional: window.location.reload() to hard-clear all state
   };
 
   // 1. Prevents SSR Flash: Render nothing or a skeleton until client-side mount
@@ -77,11 +113,7 @@ export function WalletConnect() {
       <button
         onClick={handleConnect}
         disabled={connecting}
-        style={{
-          padding: '8px 16px', borderRadius: '8px',
-          background: '#059669', color: '#fff', fontWeight: 600,
-          border: 'none', cursor: 'pointer',
-        }}
+        className='bg-[#434242] w-[135px] h-[40px] rounded-[40px] border-[1px] border-[#1F1E1F] text-[12px] text-[#F4F3EF] font-mono leading-[100%]'
       >
         {connecting ? 'Connecting...' : 'Connect Wallet'}
       </button>
@@ -92,10 +124,7 @@ export function WalletConnect() {
   const short = `${address.slice(0, 6)}…${address.slice(-4)}`;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-      <div style={{
-        padding: '6px 12px', borderRadius: '8px',
-        background: '#111827', border: '1px solid #1f2937', color: '#34d399'
-      }}>
+      <div className='bg-[#434242] w-[135px] h-[40px] rounded-[40px] border-[1px] border-[#1F1E1F] text-[12px] text-[#F4F3EF] font-mono leading-[100%] flex items-center justify-center'>
         {short}
       </div>
       <button 

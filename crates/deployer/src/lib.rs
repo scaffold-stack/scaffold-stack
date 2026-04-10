@@ -1,12 +1,18 @@
 use anyhow::{anyhow, Result};
+use bitcoin::bip32::{DerivationPath, Xpriv};
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::Network as BitcoinNetwork;
+use bip39::Mnemonic;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::str::FromStr;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use std::process::Stdio;
 use tokio::io::AsyncBufReadExt;
+use tempfile::NamedTempFile;
 
 pub struct NetworkConfig {
     pub stacks_node: String,
@@ -29,6 +35,46 @@ struct ClarinetToml {
 #[derive(Debug, Deserialize)]
 struct ContractEntry {
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeploymentPlanFile {
+    plan: DeploymentPlan,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeploymentPlan {
+    batches: Vec<DeploymentBatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeploymentBatch {
+    transactions: Vec<DeploymentTransaction>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct DeploymentTransaction {
+    #[serde(rename = "transaction-type")]
+    transaction_type: String,
+    #[serde(rename = "contract-name")]
+    contract_name: Option<String>,
+    #[serde(rename = "expected-sender")]
+    expected_sender: Option<String>,
+    cost: Option<u64>,
+    path: Option<String>,
+    #[serde(rename = "clarity-version")]
+    clarity_version: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccountResponse {
+    nonce: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoreInfoResponse {
+    burn_block_height: u64,
+    stacks_tip_height: u64,
 }
 
 #[derive(Serialize)]
@@ -180,6 +226,10 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str) -> Result<String>
 
     check_plan_fee(network)?;
 
+    if network == "devnet" {
+        return run_apply_devnet_direct(network).await;
+    }
+
     println!("[deploy] Applying deployment plan to {}...", network);
     let mut child = Command::new("clarinet")
         .args(["deployments", "apply", "--no-dashboard", &format!("--{network}")])
@@ -197,6 +247,7 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str) -> Result<String>
     let expected_count = resolve_deployment_order(contracts_dir).await?.len();
     
     let mut confirmed_count = 0;
+    let mut broadcast_count = 0;
 
 
     let mut reader = tokio::io::BufReader::new(stdout).lines();
@@ -208,28 +259,221 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str) -> Result<String>
         captured_stdout.push_str(&line);
         captured_stdout.push('\n');
 
+        if line.contains("REDEPLOYMENT REQUIRED") || line.contains("out of sync") {
+            println!("[deploy] Error: Devnet is out of sync. You may need to restart Clarinet or increment contract version.");
+            let _ = child.kill().await;
+            return Err(anyhow!("Devnet redeployment required. Check your contract versions."));
+        }
+
         // Handle interactive fee prompts
         if line.contains("Overwrite?") || line.contains("Confirm?") || line.contains("[Y/n]") {
             let _ = stdin.write_all(b"y\n").await;
             let _ = stdin.flush().await;
         }
-        if line.contains("Confirmed Publish") {
+        if line.contains("Broadcasted") && line.contains("ContractPublish(") {
+            broadcast_count += 1;
+            println!("[deploy] Broadcast progress: {}/{}", broadcast_count, expected_count);
+        }
+
+        if line.contains("Confirmed Publish") || line.contains("Published") {
             confirmed_count += 1;
             println!("[deploy] Confirmation progress: {}/{}", confirmed_count, expected_count);
         }
 
         if confirmed_count >= expected_count {
             println!("[deploy] All contracts confirmed. Finalizing JSON...");
-            let _ = child.kill().await; // Kill the hang
-            break; 
+            let _ = child.kill().await; // Clarinet can linger after local confirmations
+            break;
+        }
+
+        if broadcast_count >= expected_count {
+            println!("[deploy] All contracts broadcasted. Finalizing JSON...");
+            let _ = child.kill().await; // Don't block on extra Clarinet output after broadcast
+            break;
         }
 
     }
-    // let status = child.wait().await?;
-    // if !status.success() {
-    //     return Err(anyhow!("Clarinet deployment failed during apply stage."));
-    // }
     Ok(captured_stdout)
+}
+
+async fn run_apply_devnet_direct(network: &str) -> Result<String> {
+    println!("[deploy] Applying deployment plan to devnet...");
+    let plan = read_deployment_plan(network).await?;
+    let transactions = flatten_contract_publishes(&plan);
+    if transactions.is_empty() {
+        return Err(anyhow!("No contract publish transactions found in the devnet deployment plan."));
+    }
+
+    let settings_raw = fs::read_to_string("contracts/settings/Devnet.toml").await?;
+    let mnemonic = parse_mnemonic(&settings_raw)
+        .ok_or_else(|| anyhow!("No deployer mnemonic found in contracts/settings/Devnet.toml"))?;
+    let derivation = parse_deployer_derivation(&settings_raw)
+        .unwrap_or_else(|| "m/44'/5757'/0'/0/0".to_string());
+    let sender_key = derive_private_key_from_mnemonic(&mnemonic, &derivation)?;
+
+    let expected_sender = transactions
+        .first()
+        .and_then(|tx| tx.expected_sender.clone())
+        .ok_or_else(|| anyhow!("No expected sender found in the devnet deployment plan."))?;
+    let mut nonce = fetch_local_core_nonce(&expected_sender).await?;
+    let script_path = write_devnet_broadcast_script()?;
+    let mut captured_stdout = String::new();
+
+    println!("[deploy] Broadcasting transactions to http://localhost:20443");
+
+    for tx in transactions {
+        let contract_name = tx.contract_name.clone()
+            .ok_or_else(|| anyhow!("Missing contract name in deployment plan."))?;
+        let contract_path = tx.path.clone()
+            .ok_or_else(|| anyhow!("Missing contract path for {contract_name} in deployment plan."))?;
+        let fee = tx.cost.unwrap_or(0);
+        let args = serde_json::json!({
+            "contractName": contract_name,
+            "codePath": contract_path,
+            "senderKey": sender_key,
+            "fee": fee.to_string(),
+            "nonce": nonce.to_string(),
+            "clarityVersion": tx.clarity_version,
+        });
+
+        let output = Command::new("node")
+            .arg(&script_path)
+            .arg(args.to_string())
+            .current_dir("contracts")
+            .output()
+            .await
+            .map_err(|_| anyhow!("node is required to deploy directly to devnet"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(anyhow!(
+                "Direct devnet deployment failed for {}.\nstdout:\n{}\nstderr:\n{}",
+                tx.contract_name.as_deref().unwrap_or("unknown contract"),
+                stdout.trim(),
+                stderr.trim(),
+            ));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let result: serde_json::Value = serde_json::from_str(stdout.trim())
+            .map_err(|e| anyhow!("Failed to parse devnet broadcast response: {e}\nRaw output: {}", stdout.trim()))?;
+        let txid = result
+            .get("txid")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Devnet broadcast response did not include a txid: {}", stdout.trim()))?;
+
+        println!("🟦  Publish {}.{}  Transaction broadcast {}", expected_sender, tx.contract_name.as_deref().unwrap_or(""), txid);
+        captured_stdout.push_str(&format!(
+            "Broadcasted ContractPublish(StandardPrincipalData({}), ContractName(\"{}\"), \"{}\")\n",
+            expected_sender,
+            tx.contract_name.as_deref().unwrap_or(""),
+            txid,
+        ));
+        nonce += 1;
+    }
+
+    Ok(captured_stdout)
+}
+
+async fn read_deployment_plan(network: &str) -> Result<DeploymentPlanFile> {
+    let plan_path = format!("contracts/deployments/default.{network}-plan.yaml");
+    let raw = fs::read_to_string(&plan_path).await
+        .map_err(|e| anyhow!("Failed to read deployment plan at {plan_path}: {e}"))?;
+    serde_yaml::from_str(&raw)
+        .map_err(|e| anyhow!("Failed to parse deployment plan at {plan_path}: {e}"))
+}
+
+fn flatten_contract_publishes(plan: &DeploymentPlanFile) -> Vec<DeploymentTransaction> {
+    plan.plan
+        .batches
+        .iter()
+        .flat_map(|batch| batch.transactions.iter())
+        .filter(|tx| tx.transaction_type == "contract-publish")
+        .cloned()
+        .collect()
+}
+
+fn write_devnet_broadcast_script() -> Result<std::path::PathBuf> {
+    let mut file = NamedTempFile::new()?;
+    let script = r#"
+import fs from 'fs';
+import { createRequire } from 'module';
+
+const require = createRequire(`${process.cwd()}/package.json`);
+const {
+  makeContractDeploy,
+  AnchorMode,
+  PostConditionMode,
+  broadcastRawTransaction,
+} = require('@stacks/transactions');
+
+const input = JSON.parse(process.argv[2]);
+const codeBody = fs.readFileSync(input.codePath, 'utf8');
+
+const transaction = await makeContractDeploy({
+  contractName: input.contractName,
+  codeBody,
+  senderKey: input.senderKey,
+  fee: BigInt(input.fee),
+  nonce: BigInt(input.nonce),
+  network: 'testnet',
+  anchorMode: AnchorMode.OnChainOnly,
+  postConditionMode: PostConditionMode.Allow,
+  ...(typeof input.clarityVersion === 'number' ? { clarityVersion: input.clarityVersion } : {}),
+});
+
+const response = await broadcastRawTransaction(
+  transaction.serialize(),
+  'http://localhost:20443/v2/transactions',
+);
+
+console.log(JSON.stringify(response));
+if (!response?.txid) {
+  process.exit(1);
+}
+"#;
+    use std::io::Write;
+    file.write_all(script.as_bytes())?;
+    let (_, path) = file.keep()?;
+    Ok(path)
+}
+
+async fn fetch_local_core_nonce(address: &str) -> Result<u64> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
+    let url = format!("http://localhost:20443/v2/accounts/{address}?proof=0");
+    let response = client.get(&url).send().await
+        .map_err(|e| anyhow!("Failed to fetch local core account state from {url}: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow!(
+            "Local core node returned {} for {}: {}",
+            status,
+            url,
+            body
+        ));
+    }
+
+    let account: AccountResponse = response.json().await?;
+    Ok(account.nonce)
+}
+
+fn derive_private_key_from_mnemonic(mnemonic: &str, derivation: &str) -> Result<String> {
+    let mnemonic = Mnemonic::parse_normalized(mnemonic)
+        .map_err(|e| anyhow!("Invalid mnemonic in devnet settings: {e}"))?;
+    let seed = mnemonic.to_seed_normalized("");
+    let secp = Secp256k1::new();
+    let root = Xpriv::new_master(BitcoinNetwork::Testnet, &seed)
+        .map_err(|e| anyhow!("Failed to derive root key from mnemonic: {e}"))?;
+    let path = DerivationPath::from_str(derivation)
+        .map_err(|e| anyhow!("Invalid devnet derivation path {derivation}: {e}"))?;
+    let child = root.derive_priv(&secp, &path)
+        .map_err(|e| anyhow!("Failed to derive child key {derivation}: {e}"))?;
+    Ok(format!("{}01", hex::encode(child.private_key.secret_bytes())))
 }
 
 pub async fn resolve_deployment_order(contracts_dir: &std::path::Path) -> anyhow::Result<Vec<String>> {
@@ -262,10 +506,6 @@ pub async fn resolve_deployment_order(contracts_dir: &std::path::Path) -> anyhow
 }
 
 // ── Auto-versioning ───────────────────────────────────────────────────────────
-
-/// Read the generated deployment plan and bail if total fees look insane.
-/// Testnet fee estimation frequently produces garbage values (100s of STX).
-/// A real contract deploy should never exceed ~50 STX.
 fn check_plan_fee(network: &str) -> Result<()> {
     let plan_path = format!("contracts/deployments/default.{network}-plan.yaml");
     let plan_raw = std::fs::read_to_string(&plan_path).unwrap_or_default();
@@ -282,22 +522,6 @@ fn check_plan_fee(network: &str) -> Result<()> {
             }
         })
         .sum();
-
-    // 50 STX = 50_000_000 microSTX — if higher, fee estimation has gone wrong
-    // let max_micro_stx: u64 = 50_000_000;
-    // if total_micro_stx > max_micro_stx {
-    //     let stx = total_micro_stx as f64 / 1_000_000.0;
-    //     return Err(anyhow!(
-    //         "Deployment plan has an unreasonably high fee: {stx:.6} STX ({total_micro_stx} microSTX).
-    //          This is a fee estimation bug, not a real cost.
-
-    //          To fix:
-    //          1. Delete the stale plan: rm contracts/deployments/default.{network}-plan.yaml
-    //          2. Try again — fee estimation can vary between runs
-    //          3. Or manually edit the plan to set a sane cost (e.g. 10000 microSTX)"
-    //     ));
-    // }
-
     if total_micro_stx > 0 {
         println!("[deploy] Estimated fee: {:.6} STX", total_micro_stx as f64 / 1_000_000.0);
     }
@@ -384,9 +608,17 @@ async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
     if any_changes {
         fs::write(&clarinet_path, &clarinet_content).await?;
         
-        // Remove the stale plan so the final deployment uses the new names
-        let plan_path = base_dir.join(format!("deployments/default.{}-plan.yaml", network));
-        let _ = fs::remove_file(plan_path).await;
+        // Remove all cached plans so Clarinet/SDK never hold onto stale
+        // contract file paths after a version bump.
+        for plan_name in [
+            "default.devnet-plan.yaml",
+            "default.simnet-plan.yaml",
+            "default.testnet-plan.yaml",
+            "default.mainnet-plan.yaml",
+        ] {
+            let plan_path = base_dir.join("deployments").join(plan_name);
+            let _ = fs::remove_file(plan_path).await;
+        }
 
         println!("[deploy] Clarinet.toml updated with new versions.");       
         // Regenerate bindings so the frontend/tests use the new names
@@ -495,6 +727,21 @@ fn parse_mnemonic(toml_raw: &str) -> Option<String> {
     None
 }
 
+fn parse_deployer_derivation(toml_raw: &str) -> Option<String> {
+    let mut in_deployer = false;
+    for line in toml_raw.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[accounts.deployer]" { in_deployer = true; continue; }
+        if trimmed.starts_with('[') { in_deployer = false; }
+        if in_deployer && trimmed.starts_with("derivation") {
+            if let Some(val) = trimmed.splitn(2, '=').nth(1) {
+                return Some(val.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
 async fn wait_for_node(url: &str) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
@@ -558,11 +805,20 @@ async fn write_deployments_json_from_output(network: &str, output: &str) -> Resu
     let clarinet_raw = fs::read_to_string("contracts/Clarinet.toml").await?;
     let clarinet: ClarinetToml = toml::from_str(&clarinet_raw)
         .map_err(|e| anyhow!("Failed to parse Clarinet.toml: {e}"))?;
+    let contract_names: Vec<String> = clarinet
+        .contracts
+        .as_ref()
+        .map(|contracts| contracts.keys().cloned().collect())
+        .unwrap_or_default();
+
+    if network == "devnet" {
+        wait_for_devnet_contracts(&deployer_address, &contract_names).await?;
+    }
 
     let mut contracts_map = HashMap::new();
     let timestamp = chrono::Utc::now().to_rfc3339();
 
-    for (name, _) in clarinet.contracts.unwrap_or_default() {
+    for name in contract_names {
         let contract_id = format!("{deployer_address}.{name}");
         let txid = txid_map.get(&name)
             .map(|t| format!("0x{t}"))
@@ -585,6 +841,109 @@ async fn write_deployments_json_from_output(network: &str, output: &str) -> Resu
     fs::write(out_path, &json).await?;
     println!("\n[deploy] Written to {}", out_path.display());
     Ok(())
+}
+
+async fn wait_for_devnet_contracts(deployer: &str, contract_names: &[String]) -> Result<()> {
+    if contract_names.is_empty() {
+        return Ok(());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
+    let node = "http://localhost:20443";
+    let initial_info = fetch_local_core_info().await.ok();
+
+    println!("[deploy] Verifying contract publish on local devnet core node...");
+    for attempt in 1..=30 {
+        let mut pending = Vec::new();
+
+        for contract_name in contract_names {
+            let url = format!(
+                "{node}/v2/contracts/source/{deployer}/{contract_name}?proof=0"
+            );
+            let deployed = client
+                .get(&url)
+                .send()
+                .await
+                .map(|response| response.status().is_success())
+                .unwrap_or(false);
+
+            if !deployed {
+                pending.push(contract_name.clone());
+            }
+        }
+
+        if pending.is_empty() {
+            println!("[deploy] ✔ Local devnet core node reports all contracts deployed");
+            return Ok(());
+        }
+
+        if attempt == 1 || attempt % 5 == 0 {
+            println!(
+                "[deploy] Waiting for devnet core to expose: {}",
+                pending.join(", ")
+            );
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    let nonce = fetch_local_core_nonce(deployer).await.unwrap_or_default();
+    let stacks_api_healthy = probe_stacks_api_health().await.unwrap_or(false);
+    let final_info = fetch_local_core_info().await.ok();
+    let stall_hint = match (initial_info, final_info) {
+        (Some(start), Some(end))
+            if start.burn_block_height == end.burn_block_height
+                && start.stacks_tip_height == end.stacks_tip_height =>
+        {
+            format!(
+                "Local devnet appears stalled: burn block height stayed at {} and stacks tip height stayed at {} while waiting for confirmation.",
+                end.burn_block_height, end.stacks_tip_height
+            )
+        }
+        _ => "Local devnet tip did move during the wait, so the publish appears to be stuck independently of tip progression.".to_string(),
+    };
+
+    Err(anyhow!(
+        "Devnet deploy did not finalize on the local Stacks core node.\n\
+         The contract source never became available at http://localhost:20443 and the deployer nonce is still {nonce}.\n\
+         This means the publish did not finalize on core, even if the explorer/mempool UI appears to show it.\n\
+         {stall_hint}\n\
+         {api_hint}\n\
+         Try restarting devnet with `stacksdapp clean` and `stacksdapp dev`, then deploy again."
+        ,
+        stall_hint = stall_hint,
+        api_hint = if stacks_api_healthy {
+            "Local stacks-api responded normally, so the failure is on the core-chain side."
+        } else {
+            "Local stacks-api/indexer also appears unhealthy, so the explorer UI may be stale or misleading."
+        }
+    ))
+}
+
+async fn probe_stacks_api_health() -> Result<bool> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()?;
+    Ok(client
+        .get("http://localhost:3999/v2/info")
+        .send()
+        .await
+        .map(|response| response.status().is_success())
+        .unwrap_or(false))
+}
+
+async fn fetch_local_core_info() -> Result<CoreInfoResponse> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()?;
+    let response = client
+        .get("http://localhost:20443/v2/info")
+        .send()
+        .await?;
+    let response = response.error_for_status()?;
+    Ok(response.json().await?)
 }
 
 

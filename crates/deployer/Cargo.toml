@@ -1,5 +1,5 @@
 [package]
-name = "deployer"
+name = "stacksdapp-deployer"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,4 +12,7 @@ reqwest.workspace    = true
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 hex = "0.4"
-
+serde_yaml = "0.9"
+bip39 = "2"
+bitcoin = "0.32"
+tempfile.workspace = true

@@ -62,11 +62,11 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::New { name, no_git } => scaffold::new_project(&name, !no_git).await,
-        Commands::Dev { network } => process_supervisor::dev(&network).await,
-        Commands::Generate => codegen::generate_all().await,
-        Commands::Add { name, template } => scaffold::add_contract(&name, &template).await,
-        Commands::Deploy { network } => deployer::deploy(&network).await,
+        Commands::New { name, no_git } => stacksdapp_scaffold::new_project(&name, !no_git).await,
+        Commands::Dev { network } => stacksdapp_process_supervisor::dev(&network).await,
+        Commands::Generate => stacksdapp_codegen::generate_all().await,
+        Commands::Add { name, template } => stacksdapp_scaffold::add_contract(&name, &template).await,
+        Commands::Deploy { network } => stacksdapp_deployer::deploy(&network).await,
         Commands::Test => run_test().await,
         Commands::Check => run_check().await,
         Commands::Clean => run_clean().await,
