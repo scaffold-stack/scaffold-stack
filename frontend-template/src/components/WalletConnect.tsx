@@ -3,12 +3,6 @@ import { createContext, useContext, useState, useEffect, ReactNode } from 'react
 import { connect, disconnect, isConnected, getLocalStorage } from '@stacks/connect';
 import { addressAtom, isMountedAtom } from '../store/wallet';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
-import { scaffoldConfig } from '../scaffold.config';
-import {
-  ensureDefaultBurner,
-  getDevnetBurners,
-  setSelectedBurner,
-} from '../lib/devnet';
 
 
 type WalletContextValue = {
@@ -20,31 +14,59 @@ type WalletContextValue = {
 
 const WalletContext = createContext<WalletContextValue | undefined>(undefined);
 
+function getStoredStxAddress() {
+  const stored = getLocalStorage();
+  if (!stored) return null;
+
+  return (
+    stored.addresses?.stx?.find(entry => entry.address.startsWith('S'))?.address ??
+    stored.addresses?.stx?.[0]?.address ??
+    null
+  );
+}
+
+function getResponseStxAddress(addresses: Array<{ address: string; symbol?: string }>) {
+  return (
+    addresses.find(entry => entry.symbol === 'STX')?.address ??
+    addresses.find(entry => entry.address.startsWith('S'))?.address ??
+    addresses[0]?.address ??
+    null
+  );
+}
+
 export function WalletProvider({ children }: { children: React.ReactNode }) {
-  const [address, setAddress] = useAtom(addressAtom);
+  const [, setAddress] = useAtom(addressAtom);
   const [, setMounted] = useAtom(isMountedAtom);
 
   useEffect(() => {
+    const syncWalletState = () => {
+      if (!isConnected()) {
+        setAddress(null);
+        return;
+      }
+
+      setAddress(getStoredStxAddress());
+    };
+
     setMounted(true);
+    syncWalletState();
 
-    if (scaffoldConfig.isDevnet) {
-      const burner = ensureDefaultBurner();
-      if (burner.address !== address) {
-        setAddress(burner.address);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncWalletState();
       }
-      return;
-    }
+    };
 
-    // If Stacks says we are connected but Jotai is empty (e.g. first load)
-    if (isConnected()) {
-      const stored = getLocalStorage();
-      //@ts-ignore
-      const addr = stored?.addresses?.[2]?.address ?? null;
-      if (addr && addr !== address) {
-        setAddress(addr);
-      }
-    }
-  }, [address, setAddress, setMounted]);
+    window.addEventListener('focus', syncWalletState);
+    window.addEventListener('storage', syncWalletState);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('focus', syncWalletState);
+      window.removeEventListener('storage', syncWalletState);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [setAddress, setMounted]);
 
   return <>{children}</>;
 }
@@ -62,29 +84,12 @@ export function WalletConnect() {
   const isMounted = useAtomValue(isMountedAtom);
   const setAddress = useSetAtom(addressAtom);
   const [connecting, setConnecting] = useState(false);
-  const [burnerId, setBurnerId] = useState<string>('wallet_1');
-
-  useEffect(() => {
-    if (!isMounted || !scaffoldConfig.isDevnet) return;
-    const burner = ensureDefaultBurner();
-    setBurnerId(burner.id);
-    if (burner.address !== address) {
-      setAddress(burner.address);
-    }
-  }, [address, isMounted, setAddress]);
 
   const handleConnect = async () => {
-    if (scaffoldConfig.isDevnet) {
-      const burner = ensureDefaultBurner();
-      setBurnerId(burner.id);
-      setAddress(burner.address);
-      return;
-    }
-
     setConnecting(true);
     try {
       const response = await connect();
-      const addr = response.addresses[2]?.address ?? null;
+      const addr = getResponseStxAddress(response.addresses);
       setAddress(addr);
     } catch (e) {
       console.error('[scaffold-stacks] connection failed:', e);
@@ -93,58 +98,14 @@ export function WalletConnect() {
     }
   };
 
-  const handleDisconnect = () => {
-    if (scaffoldConfig.isDevnet) return;
+  const handleDisconnect = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
     disconnect();
     setAddress(null);
-    // Optional: window.location.reload() to hard-clear all state
-  };
-
-  const handleBurnerChange = (value: string) => {
-    const burner = setSelectedBurner(value);
-    setBurnerId(burner.id);
-    setAddress(burner.address);
   };
 
   // 1. Prevents SSR Flash: Render nothing or a skeleton until client-side mount
   if (!isMounted) return <div style={{ width: '140px', height: '38px' }} />;
-
-  if (scaffoldConfig.isDevnet) {
-    const burners = getDevnetBurners();
-    const selected = burners.find(burner => burner.id === burnerId) ?? ensureDefaultBurner();
-    const short = `${selected.address.slice(0, 6)}…${selected.address.slice(-4)}`;
-
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <select
-          value={selected.id}
-          onChange={e => handleBurnerChange(e.target.value)}
-          style={{
-            padding: '8px 12px',
-            borderRadius: '8px',
-            background: '#111827',
-            color: '#fff',
-            border: '1px solid #1f2937',
-          }}
-        >
-          {burners.map(burner => (
-            <option key={burner.id} value={burner.id}>
-              {burner.label}
-            </option>
-          ))}
-        </select>
-        <div style={{
-          padding: '6px 12px',
-          borderRadius: '8px',
-          background: '#111827',
-          border: '1px solid #1f2937',
-          color: '#34d399'
-        }}>
-          {short}
-        </div>
-      </div>
-    );
-  }
 
   // 2. Disconnected UI
   if (!address) {
@@ -152,11 +113,7 @@ export function WalletConnect() {
       <button
         onClick={handleConnect}
         disabled={connecting}
-        style={{
-          padding: '8px 16px', borderRadius: '8px',
-          background: '#059669', color: '#fff', fontWeight: 600,
-          border: 'none', cursor: 'pointer',
-        }}
+        className='bg-[#434242] w-[135px] h-[40px] rounded-[40px] border-[1px] border-[#1F1E1F] text-[12px] text-[#F4F3EF] font-mono leading-[100%]'
       >
         {connecting ? 'Connecting...' : 'Connect Wallet'}
       </button>
@@ -167,10 +124,7 @@ export function WalletConnect() {
   const short = `${address.slice(0, 6)}…${address.slice(-4)}`;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-      <div style={{
-        padding: '6px 12px', borderRadius: '8px',
-        background: '#111827', border: '1px solid #1f2937', color: '#34d399'
-      }}>
+      <div className='bg-[#434242] w-[135px] h-[40px] rounded-[40px] border-[1px] border-[#1F1E1F] text-[12px] text-[#F4F3EF] font-mono leading-[100%] flex items-center justify-center'>
         {short}
       </div>
       <button 
