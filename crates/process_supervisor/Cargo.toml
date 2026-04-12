@@ -2,6 +2,10 @@
 name = "stacksdapp-process-supervisor"
 version = "0.1.0"
 edition = "2021"
+description = "A process management library used to orchestrate background services and local devnet nodes for Stacks development."
+license     = "MIT"
+repository  = "https://github.com/scaffold-stack/scaffold-stack"
+homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 
 [dependencies]
 anyhow.workspace = true

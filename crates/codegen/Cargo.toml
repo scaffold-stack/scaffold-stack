@@ -2,7 +2,10 @@
 name = "stacksdapp-codegen"
 version = "0.1.0"
 edition = "2021"
-description = "Codegen engine for stacksdapp Clarity ABIs"
+description = "TypeScript code generation engine for Stacks dApps, using Tera templates to create type-safe contract hooks."
+license     = "MIT"
+repository  = "https://github.com/scaffold-stack/scaffold-stack"
+homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 
 include = [
     "src/**/*",

@@ -2,7 +2,10 @@
 name = "stacksdapp-scaffold"
 version = "0.1.0"
 edition = "2021"
-description = "Scaffolding engine for stacksdapp"
+description = "The asset provider and scaffolding engine containing the Next.js frontend templates and project initialization logic."
+license     = "MIT"
+repository  = "https://github.com/scaffold-stack/scaffold-stack"
+homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 
 include = [
     "src/**/*",

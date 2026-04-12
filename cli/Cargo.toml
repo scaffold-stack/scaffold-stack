@@ -2,6 +2,10 @@
 name    = "stacksdapp"
 version = "0.1.0"
 edition = "2021"
+description = "The official stacksdapp CLI: A complete toolkit to scaffold, build, and deploy full-stack Bitcoin applications on Stacks."
+license     = "MIT"
+repository  = "https://github.com/scaffold-stack/scaffold-stack"
+homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 
 [[bin]]
 name = "stacksdapp"
