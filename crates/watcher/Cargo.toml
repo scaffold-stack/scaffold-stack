@@ -1,6 +1,6 @@
 [package]
 name = "stacksdapp-watcher"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Development-mode file watcher that monitors Clarity contract changes and triggers automatic re-generation of frontend types."
 license     = "MIT"
@@ -11,4 +11,4 @@ homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 anyhow.workspace = true
 notify.workspace = true
 tokio.workspace  = true
-stacksdapp-codegen = {version = "0.1.0", path = "../codegen" }
+stacksdapp-codegen = {version = "0.1.1", path = "../codegen" }

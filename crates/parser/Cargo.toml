@@ -1,6 +1,6 @@
 [package]
 name = "stacksdapp-parser"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A core library for parsing Clarity smart contracts and extracting ABIs for the Stacks blockchain."
 license     = "MIT"

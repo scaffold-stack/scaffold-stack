@@ -8,7 +8,7 @@ use commands::doctor;
 
 
 #[derive(Parser)]
-#[command(name = "stacks-dapp", version, about = "Scaffold-Stacks CLI")]
+#[command(name = "stacksdapp", version, about = "Scaffold-Stacks CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

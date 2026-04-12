@@ -646,7 +646,7 @@ async fn ensure_prerequisites() -> Result<()> {
     }
     if which("clarinet").is_err() {
         return Err(anyhow!(
-            "\x1b[31m✗\x1b[0m clarinet is required.\n  Install: brew install clarinet  OR  cargo install clarinet"
+            "\x1b[31m✗\x1b[0m clarinet is required.\n  Install (mac): brew install clarinet  OR for linux go to https://docs.stacks.co/get-started/developer-quickstart#source for guide"
         ));
     }
     Ok(())
