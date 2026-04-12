@@ -7,9 +7,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tera::{Filter, Tera, Value};
 
-const CONTRACTS_TS_TEMPLATE: &str = include_str!("../../../templates/contracts.ts.tera");
-const HOOKS_TS_TEMPLATE: &str = include_str!("../../../templates/hooks.ts.tera");
-const DEBUG_UI_TSX_TEMPLATE: &str = include_str!("../../../templates/debug_ui.tsx.tera");
+const CONTRACTS_TS_TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/contracts.ts.tera"));
+const HOOKS_TS_TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/hooks.ts.tera"));
+const DEBUG_UI_TSX_TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/debug_ui.tsx.tera"));
 
 // ── Custom Tera filters ───────────────────────────────────────────────────────
 

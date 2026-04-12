@@ -2,6 +2,13 @@
 name = "stacksdapp-codegen"
 version = "0.1.0"
 edition = "2021"
+description = "Codegen engine for stacksdapp Clarity ABIs"
+
+include = [
+    "src/**/*",
+    "templates/**/*",
+    "Cargo.toml"
+]
 
 [dependencies]
 anyhow.workspace     = true

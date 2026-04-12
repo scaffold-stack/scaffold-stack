@@ -2,6 +2,13 @@
 name = "stacksdapp-scaffold"
 version = "0.1.0"
 edition = "2021"
+description = "Scaffolding engine for stacksdapp"
+
+include = [
+    "src/**/*",
+    "frontend-template/**/*",
+    "Cargo.toml"
+]
 
 [dependencies]
 anyhow.workspace     = true
