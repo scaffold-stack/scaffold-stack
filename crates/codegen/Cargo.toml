@@ -2,6 +2,16 @@
 name = "stacksdapp-codegen"
 version = "0.1.0"
 edition = "2021"
+description = "TypeScript code generation engine for Stacks dApps, using Tera templates to create type-safe contract hooks."
+license     = "MIT"
+repository  = "https://github.com/scaffold-stack/scaffold-stack"
+homepage    = "https://github.com/scaffold-stack/scaffold-stack"
+
+include = [
+    "src/**/*",
+    "templates/**/*",
+    "Cargo.toml"
+]
 
 [dependencies]
 anyhow.workspace     = true
@@ -9,5 +19,5 @@ serde.workspace      = true
 serde_json.workspace = true
 tera.workspace       = true
 tokio.workspace      = true
-stacksdapp-parser    = { path = "../parser" }
+stacksdapp-parser    = {version = "0.1.0", path = "../parser" }
 sha2 = "0.10"

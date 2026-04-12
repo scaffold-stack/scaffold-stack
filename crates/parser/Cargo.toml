@@ -2,6 +2,10 @@
 name = "stacksdapp-parser"
 version = "0.1.0"
 edition = "2021"
+description = "A core library for parsing Clarity smart contracts and extracting ABIs for the Stacks blockchain."
+license     = "MIT"
+repository  = "https://github.com/scaffold-stack/scaffold-stack"
+homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 
 [dependencies]
 serde.workspace      = true

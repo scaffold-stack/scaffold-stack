@@ -2,18 +2,22 @@
 name    = "stacksdapp"
 version = "0.1.0"
 edition = "2021"
+description = "The official stacksdapp CLI: A complete toolkit to scaffold, build, and deploy full-stack Bitcoin applications on Stacks."
+license     = "MIT"
+repository  = "https://github.com/scaffold-stack/scaffold-stack"
+homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 
 [[bin]]
 name = "stacksdapp"
 path = "src/main.rs"
 
 [dependencies]
-stacksdapp-scaffold           = { path = "../crates/scaffold" }
-stacksdapp-parser             = { path = "../crates/parser" }
-stacksdapp-codegen            = { path = "../crates/codegen" }
-stacksdapp-watcher            = { path = "../crates/watcher" }
-stacksdapp-deployer           = { path = "../crates/deployer" }
-stacksdapp-process-supervisor = { path = "../crates/process_supervisor" }
+stacksdapp-scaffold           = {version = "0.1.0", path = "../crates/scaffold" }
+stacksdapp-parser             = {version = "0.1.0", path = "../crates/parser" }
+stacksdapp-codegen            = {version = "0.1.0", path = "../crates/codegen" }
+stacksdapp-watcher            = {version = "0.1.0", path = "../crates/watcher" }
+stacksdapp-deployer           = {version = "0.1.0", path = "../crates/deployer" }
+stacksdapp-process-supervisor = {version = "0.1.0", path = "../crates/process_supervisor" }
 clap.workspace      = true
 tokio.workspace     = true
 anyhow.workspace    = true

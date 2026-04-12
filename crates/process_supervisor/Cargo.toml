@@ -2,11 +2,15 @@
 name = "stacksdapp-process-supervisor"
 version = "0.1.0"
 edition = "2021"
+description = "A process management library used to orchestrate background services and local devnet nodes for Stacks development."
+license     = "MIT"
+repository  = "https://github.com/scaffold-stack/scaffold-stack"
+homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 
 [dependencies]
 anyhow.workspace = true
 tokio.workspace  = true
 serde_json.workspace = true
 which.workspace     = true
-stacksdapp-codegen = { path = "../codegen" }
-stacksdapp-watcher = { path = "../watcher" }
+stacksdapp-codegen = {version = "0.1.0", path = "../codegen" }
+stacksdapp-watcher = {version = "0.1.0", path = "../watcher" }

@@ -8,7 +8,7 @@ use tokio::process::Command;
 use which::which;
 
 static FRONTEND_TEMPLATE: Dir =
-    include_dir!("$CARGO_MANIFEST_DIR/../../frontend-template");
+    include_dir!("$CARGO_MANIFEST_DIR/frontend-template");
 
 pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
     println!();
