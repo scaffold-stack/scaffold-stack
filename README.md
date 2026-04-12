@@ -22,7 +22,13 @@ clarinet --version   # clarinet 3.x
 
 ---
 
-## Install the CLI
+## Install via Crates.io:
+```bash 
+cargo install stacksdapp
+stacksdapp --version
+```
+
+## Or build from source:
 
 ```bash
 git clone https://github.com/scaffold-stack/scaffold-stack.git
