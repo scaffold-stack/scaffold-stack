@@ -7,4 +7,4 @@ edition = "2021"
 anyhow.workspace = true
 notify.workspace = true
 tokio.workspace  = true
-stacksdapp-codegen = { path = "../codegen" }
+stacksdapp-codegen = {version = "0.1.0", path = "../codegen" }

@@ -8,6 +8,6 @@ anyhow.workspace     = true
 tokio.workspace      = true
 fs_extra.workspace   = true
 which.workspace      = true
-stacksdapp-codegen  = { path = "../codegen" }
+stacksdapp-codegen  = {version = "0.1.0", path = "../codegen" }
 include_dir = "0.7"
 indicatif.workspace = true
