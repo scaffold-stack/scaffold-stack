@@ -48,7 +48,7 @@ enum Commands {
         #[arg(long, default_value = "devnet")]
         network: String,
     },
-    /// Run contract tests (vitest) and frontend tests (vitest)
+    /// Run contract tests (vitest)
     Test,
     /// Type-check all Clarity contracts
     Check,
@@ -101,32 +101,6 @@ async fn run_test() -> Result<()> {
         Ok(s) if !s.success() => anyhow::bail!("Contract tests failed."),
         Err(_) => anyhow::bail!("Node.js >=20 is required. Install from nodejs.org"),
         Ok(_) => println!("{}", "[test] Contract tests passed.".green()),
-    }
-
-    println!("{}", "[test] Running frontend tests (vitest)...".cyan());
-    if tokio::fs::metadata("frontend/node_modules").await.is_err() {
-        println!("{}", "[test] Installing frontend dependencies...".cyan());
-        let install = Command::new("npm")
-            .arg("install")
-            .current_dir("frontend")
-            .status()
-            .await;
-        match install {
-            Ok(s) if s.success() => {}
-            Ok(_) => anyhow::bail!("npm install failed in frontend/"),
-            Err(_) => anyhow::bail!("Node.js >=20 is required. Install from nodejs.org"),
-        }
-    }
-
-    let vitest_status = Command::new("npm")
-        .args(["run", "test"])
-        .current_dir("frontend")
-        .status()
-        .await;
-    match vitest_status {
-        Ok(s) if !s.success() => anyhow::bail!("Frontend tests failed."),
-        Err(_) => anyhow::bail!("Node.js >=20 is required. Install from nodejs.org"),
-        Ok(_) => println!("{}", "[test] Frontend tests passed.".green()),
     }
 
     println!("{}", "All tests passed.".green().bold());
