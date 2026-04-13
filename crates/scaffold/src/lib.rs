@@ -169,7 +169,7 @@ async fn write_project_files(
   },
   "devDependencies": {
     "@stacks/clarinet-sdk": "^3",
-    "@stacks/transactions": "^6",
+    "@stacks/transactions": "7.4.0",
     "typescript": "^5",
     "vitest": "^1"
   }
@@ -503,7 +503,7 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
 "#),
             String::from(r#"import { describe, expect, it } from 'vitest';
 import { initSimnet } from '@stacks/clarinet-sdk';
-import { Cl } from '../node_modules/@stacks/clarinet-sdk/node_modules/@stacks/transactions';
+import { Cl } from '@stacks/transactions';
 
 const simnet = await initSimnet();
 const accounts = simnet.getAccounts();
@@ -565,7 +565,7 @@ describe('token FT', () => {
 "#),
             String::from(r#"import { describe, expect, it } from 'vitest';
 import { initSimnet } from '@stacks/clarinet-sdk';
-import { Cl } from '../node_modules/@stacks/clarinet-sdk/node_modules/@stacks/transactions';
+import { Cl } from '@stacks/transactions';
 
 const simnet = await initSimnet();
 const accounts = simnet.getAccounts();
