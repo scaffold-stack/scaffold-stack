@@ -1,6 +1,6 @@
 [package]
 name    = "stacksdapp"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "The official stacksdapp CLI: A complete toolkit to scaffold, build, and deploy full-stack Bitcoin applications on Stacks."
 license     = "MIT"
@@ -12,7 +12,7 @@ name = "stacksdapp"
 path = "src/main.rs"
 
 [dependencies]
-stacksdapp-scaffold           = {version = "0.1.2", path = "../crates/scaffold" }
+stacksdapp-scaffold           = {version = "0.1.3", path = "../crates/scaffold" }
 stacksdapp-parser             = {version = "0.1.1", path = "../crates/parser" }
 stacksdapp-codegen            = {version = "0.1.1", path = "../crates/codegen" }
 stacksdapp-watcher            = {version = "0.1.1", path = "../crates/watcher" }
