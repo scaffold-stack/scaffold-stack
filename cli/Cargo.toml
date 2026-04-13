@@ -23,3 +23,10 @@ tokio.workspace     = true
 anyhow.workspace    = true
 colored.workspace   = true
 indicatif.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace  = true
+predicates.workspace  = true
+tempfile.workspace    = true
+serde_json.workspace  = true
+which.workspace       = true
