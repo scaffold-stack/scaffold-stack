@@ -394,15 +394,15 @@ const address1 = accounts.get('wallet_1')!;
 describe('counter', () => {
   it('increments', () => {
     const { result } = simnet.callPublicFn('counter', 'increment', [], address1);
-    expect(result).toBeOk(Cl.uint(1));
+    expect(result.value.value).toBe(1n);
   });
   it('get-count returns current value', () => {
     const { result } = simnet.callReadOnlyFn('counter', 'get-count', [], address1);
-    expect(result).toBeOk(Cl.uint(1));
+    expect(result.value.value).toBe(1n);
   });
   it('decrement', () => {
     const { result } = simnet.callPublicFn('counter', 'decrement', [], address1);
-    expect(result).toBeOk(Cl.uint(0));
+    expect(result.value.value).toBe(0n);
   });
 });
 "#,
@@ -560,27 +560,24 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
     (try! (ft-transfer? {name} amount sender recipient))
     (match memo to-print (print to-print) 0x)
     (ok true)))
-"#
-            ),
-            format!(
-                r#"import {{ describe, expect, it }} from 'vitest';
-import {{ initSimnet }} from '@stacks/clarinet-sdk';
-import {{ Cl }} from '@stacks/transactions';
+"#),
+            String::from(r#"import { describe, expect, it } from 'vitest';
+import { initSimnet } from '@stacks/clarinet-sdk';
+import { Cl } from '../node_modules/@stacks/clarinet-sdk/node_modules/@stacks/transactions';
 
 const simnet = await initSimnet();
 const accounts = simnet.getAccounts();
 const deployer = accounts.get('deployer')!;
 const wallet1 = accounts.get('wallet_1')!;
 
-describe('{name} FT', () => {{
-  it('mints tokens', () => {{
-    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [Cl.uint(100), Cl.principal(wallet1)], deployer);
-    expect(result).toBeOk(Cl.bool(true));
-  }});
-}});
-"#
-            ),
-            Some("SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard"),
+describe('token FT', () => {
+  it('mints tokens', () => {
+    const { result } = simnet.callPublicFn('token', 'mint', [Cl.uint(100), Cl.standardPrincipal(deployer)], deployer);
+    expect(result.value.type).toBe('true');
+  });
+});
+"#),
+            Some("SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard")
         ),
 
         "sip009" => (
@@ -626,26 +623,23 @@ describe('{name} FT', () => {{
     (try! (nft-mint? {name} token-id recipient))
     (var-set last-token-id token-id)
     (ok token-id)))
-"#
-            ),
-            format!(
-                r#"import {{ describe, expect, it }} from 'vitest';
-import {{ initSimnet }} from '@stacks/clarinet-sdk';
-import {{ Cl }} from '@stacks/transactions';
+"#),
+            String::from(r#"import { describe, expect, it } from 'vitest';
+import { initSimnet } from '@stacks/clarinet-sdk';
+import { Cl } from '../node_modules/@stacks/clarinet-sdk/node_modules/@stacks/transactions';
 
 const simnet = await initSimnet();
 const accounts = simnet.getAccounts();
 const deployer = accounts.get('deployer')!;
 
-describe('{name} NFT', () => {{
-  it('mints a token', () => {{
-    const {{ result }} = simnet.callPublicFn('{name}', 'mint', [Cl.principal(deployer)], deployer);
-    expect(result).toBeOk(Cl.uint(1));
-  }});
-}});
-"#
-            ),
-            Some("SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait"),
+describe('nft NFT', () => {
+  it('mints a token', () => {
+    const { result } = simnet.callPublicFn('nft', 'mint', [Cl.standardPrincipal(deployer)], deployer);
+    expect(result.value.value).toBe(1n);
+  });
+});
+"#),
+            Some("SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait")
         ),
 
         _ => (
