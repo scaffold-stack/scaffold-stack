@@ -7,8 +7,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use which::which;
 
-static FRONTEND_TEMPLATE: Dir =
-    include_dir!("$CARGO_MANIFEST_DIR/frontend-template");
+static FRONTEND_TEMPLATE: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend-template");
 
 pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
     println!();
@@ -21,11 +20,13 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
 
     let root = Path::new(name);
     if root.exists() {
-        return Err(anyhow!("  \x1b[31m✗\x1b[0m Directory '{name}' already exists"));
+        return Err(anyhow!(
+            "  \x1b[31m✗\x1b[0m Directory '{name}' already exists"
+        ));
     }
 
     let style = ProgressStyle::with_template(
-        "  {spinner:.yellow} {wide_msg:.dim}  \x1b[2m[{elapsed}]\x1b[0m"
+        "  {spinner:.yellow} {wide_msg:.dim}  \x1b[2m[{elapsed}]\x1b[0m",
     )
     .unwrap()
     .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
@@ -51,7 +52,9 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
 
     write_project_files(name, root, &frontend_dir, &contracts_root).await?;
 
-    pb.println(format!("  \x1b[32m✔\x1b[0m  \x1b[1mScaffolded\x1b[0m   {name}/"));
+    pb.println(format!(
+        "  \x1b[32m✔\x1b[0m  \x1b[1mScaffolded\x1b[0m   {name}/"
+    ));
 
     // ── Step 2: Install dependencies (parallel) ───────────────────────────────
     pb.set_message("Installing dependencies...");
@@ -133,7 +136,9 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
     println!();
     println!("     \x1b[1;36m1\x1b[0m  cd {name}");
     println!("     \x1b[1;36m2\x1b[0m  Get testnet STX \x1b[2m→\x1b[0m  https://explorer.hiro.so/sandbox/faucet?chain=testnet");
-    println!("     \x1b[1;36m3\x1b[0m  Add mnemonic to \x1b[1mcontracts/settings/Testnet.toml\x1b[0m");
+    println!(
+        "     \x1b[1;36m3\x1b[0m  Add mnemonic to \x1b[1mcontracts/settings/Testnet.toml\x1b[0m"
+    );
     println!("        \x1b[2m[accounts.deployer]\x1b[0m");
     println!("        \x1b[2mmnemonic = \"your 24 words here\"\x1b[0m");
     println!("     \x1b[1;36m4\x1b[0m  \x1b[1mstacksdapp deploy --network testnet\x1b[0m");
@@ -160,7 +165,9 @@ async fn write_project_files(
     frontend_dir: &Path,
     contracts_root: &Path,
 ) -> Result<()> {
-    tokio::fs::write(contracts_root.join("package.json"), r#"{
+    tokio::fs::write(
+        contracts_root.join("package.json"),
+        r#"{
   "name": "contracts",
   "private": true,
   "type": "module",
@@ -174,15 +181,23 @@ async fn write_project_files(
     "vitest": "^1"
   }
 }
-"#).await?;
+"#,
+    )
+    .await?;
 
-    tokio::fs::write(contracts_root.join("vitest.config.ts"), r#"import { defineConfig } from 'vitest/config';
+    tokio::fs::write(
+        contracts_root.join("vitest.config.ts"),
+        r#"import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: { environment: 'node' },
 });
-"#).await?;
+"#,
+    )
+    .await?;
 
-    tokio::fs::write(contracts_root.join("tsconfig.json"), r#"{
+    tokio::fs::write(
+        contracts_root.join("tsconfig.json"),
+        r#"{
   "compilerOptions": {
     "target": "ES2020",
     "module": "ESNext",
@@ -192,9 +207,14 @@ export default defineConfig({
   },
   "include": ["tests/**/*.ts"]
 }
-"#).await?;
+"#,
+    )
+    .await?;
 
-    tokio::fs::write(contracts_root.join("Clarinet.toml"), format!(r#"[project]
+    tokio::fs::write(
+        contracts_root.join("Clarinet.toml"),
+        format!(
+            r#"[project]
 name = "{name}"
 description = ""
 authors = []
@@ -209,7 +229,10 @@ epoch = "latest"
 
 [repl.costs_version]
 version = 2
-"#)).await?;
+"#
+        ),
+    )
+    .await?;
 
     tokio::fs::write(contracts_root.join("settings/Devnet.toml"), r#"[network]
 name = "devnet"
@@ -304,25 +327,35 @@ slots = 2
 btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"
 "#).await?;
 
-    tokio::fs::write(contracts_root.join("settings/Testnet.toml"), r#"[network]
+    tokio::fs::write(
+        contracts_root.join("settings/Testnet.toml"),
+        r#"[network]
 name = "testnet"
 stacks_node_rpc_address = "https://api.testnet.hiro.so"
 deployment_fee_rate = 10
 
 [accounts.deployer]
 mnemonic = "<YOUR PRIVATE TESTNET MNEMONIC HERE>"
-"#).await?;
+"#,
+    )
+    .await?;
 
-    tokio::fs::write(contracts_root.join("settings/Mainnet.toml"), r#"[network]
+    tokio::fs::write(
+        contracts_root.join("settings/Mainnet.toml"),
+        r#"[network]
 name = "mainnet"
 stacks_node_rpc_address = "https://api.hiro.so"
 deployment_fee_rate = 10
 
 [accounts.deployer]
 mnemonic = "<YOUR PRIVATE MAINNET MNEMONIC HERE>"
-"#).await?;
+"#,
+    )
+    .await?;
 
-    tokio::fs::write(contracts_root.join("contracts/counter.clar"), r#";; counter.clar scaffolded by scaffold-stacks
+    tokio::fs::write(
+        contracts_root.join("contracts/counter.clar"),
+        r#";; counter.clar scaffolded by scaffold-stacks
 
 (define-data-var counter uint u0)
 
@@ -344,9 +377,13 @@ mnemonic = "<YOUR PRIVATE MAINNET MNEMONIC HERE>"
   (begin
     (var-set counter u0)
     (ok u0)))
-"#).await?;
+"#,
+    )
+    .await?;
 
-    tokio::fs::write(contracts_root.join("tests/counter.test.ts"), r#"import { describe, expect, it } from 'vitest';
+    tokio::fs::write(
+        contracts_root.join("tests/counter.test.ts"),
+        r#"import { describe, expect, it } from 'vitest';
 import { initSimnet } from '@stacks/clarinet-sdk';
 import { Cl } from '@stacks/transactions';
 
@@ -368,13 +405,17 @@ describe('counter', () => {
     expect(result).toBeOk(Cl.uint(0));
   });
 });
-"#).await?;
+"#,
+    )
+    .await?;
 
     tokio::fs::write(root.join("package.json"), format!(
         "{{\n  \"name\": \"{name}\",\n  \"private\": true,\n  \"scripts\": {{\n    \"dev\": \"stacksdapp dev\",\n    \"generate\": \"stacksdapp generate\",\n    \"deploy\": \"stacksdapp deploy\",\n    \"test\": \"stacksdapp test\",\n    \"check\": \"stacksdapp check\"\n  }}\n}}\n"
     )).await?;
 
-    tokio::fs::write(root.join(".gitignore"), r#"# Rust
+    tokio::fs::write(
+        root.join(".gitignore"),
+        r#"# Rust
 target/
 
 # Node
@@ -398,9 +439,13 @@ frontend/out/
 # OS
 .DS_Store
 *.pem
-"#).await?;
+"#,
+    )
+    .await?;
 
-    tokio::fs::write(frontend_dir.join(".gitignore"), r#"node_modules/
+    tokio::fs::write(
+        frontend_dir.join(".gitignore"),
+        r#"node_modules/
 .env
 .env.local
 .env.*.local
@@ -409,9 +454,13 @@ out/
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts
-"#).await?;
+"#,
+    )
+    .await?;
 
-    tokio::fs::write(contracts_root.join(".gitignore"), r#"node_modules/
+    tokio::fs::write(
+        contracts_root.join(".gitignore"),
+        r#"node_modules/
 .cache/
 .devnet/
 settings/Simnet.toml
@@ -419,16 +468,24 @@ settings/Simnet.toml
 .env.local
 .env.*.local
 .DS_Store
-"#).await?;
+"#,
+    )
+    .await?;
 
-    tokio::fs::write(frontend_dir.join(".env.local"), r#"# Network: devnet | testnet | mainnet
+    tokio::fs::write(
+        frontend_dir.join(".env.local"),
+        r#"# Network: devnet | testnet | mainnet
 NEXT_PUBLIC_NETWORK=devnet
 
 # Required for testnet/mainnet deploy:
 # DEPLOYER_PRIVATE_KEY=your_private_key_hex
-"#).await?;
+"#,
+    )
+    .await?;
 
-    tokio::fs::write(frontend_dir.join(".env.local.example"), r#"# Network: devnet | testnet | mainnet
+    tokio::fs::write(
+        frontend_dir.join(".env.local.example"),
+        r#"# Network: devnet | testnet | mainnet
 NEXT_PUBLIC_NETWORK=devnet
 
 # Required for testnet/mainnet deploy:
@@ -436,7 +493,9 @@ NEXT_PUBLIC_NETWORK=devnet
 
 # Optional node URL override:
 # NEXT_PUBLIC_STACKS_NODE_URL=https://api.testnet.hiro.so
-"#).await?;
+"#,
+    )
+    .await?;
 
     Ok(())
 }
@@ -457,7 +516,8 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
     // ── Template Selection ───────────────────────────────────────────────────
     let (contract_source, test_source, contract_id) = match template {
         "sip010" => (
-            format!(r#";; {name}.clar Fungible Token
+            format!(
+                r#";; {name}.clar Fungible Token
 
 (define-fungible-token {name})
 
@@ -500,8 +560,10 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
     (try! (ft-transfer? {name} amount sender recipient))
     (match memo to-print (print to-print) 0x)
     (ok true)))
-"#),
-            format!(r#"import {{ describe, expect, it }} from 'vitest';
+"#
+            ),
+            format!(
+                r#"import {{ describe, expect, it }} from 'vitest';
 import {{ initSimnet }} from '@stacks/clarinet-sdk';
 import {{ Cl }} from '@stacks/transactions';
 
@@ -516,12 +578,14 @@ describe('{name} FT', () => {{
     expect(result).toBeOk(Cl.bool(true));
   }});
 }});
-"#),
-            Some("SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard")
+"#
+            ),
+            Some("SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard"),
         ),
 
         "sip009" => (
-            format!(r#";; {name}.clar Non-Fungible Token
+            format!(
+                r#";; {name}.clar Non-Fungible Token
 
 (define-non-fungible-token {name} uint)
 
@@ -562,8 +626,10 @@ describe('{name} FT', () => {{
     (try! (nft-mint? {name} token-id recipient))
     (var-set last-token-id token-id)
     (ok token-id)))
-"#),
-            format!(r#"import {{ describe, expect, it }} from 'vitest';
+"#
+            ),
+            format!(
+                r#"import {{ describe, expect, it }} from 'vitest';
 import {{ initSimnet }} from '@stacks/clarinet-sdk';
 import {{ Cl }} from '@stacks/transactions';
 
@@ -577,13 +643,17 @@ describe('{name} NFT', () => {{
     expect(result).toBeOk(Cl.uint(1));
   }});
 }});
-"#),
-            Some("SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait")
+"#
+            ),
+            Some("SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait"),
         ),
 
         _ => (
-            format!(";; {name}.clar\n\n(define-read-only (get-info)\n  (ok \"{name} contract\"))\n"),
-            format!(r#"import {{ describe, expect, it }} from 'vitest';
+            format!(
+                ";; {name}.clar\n\n(define-read-only (get-info)\n  (ok \"{name} contract\"))\n"
+            ),
+            format!(
+                r#"import {{ describe, expect, it }} from 'vitest';
 import {{ initSimnet }} from '@stacks/clarinet-sdk';
 import {{ Cl }} from '@stacks/transactions';
 
@@ -597,8 +667,9 @@ describe('{name}', () => {{
     expect(result).toBeOk(Cl.stringAscii('{name} contract'));
   }});
 }});
-"#),
-            None
+"#
+            ),
+            None,
         ),
     };
 
@@ -613,7 +684,6 @@ describe('{name}', () => {{
     let clarinet_toml_path = Path::new("contracts/Clarinet.toml");
     let mut existing = tokio::fs::read_to_string(clarinet_toml_path).await?;
 
-    
     existing = existing.replace("requirements = []", "");
 
     // Add remote requirement if specified
@@ -628,7 +698,7 @@ describe('{name}', () => {{
     existing.push_str(&format!(
         "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = 4\nepoch = \"latest\"\n"
     ));
-    
+
     tokio::fs::write(clarinet_toml_path, existing).await?;
 
     // Regenerate Bindings

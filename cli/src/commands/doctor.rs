@@ -200,10 +200,7 @@ async fn check_docker() -> Check {
         .status()
         .await;
 
-    let found = match &bin_exists {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        _ => true,
-    };
+    let found = !matches!(&bin_exists, Err(e) if e.kind() == std::io::ErrorKind::NotFound);
 
     if !found {
         return Check {
