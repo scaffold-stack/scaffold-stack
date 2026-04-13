@@ -15,7 +15,10 @@ enum CheckResult {
 }
 
 pub async fn run() -> Result<()> {
-    println!("\n{}\n", "stacksdapp doctor — checking prerequisites".bold());
+    println!(
+        "\n{}\n",
+        "stacksdapp doctor — checking prerequisites".bold()
+    );
 
     let checks = vec![
         check_rust().await,
@@ -31,14 +34,29 @@ pub async fn run() -> Result<()> {
     for check in &checks {
         match &check.result {
             CheckResult::Ok(msg) => {
-                println!("  {}  {} {}", "✔".green().bold(), check.name.white(), msg.dimmed());
+                println!(
+                    "  {}  {} {}",
+                    "✔".green().bold(),
+                    check.name.white(),
+                    msg.dimmed()
+                );
             }
             CheckResult::Warn(msg) => {
-                println!("  {}  {} {}", "⚠".yellow().bold(), check.name.white(), msg.yellow());
+                println!(
+                    "  {}  {} {}",
+                    "⚠".yellow().bold(),
+                    check.name.white(),
+                    msg.yellow()
+                );
                 all_ok = false;
             }
             CheckResult::Fail(msg) => {
-                println!("  {}  {} {}", "✗".red().bold(), check.name.white().bold(), msg.red());
+                println!(
+                    "  {}  {} {}",
+                    "✗".red().bold(),
+                    check.name.white().bold(),
+                    msg.red()
+                );
                 all_ok = false;
             }
         }
@@ -47,9 +65,17 @@ pub async fn run() -> Result<()> {
     println!();
 
     if all_ok {
-        println!("{}", "  All checks passed. You're ready to build on Stacks!".green().bold());
+        println!(
+            "{}",
+            "  All checks passed. You're ready to build on Stacks!"
+                .green()
+                .bold()
+        );
     } else {
-        println!("{}", "  Some checks failed. Fix the issues above before running stacksdapp new.".yellow());
+        println!(
+            "{}",
+            "  Some checks failed. Fix the issues above before running stacksdapp new.".yellow()
+        );
     }
 
     println!();
@@ -62,9 +88,17 @@ async fn check_rust() -> Check {
     match version_output("rustc", &["--version"]).await {
         Some(v) => {
             // "rustc 1.78.0 (9b00956e5 2024-04-29)"
-            let version = v.trim_start_matches("rustc ").split_whitespace().next().unwrap_or("?").to_string();
+            let version = v
+                .trim_start_matches("rustc ")
+                .split_whitespace()
+                .next()
+                .unwrap_or("?")
+                .to_string();
             if meets_semver(&version, 1, 75) {
-                Check { name: "Rust", result: CheckResult::Ok(version) }
+                Check {
+                    name: "Rust",
+                    result: CheckResult::Ok(version),
+                }
             } else {
                 Check {
                     name: "Rust",
@@ -76,9 +110,7 @@ async fn check_rust() -> Check {
         }
         None => Check {
             name: "Rust",
-            result: CheckResult::Fail(
-                "not found. Install from https://rustup.rs".into(),
-            ),
+            result: CheckResult::Fail("not found. Install from https://rustup.rs".into()),
         },
     }
 }
@@ -88,9 +120,17 @@ async fn check_node() -> Check {
         Some(v) => {
             // "v20.11.0"
             let version = v.trim().trim_start_matches('v').to_string();
-            let major: u32 = version.split('.').next().unwrap_or("0").parse().unwrap_or(0);
+            let major: u32 = version
+                .split('.')
+                .next()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0);
             if major >= 20 {
-                Check { name: "Node.js", result: CheckResult::Ok(version) }
+                Check {
+                    name: "Node.js",
+                    result: CheckResult::Ok(version),
+                }
             } else {
                 Check {
                     name: "Node.js",
@@ -113,15 +153,24 @@ async fn check_clarinet() -> Check {
     match version_output("clarinet", &["--version"]).await {
         Some(v) => {
             // "clarinet 3.14.1" or just "3.14.1"
-            let version = v.trim()
+            let version = v
+                .trim()
                 .trim_start_matches("clarinet ")
                 .split_whitespace()
                 .next()
                 .unwrap_or("?")
                 .to_string();
-            let major: u32 = version.split('.').next().unwrap_or("0").parse().unwrap_or(0);
+            let major: u32 = version
+                .split('.')
+                .next()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0);
             if major >= 3 {
-                Check { name: "Clarinet", result: CheckResult::Ok(version) }
+                Check {
+                    name: "Clarinet",
+                    result: CheckResult::Ok(version),
+                }
             } else {
                 Check {
                     name: "Clarinet",
@@ -151,16 +200,14 @@ async fn check_docker() -> Check {
         .status()
         .await;
 
-    let found = match &bin_exists {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        _ => true,
-    };
+    let found = !matches!(&bin_exists, Err(e) if e.kind() == std::io::ErrorKind::NotFound);
 
     if !found {
         return Check {
             name: "Docker",
             result: CheckResult::Warn(
-                "not found — only required for local devnet. Install from https://docker.com".into(),
+                "not found — only required for local devnet. Install from https://docker.com"
+                    .into(),
             ),
         };
     }
@@ -176,7 +223,8 @@ async fn check_docker() -> Check {
         .unwrap_or(false);
 
     if running {
-        let version = version_output("docker", &["--version"]).await
+        let version = version_output("docker", &["--version"])
+            .await
             .map(|v| {
                 v.trim()
                     .trim_start_matches("Docker version ")
@@ -187,7 +235,10 @@ async fn check_docker() -> Check {
             })
             .unwrap_or_else(|| "?".into());
 
-        Check { name: "Docker", result: CheckResult::Ok(version) }
+        Check {
+            name: "Docker",
+            result: CheckResult::Ok(version),
+        }
     } else {
         Check {
             name: "Docker",
@@ -202,10 +253,11 @@ async fn check_git() -> Check {
     match version_output("git", &["--version"]).await {
         Some(v) => {
             // "git version 2.44.0"
-            let version = v.trim()
-                .trim_start_matches("git version ")
-                .to_string();
-            Check { name: "git", result: CheckResult::Ok(version) }
+            let version = v.trim().trim_start_matches("git version ").to_string();
+            Check {
+                name: "git",
+                result: CheckResult::Ok(version),
+            }
         }
         None => Check {
             name: "git",

@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use std::path::Path;
 use tokio::{fs, process::Command};
 
-
 /// Returns true if Clarinet.toml contains any [[project.requirements]] entries.
 async fn has_requirements() -> bool {
     let Ok(raw) = fs::read_to_string("contracts/Clarinet.toml").await else {
@@ -27,9 +26,11 @@ async fn prefetch_requirements() -> Result<()> {
         .current_dir("contracts")
         .status()
         .await
-        .map_err(|_| anyhow!(
-            "clarinet is required. Install: brew install clarinet  OR  cargo install clarinet"
-        ))?;
+        .map_err(|_| {
+            anyhow!(
+                "clarinet is required. Install: brew install clarinet  OR  cargo install clarinet"
+            )
+        })?;
 
     if !status.success() {
         return Err(anyhow!(
@@ -55,7 +56,8 @@ pub async fn dev(network: &str) -> Result<()> {
         "devnet" => dev_devnet().await,
         "testnet" | "mainnet" => dev_remote(network).await,
         other => Err(anyhow!(
-            "Unknown network '{}'. Use: devnet, testnet, or mainnet", other
+            "Unknown network '{}'. Use: devnet, testnet, or mainnet",
+            other
         )),
     }
 }
@@ -106,7 +108,10 @@ async fn dev_devnet() -> Result<()> {
 // Contracts must already be deployed (`stacks-dapp deploy --network testnet`).
 
 async fn dev_remote(network: &str) -> Result<()> {
-    println!("[dev] Starting frontend for {} (no local chain needed)...", network);
+    println!(
+        "[dev] Starting frontend for {} (no local chain needed)...",
+        network
+    );
 
     // Verify deployments.json has entries for this network
     check_deployments(network)?;
