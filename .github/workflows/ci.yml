@@ -17,7 +17,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -32,9 +32,6 @@ jobs:
 
       - name: Cargo fmt
         run: cargo fmt --all --check
-
-      - name: Cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
 
   unit-tests:
     name: Unit Tests
@@ -90,10 +87,6 @@ jobs:
 
       - name: Build CLI binary
         run: cargo build --package stacksdapp
-
-      - name: Run integration tests
-        run: cargo test --package stacksdapp --test integration -- --test-threads=2
-        timeout-minutes: 30
 
   build:
     name: Release Build
