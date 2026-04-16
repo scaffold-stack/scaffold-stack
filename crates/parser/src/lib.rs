@@ -50,13 +50,25 @@ pub enum AbiType {
         string_utf8: StringLen,
     },
     // SDK emits { "buffer": { "length": N } }
-    Buffer { buffer: StringLen },
+    Buffer {
+        buffer: StringLen,
+    },
     // Legacy { "buff": N }
-    Buff { buff: u32 },
-    List { list: ListDef },
-    Tuple { tuple: Vec<TupleEntry> },
-    Optional { optional: Box<AbiType> },
-    Response { response: ResponseDef },
+    Buff {
+        buff: u32,
+    },
+    List {
+        list: ListDef,
+    },
+    Tuple {
+        tuple: Vec<TupleEntry>,
+    },
+    Optional {
+        optional: Box<AbiType>,
+    },
+    Response {
+        response: ResponseDef,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
