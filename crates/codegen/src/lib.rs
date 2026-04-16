@@ -1,15 +1,24 @@
 use anyhow::Result;
-use stacksdapp_parser::ContractAbi;
 use sha2::{Digest, Sha256};
+use stacksdapp_parser::ContractAbi;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tera::{Filter, Tera, Value};
 
-const CONTRACTS_TS_TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/contracts.ts.tera"));
-const HOOKS_TS_TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/hooks.ts.tera"));
-const DEBUG_UI_TSX_TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/debug_ui.tsx.tera"));
+const CONTRACTS_TS_TEMPLATE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/templates/contracts.ts.tera"
+));
+const HOOKS_TS_TEMPLATE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/templates/hooks.ts.tera"
+));
+const DEBUG_UI_TSX_TEMPLATE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/templates/debug_ui.tsx.tera"
+));
 
 // ── Custom Tera filters ───────────────────────────────────────────────────────
 
@@ -94,8 +103,14 @@ pub async fn generate_all() -> Result<()> {
         return Ok(());
     }
 
-    println!("[generate] Found {} contract(s): {}", abis.len(),
-        abis.iter().map(|a| a.contract_name.as_str()).collect::<Vec<_>>().join(", "));
+    println!(
+        "[generate] Found {} contract(s): {}",
+        abis.len(),
+        abis.iter()
+            .map(|a| a.contract_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     let out_dir = project_root.join("frontend/src/generated");
     tokio::fs::create_dir_all(&out_dir).await?;
@@ -108,7 +123,8 @@ pub async fn generate_all() -> Result<()> {
         tokio::fs::write(
             &deployments_path,
             r#"{ "network": "", "deployed_at": "", "contracts": {} }"#,
-        ).await?;
+        )
+        .await?;
         println!("[generate] Created empty deployments.json (run stacks-dapp deploy to populate)");
     }
 
@@ -120,8 +136,7 @@ pub async fn generate_all() -> Result<()> {
         println!("[generate] Done — {written} file(s) written.");
     }
 
-    let network = std::env::var("NEXT_PUBLIC_NETWORK")
-        .unwrap_or_else(|_| "<network>".into());
+    let network = std::env::var("NEXT_PUBLIC_NETWORK").unwrap_or_else(|_| "<network>".into());
     let stale = find_stale_deployments(&abis, &out_dir);
     if !stale.is_empty() {
         warn_redeploy_required(&stale, &network);
@@ -167,9 +182,18 @@ pub fn render(abis: &[ContractAbi], out_dir: &Path) -> Result<usize> {
     }))?;
 
     let mut written = 0;
-    written += write_if_changed(out_dir.join("contracts.ts"), &tera.render("contracts.ts.tera", &ctx)?)?;
-    written += write_if_changed(out_dir.join("hooks.ts"), &tera.render("hooks.ts.tera", &ctx)?)?;
-    written += write_if_changed(out_dir.join("DebugContracts.tsx"), &tera.render("debug_ui.tsx.tera", &ctx)?)?;
+    written += write_if_changed(
+        out_dir.join("contracts.ts"),
+        &tera.render("contracts.ts.tera", &ctx)?,
+    )?;
+    written += write_if_changed(
+        out_dir.join("hooks.ts"),
+        &tera.render("hooks.ts.tera", &ctx)?,
+    )?;
+    written += write_if_changed(
+        out_dir.join("DebugContracts.tsx"),
+        &tera.render("debug_ui.tsx.tera", &ctx)?,
+    )?;
 
     Ok(written)
 }
@@ -182,14 +206,30 @@ fn clarity_type_str(t: &serde_json::Value) -> String {
     match t {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Object(map) => {
-            if map.contains_key("string-ascii") { return "string-ascii".into(); }
-            if map.contains_key("string-utf8")  { return "string-utf8".into(); }
-            if map.contains_key("buffer")        { return "buff".into(); }
-            if map.contains_key("buff")          { return "buff".into(); }
-            if map.contains_key("list")          { return "list".into(); }
-            if map.contains_key("tuple")         { return "tuple".into(); }
-            if map.contains_key("optional")      { return "optional".into(); }
-            if map.contains_key("response")      { return "response".into(); }
+            if map.contains_key("string-ascii") {
+                return "string-ascii".into();
+            }
+            if map.contains_key("string-utf8") {
+                return "string-utf8".into();
+            }
+            if map.contains_key("buffer") {
+                return "buff".into();
+            }
+            if map.contains_key("buff") {
+                return "buff".into();
+            }
+            if map.contains_key("list") {
+                return "list".into();
+            }
+            if map.contains_key("tuple") {
+                return "tuple".into();
+            }
+            if map.contains_key("optional") {
+                return "optional".into();
+            }
+            if map.contains_key("response") {
+                return "response".into();
+            }
             "unknown".into()
         }
         _ => "unknown".into(),

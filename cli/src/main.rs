@@ -6,7 +6,6 @@ mod commands {
 }
 use commands::doctor;
 
-
 #[derive(Parser)]
 #[command(name = "stacksdapp", version, about = "Scaffold-Stacks CLI")]
 struct Cli {
@@ -65,7 +64,9 @@ async fn main() -> Result<()> {
         Commands::New { name, no_git } => stacksdapp_scaffold::new_project(&name, !no_git).await,
         Commands::Dev { network } => stacksdapp_process_supervisor::dev(&network).await,
         Commands::Generate => stacksdapp_codegen::generate_all().await,
-        Commands::Add { name, template } => stacksdapp_scaffold::add_contract(&name, &template).await,
+        Commands::Add { name, template } => {
+            stacksdapp_scaffold::add_contract(&name, &template).await
+        }
         Commands::Deploy { network } => stacksdapp_deployer::deploy(&network).await,
         Commands::Test => run_test().await,
         Commands::Check => run_check().await,
@@ -134,7 +135,10 @@ async fn run_clean() -> Result<()> {
     use std::path::Path;
     use tokio::fs;
 
-    println!("{}", "[clean] Removing generated files and devnet state...".cyan());
+    println!(
+        "{}",
+        "[clean] Removing generated files and devnet state...".cyan()
+    );
 
     let generated_dir = Path::new("frontend/src/generated");
     if generated_dir.exists() {
@@ -169,6 +173,9 @@ async fn run_clean() -> Result<()> {
     )
     .await?;
 
-    println!("{}", "[clean] Done. Run `stacks-dapp generate` to regenerate bindings.".green());
+    println!(
+        "{}",
+        "[clean] Done. Run `stacks-dapp generate` to regenerate bindings.".green()
+    );
     Ok(())
 }

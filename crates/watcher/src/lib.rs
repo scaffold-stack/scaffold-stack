@@ -17,11 +17,10 @@ pub async fn watch_contracts(contracts_dir: &Path) -> Result<()> {
 
     while let Some(event) = rx.recv().await {
         if let Ok(e) = event {
-            if e.paths.iter().any(|p| {
-                p.extension()
-                    .map(|x| x == "clar")
-                    .unwrap_or(false)
-            }) {
+            if e.paths
+                .iter()
+                .any(|p| p.extension().map(|x| x == "clar").unwrap_or(false))
+            {
                 println!("[watcher] .clar change detected — regenerating...");
                 if let Err(e) = stacksdapp_codegen::generate_all().await {
                     eprintln!("[watcher] codegen error: {e}");

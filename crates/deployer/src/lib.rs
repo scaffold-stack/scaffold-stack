@@ -1,18 +1,18 @@
 use anyhow::{anyhow, Result};
+use bip39::Mnemonic;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::Network as BitcoinNetwork;
-use bip39::Mnemonic;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::process::Stdio;
 use std::str::FromStr;
+use tempfile::NamedTempFile;
 use tokio::fs;
+use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use std::process::Stdio;
-use tokio::io::AsyncBufReadExt;
-use tempfile::NamedTempFile;
 
 pub struct NetworkConfig {
     pub stacks_node: String,
@@ -20,10 +20,16 @@ pub struct NetworkConfig {
 
 pub fn network_config(network: &str) -> NetworkConfig {
     match network {
-        "devnet"  => NetworkConfig { stacks_node: "http://localhost:3999".into() },
-        "testnet" => NetworkConfig { stacks_node: "https://api.testnet.hiro.so".into() },
-        "mainnet" => NetworkConfig { stacks_node: "https://api.hiro.so".into() },
-        other     => panic!("Unknown network: {other}"),
+        "devnet" => NetworkConfig {
+            stacks_node: "http://localhost:3999".into(),
+        },
+        "testnet" => NetworkConfig {
+            stacks_node: "https://api.testnet.hiro.so".into(),
+        },
+        "mainnet" => NetworkConfig {
+            stacks_node: "https://api.hiro.so".into(),
+        },
+        other => panic!("Unknown network: {other}"),
     }
 }
 
@@ -130,7 +136,10 @@ async fn deploy_via_clarinet(network: &str) -> Result<()> {
     // Step 1: resolve all conflicts BEFORE touching clarinet.
     // This runs until Clarinet.toml has no contracts that exist on-chain.
     if network == "testnet" || network == "mainnet" {
-        println!("[deploy] Checking for contract name conflicts on {}...", network);
+        println!(
+            "[deploy] Checking for contract name conflicts on {}...",
+            network
+        );
         auto_version_conflicting_contracts(network).await?;
     }
 
@@ -167,7 +176,11 @@ async fn reorder_clarinet_toml(
     let mut current_block = String::new();
 
     for line in raw[first_contract..].lines() {
-        if let Some(name) = line.trim().strip_prefix("[contracts.").and_then(|s| s.strip_suffix(']')) {
+        if let Some(name) = line
+            .trim()
+            .strip_prefix("[contracts.")
+            .and_then(|s| s.strip_suffix(']'))
+        {
             if let Some(prev) = current_name.take() {
                 blocks.insert(prev, current_block.trim().to_string());
             }
@@ -211,9 +224,11 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str) -> Result<String>
         .current_dir("contracts")
         .status()
         .await
-        .map_err(|_| anyhow!(
-            "clarinet is required. Install: brew install clarinet OR cargo install clarinet"
-        ))?;
+        .map_err(|_| {
+            anyhow!(
+                "clarinet is required. Install: brew install clarinet OR cargo install clarinet"
+            )
+        })?;
 
     if !gen.success() {
         return Err(anyhow!(
@@ -232,28 +247,36 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str) -> Result<String>
 
     println!("[deploy] Applying deployment plan to {}...", network);
     let mut child = Command::new("clarinet")
-        .args(["deployments", "apply", "--no-dashboard", &format!("--{network}")])
+        .args([
+            "deployments",
+            "apply",
+            "--no-dashboard",
+            &format!("--{network}"),
+        ])
         .current_dir("contracts")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit()) 
+        .stderr(Stdio::inherit())
         .spawn()?;
 
-    let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("Failed to open stdin"))?;
-    let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to open stdout"))?;
-    
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("Failed to open stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("Failed to open stdout"))?;
 
     let contracts_dir = std::path::Path::new("contracts");
     let expected_count = resolve_deployment_order(contracts_dir).await?.len();
-    
+
     let mut confirmed_count = 0;
     let mut broadcast_count = 0;
-
 
     let mut reader = tokio::io::BufReader::new(stdout).lines();
     let mut captured_stdout = String::new();
 
-    
     while let Ok(Some(line)) = reader.next_line().await {
         println!("{}", line);
         captured_stdout.push_str(&line);
@@ -262,7 +285,9 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str) -> Result<String>
         if line.contains("REDEPLOYMENT REQUIRED") || line.contains("out of sync") {
             println!("[deploy] Error: Devnet is out of sync. You may need to restart Clarinet or increment contract version.");
             let _ = child.kill().await;
-            return Err(anyhow!("Devnet redeployment required. Check your contract versions."));
+            return Err(anyhow!(
+                "Devnet redeployment required. Check your contract versions."
+            ));
         }
 
         // Handle interactive fee prompts
@@ -272,12 +297,18 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str) -> Result<String>
         }
         if line.contains("Broadcasted") && line.contains("ContractPublish(") {
             broadcast_count += 1;
-            println!("[deploy] Broadcast progress: {}/{}", broadcast_count, expected_count);
+            println!(
+                "[deploy] Broadcast progress: {}/{}",
+                broadcast_count, expected_count
+            );
         }
 
         if line.contains("Confirmed Publish") || line.contains("Published") {
             confirmed_count += 1;
-            println!("[deploy] Confirmation progress: {}/{}", confirmed_count, expected_count);
+            println!(
+                "[deploy] Confirmation progress: {}/{}",
+                confirmed_count, expected_count
+            );
         }
 
         if confirmed_count >= expected_count {
@@ -291,7 +322,6 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str) -> Result<String>
             let _ = child.kill().await; // Don't block on extra Clarinet output after broadcast
             break;
         }
-
     }
     Ok(captured_stdout)
 }
@@ -301,7 +331,9 @@ async fn run_apply_devnet_direct(network: &str) -> Result<String> {
     let plan = read_deployment_plan(network).await?;
     let transactions = flatten_contract_publishes(&plan);
     if transactions.is_empty() {
-        return Err(anyhow!("No contract publish transactions found in the devnet deployment plan."));
+        return Err(anyhow!(
+            "No contract publish transactions found in the devnet deployment plan."
+        ));
     }
 
     let settings_raw = fs::read_to_string("contracts/settings/Devnet.toml").await?;
@@ -322,10 +354,13 @@ async fn run_apply_devnet_direct(network: &str) -> Result<String> {
     println!("[deploy] Broadcasting transactions to http://localhost:20443");
 
     for tx in transactions {
-        let contract_name = tx.contract_name.clone()
+        let contract_name = tx
+            .contract_name
+            .clone()
             .ok_or_else(|| anyhow!("Missing contract name in deployment plan."))?;
-        let contract_path = tx.path.clone()
-            .ok_or_else(|| anyhow!("Missing contract path for {contract_name} in deployment plan."))?;
+        let contract_path = tx.path.clone().ok_or_else(|| {
+            anyhow!("Missing contract path for {contract_name} in deployment plan.")
+        })?;
         let fee = tx.cost.unwrap_or(0);
         let args = serde_json::json!({
             "contractName": contract_name,
@@ -356,14 +391,28 @@ async fn run_apply_devnet_direct(network: &str) -> Result<String> {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let result: serde_json::Value = serde_json::from_str(stdout.trim())
-            .map_err(|e| anyhow!("Failed to parse devnet broadcast response: {e}\nRaw output: {}", stdout.trim()))?;
+        let result: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|e| {
+            anyhow!(
+                "Failed to parse devnet broadcast response: {e}\nRaw output: {}",
+                stdout.trim()
+            )
+        })?;
         let txid = result
             .get("txid")
             .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow!("Devnet broadcast response did not include a txid: {}", stdout.trim()))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "Devnet broadcast response did not include a txid: {}",
+                    stdout.trim()
+                )
+            })?;
 
-        println!("🟦  Publish {}.{}  Transaction broadcast {}", expected_sender, tx.contract_name.as_deref().unwrap_or(""), txid);
+        println!(
+            "🟦  Publish {}.{}  Transaction broadcast {}",
+            expected_sender,
+            tx.contract_name.as_deref().unwrap_or(""),
+            txid
+        );
         captured_stdout.push_str(&format!(
             "Broadcasted ContractPublish(StandardPrincipalData({}), ContractName(\"{}\"), \"{}\")\n",
             expected_sender,
@@ -378,7 +427,8 @@ async fn run_apply_devnet_direct(network: &str) -> Result<String> {
 
 async fn read_deployment_plan(network: &str) -> Result<DeploymentPlanFile> {
     let plan_path = format!("contracts/deployments/default.{network}-plan.yaml");
-    let raw = fs::read_to_string(&plan_path).await
+    let raw = fs::read_to_string(&plan_path)
+        .await
         .map_err(|e| anyhow!("Failed to read deployment plan at {plan_path}: {e}"))?;
     serde_yaml::from_str(&raw)
         .map_err(|e| anyhow!("Failed to parse deployment plan at {plan_path}: {e}"))
@@ -444,7 +494,10 @@ async fn fetch_local_core_nonce(address: &str) -> Result<u64> {
         .timeout(std::time::Duration::from_secs(3))
         .build()?;
     let url = format!("http://localhost:20443/v2/accounts/{address}?proof=0");
-    let response = client.get(&url).send().await
+    let response = client
+        .get(&url)
+        .send()
+        .await
         .map_err(|e| anyhow!("Failed to fetch local core account state from {url}: {e}"))?;
 
     if !response.status().is_success() {
@@ -471,12 +524,18 @@ fn derive_private_key_from_mnemonic(mnemonic: &str, derivation: &str) -> Result<
         .map_err(|e| anyhow!("Failed to derive root key from mnemonic: {e}"))?;
     let path = DerivationPath::from_str(derivation)
         .map_err(|e| anyhow!("Invalid devnet derivation path {derivation}: {e}"))?;
-    let child = root.derive_priv(&secp, &path)
+    let child = root
+        .derive_priv(&secp, &path)
         .map_err(|e| anyhow!("Failed to derive child key {derivation}: {e}"))?;
-    Ok(format!("{}01", hex::encode(child.private_key.secret_bytes())))
+    Ok(format!(
+        "{}01",
+        hex::encode(child.private_key.secret_bytes())
+    ))
 }
 
-pub async fn resolve_deployment_order(contracts_dir: &std::path::Path) -> anyhow::Result<Vec<String>> {
+pub async fn resolve_deployment_order(
+    contracts_dir: &std::path::Path,
+) -> anyhow::Result<Vec<String>> {
     let clarinet_raw = fs::read_to_string(contracts_dir.join("Clarinet.toml")).await?;
     let clarinet: ClarinetToml = toml::from_str(&clarinet_raw)
         .map_err(|e| anyhow::anyhow!("Failed to parse Clarinet.toml: {e}"))?;
@@ -523,12 +582,14 @@ fn check_plan_fee(network: &str) -> Result<()> {
         })
         .sum();
     if total_micro_stx > 0 {
-        println!("[deploy] Estimated fee: {:.6} STX", total_micro_stx as f64 / 1_000_000.0);
+        println!(
+            "[deploy] Estimated fee: {:.6} STX",
+            total_micro_stx as f64 / 1_000_000.0
+        );
     }
 
     Ok(())
 }
-
 
 async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
     let config = network_config(network);
@@ -537,7 +598,12 @@ async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
         .build()?;
 
     let _ = Command::new("clarinet")
-        .args(["deployments", "generate", &format!("--{}", network), "--low-cost"])
+        .args([
+            "deployments",
+            "generate",
+            &format!("--{}", network),
+            "--low-cost",
+        ])
         .current_dir("contracts")
         .status()
         .await;
@@ -549,25 +615,29 @@ async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
     let clarinet_path = base_dir.join("Clarinet.toml");
     let clarinet_raw = fs::read_to_string(&clarinet_path).await?;
     let mut clarinet_content = clarinet_raw.clone();
-    
+
     let clarinet_struct: ClarinetToml = toml::from_str(&clarinet_raw)?;
     let contracts = clarinet_struct.contracts.unwrap_or_default();
-    
+
     let mut any_changes = false;
 
     for (current_name, entry) in &contracts {
         let base_name = strip_version_suffix(current_name);
-        
+
         // Find the next available name on the network
-        let correct_name = find_next_free_name(&client, &config.stacks_node, &deployer, &base_name).await?;
+        let correct_name =
+            find_next_free_name(&client, &config.stacks_node, &deployer, &base_name).await?;
 
         if current_name == &correct_name {
             continue;
         }
 
-        println!("[deploy] Conflict detected: '{}' already exists on-chain. Renaming to '{}'", current_name, correct_name);
+        println!(
+            "[deploy] Conflict detected: '{}' already exists on-chain. Renaming to '{}'",
+            current_name, correct_name
+        );
 
-        let old_file_path = base_dir.join(&entry.path); 
+        let old_file_path = base_dir.join(&entry.path);
         let new_rel_path = format!("contracts/{}.clar", correct_name);
         let new_file_path = base_dir.join(&new_rel_path);
 
@@ -589,15 +659,22 @@ async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
 
         for (_, other_entry) in &contracts {
             let p = base_dir.join(&other_entry.path);
-            
-            let target_file = if p == old_file_path { &new_file_path } else { &p };
+
+            let target_file = if p == old_file_path {
+                &new_file_path
+            } else {
+                &p
+            };
 
             if target_file.exists() {
                 let source = fs::read_to_string(target_file).await?;
                 if source.contains(&dot_old_name) {
                     let updated_source = source.replace(&dot_old_name, &dot_new_name);
                     fs::write(target_file, updated_source).await?;
-                    println!("[deploy] Updated internal reference in {}", target_file.display());
+                    println!(
+                        "[deploy] Updated internal reference in {}",
+                        target_file.display()
+                    );
                 }
             }
         }
@@ -607,7 +684,7 @@ async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
 
     if any_changes {
         fs::write(&clarinet_path, &clarinet_content).await?;
-        
+
         // Remove all cached plans so Clarinet/SDK never hold onto stale
         // contract file paths after a version bump.
         for plan_name in [
@@ -620,7 +697,7 @@ async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
             let _ = fs::remove_file(plan_path).await;
         }
 
-        println!("[deploy] Clarinet.toml updated with new versions.");       
+        println!("[deploy] Clarinet.toml updated with new versions.");
         // Regenerate bindings so the frontend/tests use the new names
         let _ = Command::new("stacksdapp").arg("generate").status().await;
     }
@@ -631,8 +708,12 @@ async fn auto_version_conflicting_contracts(network: &str) -> Result<()> {
 /// Helper to parse the address Clarinet derived in the plan file
 async fn get_deployer_from_plan(network: &str) -> Result<String> {
     let plan_path = format!("contracts/deployments/default.{}-plan.yaml", network);
-    let content = fs::read_to_string(&plan_path).await
-        .map_err(|_| anyhow!("Clarinet plan not found at {}. Is the path correct?", plan_path))?;
+    let content = fs::read_to_string(&plan_path).await.map_err(|_| {
+        anyhow!(
+            "Clarinet plan not found at {}. Is the path correct?",
+            plan_path
+        )
+    })?;
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -640,7 +721,9 @@ async fn get_deployer_from_plan(network: &str) -> Result<String> {
             return Ok(trimmed.split(':').nth(1).unwrap_or("").trim().to_string());
         }
     }
-    Err(anyhow!("Could not find 'expected-sender' in the deployment plan. Check your mnemonic in settings."))
+    Err(anyhow!(
+        "Could not find 'expected-sender' in the deployment plan. Check your mnemonic in settings."
+    ))
 }
 /// Find the next free contract name starting from base_name (unversioned),
 /// then base_name-v2, base_name-v3, etc.
@@ -652,7 +735,10 @@ async fn find_next_free_name(
 ) -> Result<String> {
     // Check unversioned first (e.g. "counter")
     let url = format!("{node}/v2/contracts/source/{deployer}/{base_name}");
-    let base_free = !client.get(&url).send().await
+    let base_free = !client
+        .get(&url)
+        .send()
+        .await
         .map(|r| r.status().is_success())
         .unwrap_or(false);
 
@@ -665,7 +751,10 @@ async fn find_next_free_name(
     loop {
         let candidate = format!("{base_name}-v{version}");
         let url = format!("{node}/v2/contracts/interface/{deployer}/{candidate}");
-        let taken = client.get(&url).send().await
+        let taken = client
+            .get(&url)
+            .send()
+            .await
             .map(|r| r.status().is_success())
             .unwrap_or(false);
         if !taken {
@@ -679,7 +768,6 @@ async fn find_next_free_name(
         }
     }
 }
-
 
 /// Strip trailing -vN suffix: "counter-v2" → "counter", "foo-v10" → "foo"
 fn strip_version_suffix(name: &str) -> String {
@@ -697,8 +785,8 @@ fn strip_version_suffix(name: &str) -> String {
 
 fn validate_settings_mnemonic(network: &str) -> Result<()> {
     let path = format!("contracts/settings/{}.toml", capitalize(network));
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|_| anyhow!("Settings file not found: {path}"))?;
+    let raw =
+        std::fs::read_to_string(&path).map_err(|_| anyhow!("Settings file not found: {path}"))?;
     let mnemonic = parse_mnemonic(&raw).unwrap_or_default();
     if mnemonic.is_empty() || mnemonic.contains('<') || mnemonic.contains('>') {
         return Err(anyhow!(
@@ -716,8 +804,13 @@ fn parse_mnemonic(toml_raw: &str) -> Option<String> {
     let mut in_deployer = false;
     for line in toml_raw.lines() {
         let trimmed = line.trim();
-        if trimmed == "[accounts.deployer]" { in_deployer = true; continue; }
-        if trimmed.starts_with('[') { in_deployer = false; }
+        if trimmed == "[accounts.deployer]" {
+            in_deployer = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_deployer = false;
+        }
         if in_deployer && trimmed.starts_with("mnemonic") {
             if let Some(val) = trimmed.splitn(2, '=').nth(1) {
                 return Some(val.trim().trim_matches('"').to_string());
@@ -731,8 +824,13 @@ fn parse_deployer_derivation(toml_raw: &str) -> Option<String> {
     let mut in_deployer = false;
     for line in toml_raw.lines() {
         let trimmed = line.trim();
-        if trimmed == "[accounts.deployer]" { in_deployer = true; continue; }
-        if trimmed.starts_with('[') { in_deployer = false; }
+        if trimmed == "[accounts.deployer]" {
+            in_deployer = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_deployer = false;
+        }
         if in_deployer && trimmed.starts_with("derivation") {
             if let Some(val) = trimmed.splitn(2, '=').nth(1) {
                 return Some(val.trim().trim_matches('"').to_string());
@@ -748,13 +846,19 @@ async fn wait_for_node(url: &str) -> Result<()> {
         .build()?;
     println!("[deploy] Waiting for Stacks node at {url}...");
     for attempt in 1..=60 {
-        if client.get(&format!("{url}/v2/info")).send().await
-            .map(|r| r.status().is_success()).unwrap_or(false)
+        if client
+            .get(&format!("{url}/v2/info"))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
         {
             println!("[deploy] ✔ Node is ready");
             return Ok(());
         }
-        if attempt % 10 == 0 { println!("[deploy] Still waiting... ({attempt}s)"); }
+        if attempt % 10 == 0 {
+            println!("[deploy] Still waiting... ({attempt}s)");
+        }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
     Err(anyhow!(
@@ -782,7 +886,7 @@ async fn write_deployments_json_from_output(network: &str, output: &str) -> Resu
                 let rest = &line[pos + cn_marker.len()..];
                 if let Some(end) = rest.find('"') {
                     let contract_name = rest[..end].to_string();
-                    
+
                     // Extract TXID: It's the 64-char hex string inside quotes at the end
                     // Format: ...), "TXID") Publish ...
                     let parts: Vec<&str> = line.split('"').collect();
@@ -803,8 +907,8 @@ async fn write_deployments_json_from_output(network: &str, output: &str) -> Resu
         .unwrap_or_else(|| "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM".to_string());
 
     let clarinet_raw = fs::read_to_string("contracts/Clarinet.toml").await?;
-    let clarinet: ClarinetToml = toml::from_str(&clarinet_raw)
-        .map_err(|e| anyhow!("Failed to parse Clarinet.toml: {e}"))?;
+    let clarinet: ClarinetToml =
+        toml::from_str(&clarinet_raw).map_err(|e| anyhow!("Failed to parse Clarinet.toml: {e}"))?;
     let contract_names: Vec<String> = clarinet
         .contracts
         .as_ref()
@@ -820,14 +924,22 @@ async fn write_deployments_json_from_output(network: &str, output: &str) -> Resu
 
     for name in contract_names {
         let contract_id = format!("{deployer_address}.{name}");
-        let txid = txid_map.get(&name)
+        let txid = txid_map
+            .get(&name)
             .map(|t| format!("0x{t}"))
             .unwrap_or_default();
-        println!("  ✔ {name} | txid {} | address {contract_id}",
-            if txid.is_empty() { "(pending)" } else { &txid });
-        contracts_map.insert(name.clone(), DeploymentInfo {
-            contract_id, tx_id: txid, block_height: 0,
-        });
+        println!(
+            "  ✔ {name} | txid {} | address {contract_id}",
+            if txid.is_empty() { "(pending)" } else { &txid }
+        );
+        contracts_map.insert(
+            name.clone(),
+            DeploymentInfo {
+                contract_id,
+                tx_id: txid,
+                block_height: 0,
+            },
+        );
     }
 
     let json = serde_json::to_string_pretty(&DeploymentFile {
@@ -837,7 +949,9 @@ async fn write_deployments_json_from_output(network: &str, output: &str) -> Resu
     })?;
 
     let out_path = Path::new("frontend/src/generated/deployments.json");
-    if let Some(p) = out_path.parent() { fs::create_dir_all(p).await?; }
+    if let Some(p) = out_path.parent() {
+        fs::create_dir_all(p).await?;
+    }
     fs::write(out_path, &json).await?;
     println!("\n[deploy] Written to {}", out_path.display());
     Ok(())
@@ -859,9 +973,7 @@ async fn wait_for_devnet_contracts(deployer: &str, contract_names: &[String]) ->
         let mut pending = Vec::new();
 
         for contract_name in contract_names {
-            let url = format!(
-                "{node}/v2/contracts/source/{deployer}/{contract_name}?proof=0"
-            );
+            let url = format!("{node}/v2/contracts/source/{deployer}/{contract_name}?proof=0");
             let deployed = client
                 .get(&url)
                 .send()
@@ -938,14 +1050,10 @@ async fn fetch_local_core_info() -> Result<CoreInfoResponse> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()?;
-    let response = client
-        .get("http://localhost:20443/v2/info")
-        .send()
-        .await?;
+    let response = client.get("http://localhost:20443/v2/info").send().await?;
     let response = response.error_for_status()?;
     Ok(response.json().await?)
 }
-
 
 fn parse_deployer_address_from_settings(toml_raw: &str) -> Option<String> {
     for line in toml_raw.lines() {
@@ -989,10 +1097,7 @@ fn topological_sort(
     contracts: &HashMap<String, Vec<String>>, // name → [deps]
 ) -> anyhow::Result<Vec<String>> {
     // Build in-degree map
-    let mut in_degree: HashMap<&str, usize> = contracts
-        .keys()
-        .map(|k| (k.as_str(), 0))
-        .collect();
+    let mut in_degree: HashMap<&str, usize> = contracts.keys().map(|k| (k.as_str(), 0)).collect();
 
     for deps in contracts.values() {
         for dep in deps {
