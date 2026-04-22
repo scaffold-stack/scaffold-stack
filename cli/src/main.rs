@@ -82,7 +82,14 @@ async fn run_test() -> Result<()> {
     if tokio::fs::metadata("contracts/node_modules").await.is_err() {
         println!("{}", "[test] Installing contract dependencies...".cyan());
         let install = Command::new("npm")
-            .arg("install")
+            .args([
+                "install",
+                "--no-audit",
+                "--no-fund",
+                "--prefer-offline",
+                "--progress=false",
+                "--loglevel=error",
+            ])
             .current_dir("contracts")
             .status()
             .await;
