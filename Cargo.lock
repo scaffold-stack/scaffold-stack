@@ -2082,7 +2082,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stacksdapp"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -2099,7 +2099,7 @@ dependencies = [
 
 [[package]]
 name = "stacksdapp-codegen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -2141,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "stacksdapp-process-supervisor"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "stacksdapp-scaffold"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "fs_extra",
