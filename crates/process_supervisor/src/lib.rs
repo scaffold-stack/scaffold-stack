@@ -219,16 +219,6 @@ async fn reset_local_devnet_state() -> Result<()> {
 }
 
 async fn spawn_next_dev(network: &str) -> Result<()> {
-    if fs::metadata("frontend/node_modules").await.is_err() {
-        println!("[dev] Installing frontend dependencies...");
-        Command::new("npm")
-            .arg("install")
-            .current_dir("frontend")
-            .spawn()?
-            .wait()
-            .await?;
-    }
-
     Command::new("npm")
         .args(["run", "dev"])
         .current_dir("frontend")
