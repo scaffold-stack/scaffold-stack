@@ -69,6 +69,8 @@ mnemonic = "your 24 words here"
 stacksdapp deploy --network testnet
 # deploy a single contract only
 stacksdapp deploy --network testnet --contract counter
+# preview deployment without broadcasting
+stacksdapp deploy --network testnet --dry-run
 ```
 
 ```
@@ -218,6 +220,7 @@ my-app/
 | `stacksdapp dev` | Start local devnet + frontend + watcher (Docker required) |
 | `stacksdapp deploy --network testnet` | Deploy to testnet |
 | `stacksdapp deploy --network testnet --contract <name>` | Deploy only one contract by name |
+| `stacksdapp deploy --network testnet --dry-run` | Generate plan + estimated fee without broadcasting |
 | `stacksdapp deploy --network mainnet` | Deploy to mainnet |
 | `stacksdapp deploy --network devnet` | Deploy to local devnet |
 | `stacksdapp generate` | Parse ABIs → regenerate TS bindings + debug UI |
