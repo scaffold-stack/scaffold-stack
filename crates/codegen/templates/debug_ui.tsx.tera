@@ -163,20 +163,133 @@ const S = {
   },
 } as const;
 
-// Convert a raw string value to the appropriate ClarityValue based on the type hint
-function toClarityValue(value: string, typeHint: string): import('@stacks/transactions').ClarityValue {
+type AbiType = any;
+
+function isObjectLike(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function sampleValueForAbi(typeDef: AbiType): unknown {
+  if (typeof typeDef === 'string') {
+    const t = typeDef.toLowerCase();
+    if (t === 'bool') return true;
+    if (t.startsWith('uint') || t.startsWith('int')) return 1;
+    if (t === 'principal') return 'ST000000000000000000002AMW42H';
+    if (t.startsWith('string')) return 'example';
+    if (t.startsWith('buff')) return 'ff';
+    return 'example';
+  }
+  if (!isObjectLike(typeDef)) return 'example';
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'string-ascii')) return 'example';
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'string-utf8')) return 'example';
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'buffer') || Object.prototype.hasOwnProperty.call(typeDef, 'buff')) return 'ff';
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'optional')) return null;
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'response')) return { ok: 1 };
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'list')) {
+    const listDef = (typeDef as any).list ?? {};
+    return [sampleValueForAbi(listDef.type)];
+  }
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'tuple')) {
+    const entries = Array.isArray((typeDef as any).tuple) ? (typeDef as any).tuple : [];
+    const out: Record<string, unknown> = {};
+    for (const entry of entries) {
+      if (entry && typeof entry.name === 'string') out[entry.name] = sampleValueForAbi(entry.type);
+    }
+    return out;
+  }
+  return 'example';
+}
+
+function sampleJsonForAbi(typeDef: AbiType): string {
+  return JSON.stringify(sampleValueForAbi(typeDef), null, 2);
+}
+
+function parseJsonArg(value: string, label: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error(`Invalid JSON for argument "${label}".`);
+  }
+}
+
+function valueToClarityFromJson(value: unknown, typeDef: AbiType, label: string): import('@stacks/transactions').ClarityValue {
+  if (typeof typeDef === 'string') {
+    const t = typeDef.toLowerCase();
+    if (t === 'bool') return Cl.bool(Boolean(value));
+    if (t.startsWith('uint')) return Cl.uint(BigInt(String(value)));
+    if (t.startsWith('int')) return Cl.int(BigInt(String(value)));
+    if (t === 'principal') return Cl.principal(String(value));
+    if (t.startsWith('string-utf8')) return Cl.stringUtf8(String(value));
+    if (t.startsWith('string-ascii')) return Cl.stringAscii(String(value));
+    if (t.startsWith('buff')) return Cl.bufferFromHex(String(value));
+    if (/^\d+$/.test(String(value))) return Cl.uint(BigInt(String(value)));
+    return Cl.stringAscii(String(value));
+  }
+  return toClarityValue(JSON.stringify(value), typeDef, label);
+}
+
+// Convert a raw string value to the appropriate ClarityValue based on ABI type.
+function toClarityValue(value: string, typeDef: AbiType, argLabel = 'arg'): import('@stacks/transactions').ClarityValue {
   const v = value.trim();
-  const t = typeHint.toLowerCase();
-  if (t === 'bool')    return Cl.bool(v === 'true' || v === '1');
-  if (t.startsWith('uint'))  return Cl.uint(BigInt(v));
-  if (t.startsWith('int'))   return Cl.int(BigInt(v));
-  if (t === 'principal')     return Cl.principal(v);
-  if (t.startsWith('string-utf8'))  return Cl.stringUtf8(v);
-  if (t.startsWith('string-ascii')) return Cl.stringAscii(v);
-  if (t.startsWith('buff'))  return Cl.bufferFromHex(v);
-  // fallback: try uint, then string
-  if (/^\d+$/.test(v)) return Cl.uint(BigInt(v));
-  return Cl.stringAscii(v);
+  if (typeof typeDef === 'string') {
+    const t = typeDef.toLowerCase();
+    if (t === 'bool') return Cl.bool(v === 'true' || v === '1');
+    if (t.startsWith('uint')) return Cl.uint(BigInt(v));
+    if (t.startsWith('int')) return Cl.int(BigInt(v));
+    if (t === 'principal') return Cl.principal(v);
+    if (t.startsWith('string-utf8')) return Cl.stringUtf8(v);
+    if (t.startsWith('string-ascii')) return Cl.stringAscii(v);
+    if (t.startsWith('buff')) return Cl.bufferFromHex(v);
+    if (/^\d+$/.test(v)) return Cl.uint(BigInt(v));
+    return Cl.stringAscii(v);
+  }
+  if (!isObjectLike(typeDef)) throw new Error(`Unsupported ABI type for argument "${argLabel}".`);
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'string-ascii')) return Cl.stringAscii(v);
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'string-utf8')) return Cl.stringUtf8(v);
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'buffer') || Object.prototype.hasOwnProperty.call(typeDef, 'buff')) return Cl.bufferFromHex(v);
+
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'tuple')) {
+    const parsed = parseJsonArg(v, argLabel);
+    if (!isObjectLike(parsed)) throw new Error(`Tuple argument "${argLabel}" must be a JSON object.`);
+    const entries = Array.isArray((typeDef as any).tuple) ? (typeDef as any).tuple : [];
+    const converted: Record<string, import('@stacks/transactions').ClarityValue> = {};
+    for (const entry of entries) {
+      const field = entry?.name;
+      if (typeof field !== 'string') continue;
+      if (!(field in parsed)) throw new Error(`Tuple argument "${argLabel}" is missing field "${field}".`);
+      converted[field] = valueToClarityFromJson((parsed as any)[field], entry.type, `${argLabel}.${field}`);
+    }
+    return Cl.tuple(converted);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'list')) {
+    const parsed = parseJsonArg(v, argLabel);
+    if (!Array.isArray(parsed)) throw new Error(`List argument "${argLabel}" must be a JSON array.`);
+    const listDef = (typeDef as any).list ?? {};
+    const innerType = listDef.type;
+    const maxLen = Number(listDef.length ?? 0);
+    if (maxLen > 0 && parsed.length > maxLen) throw new Error(`List argument "${argLabel}" exceeds max length ${maxLen}.`);
+    return Cl.list(parsed.map((item, idx) => valueToClarityFromJson(item, innerType, `${argLabel}[${idx}]`)));
+  }
+
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'optional')) {
+    const parsed = parseJsonArg(v, argLabel);
+    if (parsed === null) return Cl.none();
+    return Cl.some(valueToClarityFromJson(parsed, (typeDef as any).optional, `${argLabel}.some`));
+  }
+
+  if (Object.prototype.hasOwnProperty.call(typeDef, 'response')) {
+    const parsed = parseJsonArg(v, argLabel);
+    if (!isObjectLike(parsed)) throw new Error(`Response argument "${argLabel}" must be {"ok": ...} or {"error": ...}.`);
+    const hasOk = Object.prototype.hasOwnProperty.call(parsed, 'ok');
+    const hasErr = Object.prototype.hasOwnProperty.call(parsed, 'error');
+    if (hasOk === hasErr) throw new Error(`Response argument "${argLabel}" must include exactly one of "ok" or "error".`);
+    const responseDef = (typeDef as any).response ?? {};
+    if (hasOk) return Cl.ok(valueToClarityFromJson((parsed as any).ok, responseDef.ok, `${argLabel}.ok`));
+    return Cl.error(valueToClarityFromJson((parsed as any).error, responseDef.error, `${argLabel}.error`));
+  }
+
+  throw new Error(`Unsupported complex ABI type for argument "${argLabel}".`);
 }
 {% endraw %}
 
@@ -284,7 +397,7 @@ function FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | up
 
   {% if fn.args %}
   const [args, setArgs] = useState<Record<string, string>>({
-    {% for arg in fn.args %}'{{ arg.name }}': '', {% endfor %}
+    {% for arg in fn.args %}'{{ arg.name }}': {% if arg.type_str == "tuple" or arg.type_str == "list" or arg.type_str == "optional" or arg.type_str == "response" %}sampleJsonForAbi({{ arg.type | json_encode | safe }}){% else %}''{% endif %}, {% endfor %}
   });
   const setArg = (name: string, value: string) => setArgs(a => Object.assign({}, a, { [name]: value }));
   {% endif %}
@@ -304,12 +417,21 @@ function FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | up
       </div>
 
       <div style={Object.assign({}, S.formContainer, { maxHeight: isOpen ? '1000px' : '0px', opacity: isOpen ? 1 : 0, marginTop: isOpen ? '20px' : '0px' })}>
-        <form style={S.form} onSubmit={async (e) => { e.preventDefault(); await call([{% if fn.args %}{% for arg in fn.args %}toClarityValue(args['{{ arg.name }}'] ?? '', '{{ arg.type_str }}'),{% endfor %}{% endif %}]); }}>
+        <form style={S.form} onSubmit={async (e) => { e.preventDefault(); await call([{% if fn.args %}{% for arg in fn.args %}toClarityValue(args['{{ arg.name }}'] ?? '', {{ arg.type | json_encode | safe }}, '{{ arg.name }}'),{% endfor %}{% endif %}]); }}>
           {% if fn.args %}
             {% for arg in fn.args %}
             <div>
               <label style={S.argLabel}>{{ arg.name }} <span style={S.argType}>{{ arg.type_str | upper }}</span></label>
+              {% if arg.type_str == "tuple" or arg.type_str == "list" or arg.type_str == "optional" or arg.type_str == "response" %}
+              <textarea
+                style={Object.assign({}, S.argInput, { minHeight: '120px', resize: 'vertical' as const })}
+                value={args['{{ arg.name }}']}
+                onChange={e => setArg('{{ arg.name }}', e.target.value)}
+              />
+              <p style={Object.assign({}, S.argType, { marginLeft: 0, marginTop: '6px', display: 'block' })}>JSON input expected. Example prefilled from ABI.</p>
+              {% else %}
               <input style={S.argInput} value={args['{{ arg.name }}']} onChange={e => setArg('{{ arg.name }}', e.target.value)} />
+              {% endif %}
             </div>
             {% endfor %}
           {% endif %}
