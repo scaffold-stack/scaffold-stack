@@ -126,10 +126,6 @@ pub async fn deploy(network: &str, contract: Option<&str>) -> Result<()> {
 // ── Core deploy ───────────────────────────────────────────────────────────────
 
 async fn deploy_via_clarinet(network: &str, contract: Option<&str>) -> Result<()> {
-    // Always use --low-cost for fee estimation.
-    // Testnet fee estimation is unreliable (low tx volume → extreme outliers).
-    // Mainnet fees are set conservatively — increase to "--medium-cost" if
-    // transactions are not confirming within a reasonable time.
     let fee_flag = "--low-cost";
 
     let contracts_dir = std::path::Path::new("contracts");
@@ -139,8 +135,7 @@ async fn deploy_via_clarinet(network: &str, contract: Option<&str>) -> Result<()
     }
     reorder_clarinet_toml(contracts_dir, &ordered).await?;
 
-    // Step 1: resolve all conflicts BEFORE touching clarinet.
-    // This runs until Clarinet.toml has no contracts that exist on-chain.
+   
     if network == "testnet" || network == "mainnet" {
         println!(
             "[deploy] Checking for contract name conflicts on {}...",
@@ -149,11 +144,8 @@ async fn deploy_via_clarinet(network: &str, contract: Option<&str>) -> Result<()
         auto_version_conflicting_contracts(network, contract).await?;
     }
 
-    // Step 2: generate + apply
+ 
     let clarinet_output = run_generate_and_apply(network, fee_flag, contract).await?;
-
-    // Step 3: if clarinet still reports ContractAlreadyExists (race condition
-    // or something we missed), resolve again and retry once more.
     if clarinet_output.contains("ContractAlreadyExists") {
         println!("[deploy] Unexpected conflict after versioning — re-resolving and retrying...");
         auto_version_conflicting_contracts(network, contract).await?;
@@ -171,8 +163,7 @@ async fn reorder_clarinet_toml(
     let path = contracts_dir.join("Clarinet.toml");
     let raw = fs::read_to_string(&path).await?;
 
-    // Split into the project header (everything before the first [contracts.])
-    // and the individual contract blocks
+   
     let first_contract = raw.find("\n[contracts.").unwrap_or(raw.len());
     let header = raw[..first_contract].to_string();
 
@@ -302,9 +293,7 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str, contract: Option<
 
         // Handle interactive fee prompts
         if line.contains("Overwrite?") {
-            // For single-contract deploys we explicitly filtered the on-disk plan.
-            // Answer "n" to preserve that file instead of letting Clarinet recompute
-            // from Clarinet.toml (which would re-include all contracts).
+
             let answer = if contract.is_some() { b"n\n" } else { b"y\n" };
             let _ = stdin.write_all(answer).await;
             let _ = stdin.flush().await;
@@ -617,8 +606,6 @@ async fn auto_version_conflicting_contracts(network: &str, contract: Option<&str
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
 
-    // Prevent Clarinet from prompting "Overwrite? [Y/n]" during the
-    // conflict-check prepass. This command must stay non-interactive.
     let plan_path = format!("contracts/deployments/default.{network}-plan.yaml");
     if Path::new(&plan_path).exists() {
         let _ = fs::remove_file(&plan_path).await;
@@ -715,8 +702,6 @@ async fn auto_version_conflicting_contracts(network: &str, contract: Option<&str
     if any_changes {
         fs::write(&clarinet_path, &clarinet_content).await?;
 
-        // Remove all cached plans so Clarinet/SDK never hold onto stale
-        // contract file paths after a version bump.
         for plan_name in [
             "default.devnet-plan.yaml",
             "default.simnet-plan.yaml",
@@ -755,8 +740,7 @@ async fn get_deployer_from_plan(network: &str) -> Result<String> {
         "Could not find 'expected-sender' in the deployment plan. Check your mnemonic in settings."
     ))
 }
-/// Find the next free contract name starting from base_name (unversioned),
-/// then base_name-v2, base_name-v3, etc.
+
 async fn find_next_free_name(
     client: &reqwest::Client,
     node: &str,
