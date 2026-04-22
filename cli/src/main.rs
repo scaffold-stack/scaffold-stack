@@ -77,9 +77,7 @@ async fn main() -> Result<()> {
             network,
             contract,
             dry_run,
-        } => {
-            stacksdapp_deployer::deploy(&network, contract.as_deref(), dry_run).await
-        }
+        } => stacksdapp_deployer::deploy(&network, contract.as_deref(), dry_run).await,
         Commands::Test => run_test().await,
         Commands::Check => run_check().await,
         Commands::Clean => run_clean().await,

@@ -138,7 +138,6 @@ async fn deploy_via_clarinet(network: &str, contract: Option<&str>, dry_run: boo
     }
     reorder_clarinet_toml(contracts_dir, &ordered).await?;
 
-   
     if network == "testnet" || network == "mainnet" {
         println!(
             "[deploy] Checking for contract name conflicts on {}...",
@@ -147,7 +146,6 @@ async fn deploy_via_clarinet(network: &str, contract: Option<&str>, dry_run: boo
         auto_version_conflicting_contracts(network, contract).await?;
     }
 
- 
     let clarinet_output = run_generate_and_apply(network, fee_flag, contract, dry_run).await?;
 
     if dry_run {
@@ -170,7 +168,6 @@ async fn reorder_clarinet_toml(
     let path = contracts_dir.join("Clarinet.toml");
     let raw = fs::read_to_string(&path).await?;
 
-   
     let first_contract = raw.find("\n[contracts.").unwrap_or(raw.len());
     let header = raw[..first_contract].to_string();
 
@@ -315,7 +312,6 @@ async fn run_generate_and_apply(
 
         // Handle interactive fee prompts
         if line.contains("Overwrite?") {
-
             let answer = if contract.is_some() { b"n\n" } else { b"y\n" };
             let _ = stdin.write_all(answer).await;
             let _ = stdin.flush().await;
@@ -1055,7 +1051,9 @@ async fn filter_plan_to_contract(network: &str, contract_name: &str) -> Result<(
         .ok_or_else(|| anyhow!("Deployment plan is missing plan.batches"))?;
 
     for batch in batches.iter_mut() {
-        let Some(transactions) = batch.get_mut("transactions").and_then(|t| t.as_sequence_mut())
+        let Some(transactions) = batch
+            .get_mut("transactions")
+            .and_then(|t| t.as_sequence_mut())
         else {
             continue;
         };
