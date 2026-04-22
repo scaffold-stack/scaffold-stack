@@ -84,9 +84,16 @@ pub async fn generate_all() -> Result<()> {
 
     let frontend_dir = project_root.join("frontend");
     if !frontend_dir.join("node_modules").exists() {
-        println!("Installing frontend dependencies (npm install)...");
+        println!("[generate] Installing frontend dependencies...");
         let status = tokio::process::Command::new("npm")
-            .arg("install")
+            .args([
+                "install",
+                "--no-audit",
+                "--no-fund",
+                "--prefer-offline",
+                "--progress=false",
+                "--loglevel=error",
+            ])
             .current_dir(&frontend_dir)
             .status()
             .await?;
