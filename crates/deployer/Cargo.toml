@@ -1,6 +1,6 @@
 [package]
 name = "stacksdapp-deployer"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "A specialized deployment utility for broadcasting Clarity smart contracts to Stacks devnet, testnet, and mainnet."
 license     = "MIT"

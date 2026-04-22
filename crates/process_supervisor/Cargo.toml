@@ -1,6 +1,6 @@
 [package]
 name = "stacksdapp-process-supervisor"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "A process management library used to orchestrate background services and local devnet nodes for Stacks development."
 license     = "MIT"

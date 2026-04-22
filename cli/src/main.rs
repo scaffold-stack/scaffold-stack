@@ -46,6 +46,12 @@ enum Commands {
     Deploy {
         #[arg(long, default_value = "devnet")]
         network: String,
+        /// Deploy a single contract by name (must exist in contracts/Clarinet.toml)
+        #[arg(long)]
+        contract: Option<String>,
+        /// Generate plan and fee estimate without broadcasting transactions
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Run contract tests (vitest)
     Test,
@@ -67,7 +73,11 @@ async fn main() -> Result<()> {
         Commands::Add { name, template } => {
             stacksdapp_scaffold::add_contract(&name, &template).await
         }
-        Commands::Deploy { network } => stacksdapp_deployer::deploy(&network).await,
+        Commands::Deploy {
+            network,
+            contract,
+            dry_run,
+        } => stacksdapp_deployer::deploy(&network, contract.as_deref(), dry_run).await,
         Commands::Test => run_test().await,
         Commands::Check => run_check().await,
         Commands::Clean => run_clean().await,
@@ -82,7 +92,14 @@ async fn run_test() -> Result<()> {
     if tokio::fs::metadata("contracts/node_modules").await.is_err() {
         println!("{}", "[test] Installing contract dependencies...".cyan());
         let install = Command::new("npm")
-            .arg("install")
+            .args([
+                "install",
+                "--no-audit",
+                "--no-fund",
+                "--prefer-offline",
+                "--progress=false",
+                "--loglevel=error",
+            ])
             .current_dir("contracts")
             .status()
             .await;

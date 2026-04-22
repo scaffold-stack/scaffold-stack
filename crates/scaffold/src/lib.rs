@@ -4,6 +4,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use which::which;
 
@@ -11,7 +12,7 @@ static FRONTEND_TEMPLATE: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend-templ
 
 pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
     println!();
-    println!("   \x1b[1;33mscaffold-stacks\x1b[0m  \x1b[2mv0.1.0\x1b[0m");
+    println!("   \x1b[1;33mScaffold Stacks\x1b[0m  \x1b[2m\x1b[0m");
     println!("  \x1b[2m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m");
     println!("  \x1b[1mCreating\x1b[0m  \x1b[1;36m{name}\x1b[0m");
     println!();
@@ -57,41 +58,14 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
     ));
 
     // ── Step 2: Install dependencies (parallel) ───────────────────────────────
-    pb.set_message("Installing dependencies...");
+    pb.set_message("Installing frontend dependencies...");
 
     let fe_dir = frontend_dir.clone();
     let ct_dir = contracts_root.clone();
+    run_npm_install_with_feedback(&pb, &fe_dir, "frontend").await?;
 
-    let frontend_install = tokio::spawn(async move {
-        Command::new("npm")
-            .arg("install")
-            .current_dir(&fe_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-    });
-
-    let contracts_install = tokio::spawn(async move {
-        Command::new("npm")
-            .arg("install")
-            .current_dir(&ct_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-    });
-
-    let (fe, ct) = tokio::join!(frontend_install, contracts_install);
-
-    match fe.unwrap() {
-        Ok(s) if s.success() => {}
-        _ => return Err(anyhow!("npm install failed in frontend/")),
-    }
-    match ct.unwrap() {
-        Ok(s) if s.success() => {}
-        _ => return Err(anyhow!("npm install failed in contracts/")),
-    }
+    pb.set_message("Installing contract dependencies...");
+    run_npm_install_with_feedback(&pb, &ct_dir, "contracts").await?;
 
     pb.println("  \x1b[32m✔\x1b[0m  \x1b[1mInstalled\x1b[0m    node_modules");
 
@@ -720,4 +694,68 @@ async fn ensure_prerequisites() -> Result<()> {
         ));
     }
     Ok(())
+}
+
+async fn run_npm_install_with_feedback(pb: &ProgressBar, dir: &Path, scope: &str) -> Result<()> {
+    let mut child = Command::new("npm")
+        .args([
+            "install",
+            "--no-audit",
+            "--no-fund",
+            "--prefer-offline",
+            "--progress=false",
+            "--loglevel=verbose",
+        ])
+        .current_dir(dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture npm install logs for {scope}"))?;
+    let mut lines = BufReader::new(stderr).lines();
+
+    while let Some(line) = lines.next_line().await? {
+        if let Some(dep) = parse_npm_dep_hint(&line) {
+            pb.set_message(format!("Installing {scope} dependencies... {dep}"));
+        }
+    }
+
+    let status = child.wait().await?;
+    if !status.success() {
+        return Err(anyhow!("npm install failed in {scope}/"));
+    }
+    Ok(())
+}
+
+fn parse_npm_dep_hint(line: &str) -> Option<String> {
+    // Example npm verbose line:
+    // npm http fetch GET 200 https://registry.npmjs.org/react 123ms (cache hit)
+    if let Some(url_start) = line.find("https://registry.npmjs.org/") {
+        let url = &line[url_start + "https://registry.npmjs.org/".len()..];
+        let pkg = url
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('/');
+        if !pkg.is_empty() {
+            return Some(pkg.to_string());
+        }
+    }
+
+    // Fallback for lines mentioning node_modules package paths.
+    if let Some(mod_start) = line.find("node_modules/") {
+        let after = &line[mod_start + "node_modules/".len()..];
+        let pkg = after
+            .split([' ', '\t', '\n', '\r', '/', '\\'])
+            .next()
+            .unwrap_or("");
+        if !pkg.is_empty() {
+            return Some(pkg.to_string());
+        }
+    }
+
+    None
 }
