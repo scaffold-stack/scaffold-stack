@@ -1,6 +1,6 @@
 [package]
 name = "stacksdapp-scaffold"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "The asset provider and scaffolding engine containing the Next.js frontend templates and project initialization logic."
 license     = "MIT"
