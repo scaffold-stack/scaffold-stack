@@ -49,6 +49,9 @@ enum Commands {
         /// Deploy a single contract by name (must exist in contracts/Clarinet.toml)
         #[arg(long)]
         contract: Option<String>,
+        /// Generate plan and fee estimate without broadcasting transactions
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Run contract tests (vitest)
     Test,
@@ -70,8 +73,12 @@ async fn main() -> Result<()> {
         Commands::Add { name, template } => {
             stacksdapp_scaffold::add_contract(&name, &template).await
         }
-        Commands::Deploy { network, contract } => {
-            stacksdapp_deployer::deploy(&network, contract.as_deref()).await
+        Commands::Deploy {
+            network,
+            contract,
+            dry_run,
+        } => {
+            stacksdapp_deployer::deploy(&network, contract.as_deref(), dry_run).await
         }
         Commands::Test => run_test().await,
         Commands::Check => run_check().await,
