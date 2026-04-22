@@ -67,6 +67,8 @@ mnemonic = "your 24 words here"
 
 ```bash
 stacksdapp deploy --network testnet
+# deploy a single contract only
+stacksdapp deploy --network testnet --contract counter
 ```
 
 ```
@@ -215,6 +217,7 @@ my-app/
 | `stacksdapp dev --network mainnet` | Run frontend against mainnet (no Docker) |
 | `stacksdapp dev` | Start local devnet + frontend + watcher (Docker required) |
 | `stacksdapp deploy --network testnet` | Deploy to testnet |
+| `stacksdapp deploy --network testnet --contract <name>` | Deploy only one contract by name |
 | `stacksdapp deploy --network mainnet` | Deploy to mainnet |
 | `stacksdapp deploy --network devnet` | Deploy to local devnet |
 | `stacksdapp generate` | Parse ABIs → regenerate TS bindings + debug UI |
