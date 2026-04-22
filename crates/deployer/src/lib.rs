@@ -99,7 +99,7 @@ struct DeploymentFile {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub async fn deploy(network: &str, contract: Option<&str>) -> Result<()> {
+pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool) -> Result<()> {
     if !Path::new("contracts/Clarinet.toml").exists() {
         return Err(anyhow!(
             "No scaffold-stacks project found. Run from the directory created by stacksdapp new"
@@ -115,17 +115,20 @@ pub async fn deploy(network: &str, contract: Option<&str>) -> Result<()> {
     if let Some(name) = contract {
         println!("[deploy] Contract filter enabled: {name}");
     }
+    if dry_run {
+        println!("[deploy] Dry run enabled: plan will not be applied.");
+    }
 
     if network == "devnet" {
         wait_for_node(&config.stacks_node).await?;
     }
 
-    deploy_via_clarinet(network, contract).await
+    deploy_via_clarinet(network, contract, dry_run).await
 }
 
 // ── Core deploy ───────────────────────────────────────────────────────────────
 
-async fn deploy_via_clarinet(network: &str, contract: Option<&str>) -> Result<()> {
+async fn deploy_via_clarinet(network: &str, contract: Option<&str>, dry_run: bool) -> Result<()> {
     let fee_flag = "--low-cost";
 
     let contracts_dir = std::path::Path::new("contracts");
@@ -145,11 +148,15 @@ async fn deploy_via_clarinet(network: &str, contract: Option<&str>) -> Result<()
     }
 
  
-    let clarinet_output = run_generate_and_apply(network, fee_flag, contract).await?;
+    let clarinet_output = run_generate_and_apply(network, fee_flag, contract, dry_run).await?;
+
+    if dry_run {
+        return Ok(());
+    }
     if clarinet_output.contains("ContractAlreadyExists") {
         println!("[deploy] Unexpected conflict after versioning — re-resolving and retrying...");
         auto_version_conflicting_contracts(network, contract).await?;
-        let clarinet_output2 = run_generate_and_apply(network, fee_flag, contract).await?;
+        let clarinet_output2 = run_generate_and_apply(network, fee_flag, contract, dry_run).await?;
         return write_deployments_json_from_output(network, &clarinet_output2, contract).await;
     }
 
@@ -208,7 +215,12 @@ async fn reorder_clarinet_toml(
 }
 
 /// Run `clarinet deployments generate` then `apply`, returning stdout.
-async fn run_generate_and_apply(network: &str, fee_flag: &str, contract: Option<&str>) -> Result<String> {
+async fn run_generate_and_apply(
+    network: &str,
+    fee_flag: &str,
+    contract: Option<&str>,
+    dry_run: bool,
+) -> Result<String> {
     // Delete stale plan so clarinet never prompts "Overwrite? [Y/n]"
     let plan_path = format!("contracts/deployments/default.{network}-plan.yaml");
     if Path::new(&plan_path).exists() {
@@ -242,6 +254,16 @@ async fn run_generate_and_apply(network: &str, fee_flag: &str, contract: Option<
     }
 
     check_plan_fee(network)?;
+    let contracts = deployment_contract_names_from_plan(network).await?;
+    println!("[deploy] Plan contracts: {}", contracts.join(", "));
+
+    if dry_run {
+        println!(
+            "[deploy] Dry run complete. No transactions were broadcast.\n\
+             [deploy] Re-run without --dry-run to apply this plan."
+        );
+        return Ok(String::new());
+    }
 
     if network == "devnet" {
         return run_apply_devnet_direct(network).await;
