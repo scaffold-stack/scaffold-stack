@@ -12,7 +12,7 @@ static FRONTEND_TEMPLATE: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend-templ
 
 pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
     println!();
-    println!("   \x1b[1;33mscaffold-stacks\x1b[0m  \x1b[2mv\x1b[0m");
+    println!("   \x1b[1;33mScaffold Stacks\x1b[0m  \x1b[2m\x1b[0m");
     println!("  \x1b[2m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m");
     println!("  \x1b[1mCreating\x1b[0m  \x1b[1;36m{name}\x1b[0m");
     println!();
