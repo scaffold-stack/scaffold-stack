@@ -46,6 +46,9 @@ enum Commands {
     Deploy {
         #[arg(long, default_value = "devnet")]
         network: String,
+        /// Deploy a single contract by name (must exist in contracts/Clarinet.toml)
+        #[arg(long)]
+        contract: Option<String>,
     },
     /// Run contract tests (vitest)
     Test,
@@ -67,7 +70,9 @@ async fn main() -> Result<()> {
         Commands::Add { name, template } => {
             stacksdapp_scaffold::add_contract(&name, &template).await
         }
-        Commands::Deploy { network } => stacksdapp_deployer::deploy(&network).await,
+        Commands::Deploy { network, contract } => {
+            stacksdapp_deployer::deploy(&network, contract.as_deref()).await
+        }
         Commands::Test => run_test().await,
         Commands::Check => run_check().await,
         Commands::Clean => run_clean().await,
