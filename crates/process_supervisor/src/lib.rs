@@ -255,7 +255,9 @@ async fn spawn_next_dev(network: &str) -> Result<()> {
     let mut child = spawn_next_dev_process(network)?;
     let status = child.wait().await?;
     if !status.success() {
-        return Err(anyhow!("[dev] Frontend dev server exited with status: {status}"));
+        return Err(anyhow!(
+            "[dev] Frontend dev server exited with status: {status}"
+        ));
     }
     Ok(())
 }
