@@ -19,6 +19,11 @@ function getContractId(name: string): { address: string; contractName: string } 
   return { address: contractId.slice(0, dot), contractName: contractId.slice(dot + 1) };
 }
 
+function getStacksApiHeaders(): Record<string, string> | undefined {
+  if (!scaffoldConfig.hiroApiKey) return undefined;
+  return { 'x-api-key': scaffoldConfig.hiroApiKey };
+}
+
 {% for contract in contracts %}
 // ── {{ contract.contract_name }} ──────────────────────
 
@@ -63,6 +68,9 @@ export async function {{ contract.contract_name | camel }}_{{ fn.name | camel }}
     functionArgs,
     network: scaffoldConfig.isDevnet ? 'devnet' : scaffoldConfig.targetNetwork,
     senderAddress: senderAddress ?? getDevnetSenderAddress() ?? address,
+    fetchOptions: {
+      headers: getStacksApiHeaders(),
+    },
   });
   return cvToValue(result);
 }
