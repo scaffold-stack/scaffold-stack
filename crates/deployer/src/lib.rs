@@ -18,18 +18,20 @@ pub struct NetworkConfig {
     pub stacks_node: String,
 }
 
-pub fn network_config(network: &str) -> NetworkConfig {
+pub fn network_config(network: &str) -> Result<NetworkConfig> {
     match network {
-        "devnet" => NetworkConfig {
+        "devnet" => Ok(NetworkConfig {
             stacks_node: "http://localhost:3999".into(),
-        },
-        "testnet" => NetworkConfig {
+        }),
+        "testnet" => Ok(NetworkConfig {
             stacks_node: "https://api.testnet.hiro.so".into(),
-        },
-        "mainnet" => NetworkConfig {
+        }),
+        "mainnet" => Ok(NetworkConfig {
             stacks_node: "https://api.hiro.so".into(),
-        },
-        other => panic!("Unknown network: {other}"),
+        }),
+        other => Err(anyhow!(
+            "Unknown network '{other}'. Expected one of: devnet | testnet | mainnet"
+        )),
     }
 }
 
@@ -110,7 +112,7 @@ pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool) -> Res
         validate_settings_mnemonic(network)?;
     }
 
-    let config = network_config(network);
+    let config = network_config(network)?;
     println!("🚀 Deploying to {} ({})", network, config.stacks_node);
     if let Some(name) = contract {
         println!("[deploy] Contract filter enabled: {name}");
@@ -250,7 +252,7 @@ async fn run_generate_and_apply(
         println!("[deploy] Filtered deployment plan to contract: {contract_name}");
     }
 
-    check_plan_fee(network)?;
+    let total_micro_stx = check_plan_fee(network)?;
     let contracts = deployment_contract_names_from_plan(network).await?;
     println!("[deploy] Plan contracts: {}", contracts.join(", "));
 
@@ -264,6 +266,10 @@ async fn run_generate_and_apply(
 
     if network == "devnet" {
         return run_apply_devnet_direct(network).await;
+    }
+    if network == "mainnet" {
+        let deployer = get_deployer_from_plan(network).await?;
+        confirm_mainnet_deploy(&deployer, &contracts, total_micro_stx)?;
     }
 
     println!("[deploy] Applying deployment plan to {}...", network);
@@ -592,7 +598,7 @@ pub async fn resolve_deployment_order(
 }
 
 // ── Auto-versioning ───────────────────────────────────────────────────────────
-fn check_plan_fee(network: &str) -> Result<()> {
+fn check_plan_fee(network: &str) -> Result<u64> {
     let plan_path = format!("contracts/deployments/default.{network}-plan.yaml");
     let plan_raw = std::fs::read_to_string(&plan_path).unwrap_or_default();
 
@@ -615,11 +621,11 @@ fn check_plan_fee(network: &str) -> Result<()> {
         );
     }
 
-    Ok(())
+    Ok(total_micro_stx)
 }
 
 async fn auto_version_conflicting_contracts(network: &str, contract: Option<&str>) -> Result<()> {
-    let config = network_config(network);
+    let config = network_config(network)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
@@ -1245,19 +1251,18 @@ fn parse_local_deps(source: &str, known_contracts: &HashSet<String>) -> Vec<Stri
     deps
 }
 
-fn topological_sort(
-    contracts: &HashMap<String, Vec<String>>, // name → [deps]
-) -> anyhow::Result<Vec<String>> {
-    // Build in-degree map
-    let mut in_degree: HashMap<&str, usize> = contracts.keys().map(|k| (k.as_str(), 0)).collect();
+fn topological_sort(contracts: &HashMap<String, Vec<String>>) -> anyhow::Result<Vec<String>> {
+    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
 
-    for deps in contracts.values() {
+    for (name, deps) in contracts {
+        in_degree.insert(name.as_str(), deps.len());
         for dep in deps {
-            *in_degree.entry(dep.as_str()).or_insert(0) += 1;
+            dependents.entry(dep.as_str()).or_default().push(name.as_str());
         }
     }
 
-    // Start with contracts that have no dependencies
+    // Start with contracts that have no dependencies.
     let mut queue: VecDeque<&str> = in_degree
         .iter()
         .filter(|(_, &deg)| deg == 0)
@@ -1274,12 +1279,8 @@ fn topological_sort(
     while let Some(node) = queue.pop_front() {
         sorted.push(node.to_string());
 
-        // Find all contracts that depend on this one and reduce their in-degree
-        let mut next: Vec<&str> = contracts
-            .iter()
-            .filter(|(_, deps)| deps.iter().any(|d| d == node))
-            .map(|(name, _)| name.as_str())
-            .collect();
+        // Reduce in-degree for contracts that depend on this one.
+        let mut next = dependents.get(node).cloned().unwrap_or_default();
         next.sort();
 
         for dependent in next {
@@ -1316,9 +1317,33 @@ fn capitalize(s: &str) -> String {
     }
 }
 
+fn confirm_mainnet_deploy(deployer: &str, contracts: &[String], total_micro_stx: u64) -> Result<()> {
+    use std::io::{self, Write};
+
+    println!("\n⚠️  Mainnet deployment confirmation required");
+    println!("  Network: mainnet");
+    println!("  Deployer: {deployer}");
+    println!(
+        "  Estimated fee: {:.6} STX",
+        total_micro_stx as f64 / 1_000_000.0
+    );
+    println!("  Contracts ({}): {}", contracts.len(), contracts.join(", "));
+    print!("\nType 'y' to continue with MAINNET broadcast: ");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    if input.trim() != "y" {
+        return Err(anyhow!("Mainnet deployment aborted by user."));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::strip_version_suffix;
+    use super::{strip_version_suffix, topological_sort};
+    use std::collections::HashMap;
 
     #[test]
     fn test_strip_version_suffix() {
@@ -1330,5 +1355,32 @@ mod tests {
         // should not strip non-version suffixes
         assert_eq!(strip_version_suffix("counter-v"), "counter-v");
         assert_eq!(strip_version_suffix("counter-vault"), "counter-vault");
+    }
+
+    #[test]
+    fn test_topological_sort_respects_dependencies() {
+        let mut graph = HashMap::new();
+        graph.insert("a".to_string(), vec![]);
+        graph.insert("b".to_string(), vec!["a".to_string()]);
+        graph.insert("c".to_string(), vec!["b".to_string()]);
+
+        let order = topological_sort(&graph).expect("topological sort should succeed");
+        let idx_a = order.iter().position(|name| name == "a").unwrap();
+        let idx_b = order.iter().position(|name| name == "b").unwrap();
+        let idx_c = order.iter().position(|name| name == "c").unwrap();
+        assert!(idx_a < idx_b && idx_b < idx_c);
+    }
+
+    #[test]
+    fn test_topological_sort_cycle_detection() {
+        let mut graph = HashMap::new();
+        graph.insert("a".to_string(), vec!["b".to_string()]);
+        graph.insert("b".to_string(), vec!["a".to_string()]);
+
+        let err = topological_sort(&graph).expect_err("cycle should fail");
+        assert!(
+            err.to_string().contains("Circular contract dependency detected"),
+            "unexpected error: {err}"
+        );
     }
 }
