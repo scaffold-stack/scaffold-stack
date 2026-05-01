@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::path::Path;
-use tokio::{fs, process::Command};
+use tokio::{fs, process::Child, process::Command};
 
 /// Returns true if Clarinet.toml contains any [[project.requirements]] entries.
 async fn has_requirements() -> bool {
@@ -94,11 +94,46 @@ async fn dev_devnet() -> Result<()> {
     prefetch_requirements().await?;
     stacksdapp_codegen::generate_all().await?;
 
-    tokio::try_join!(
-        spawn_clarinet_devnet(),
-        spawn_next_dev("devnet"),
-        stacksdapp_watcher::watch_contracts(Path::new("contracts/contracts")),
-    )?;
+    let mut clarinet = spawn_clarinet_devnet()?;
+    let mut frontend = spawn_next_dev_process("devnet")?;
+    let mut watcher = tokio::spawn(stacksdapp_watcher::watch_contracts(Path::new(
+        "contracts/contracts",
+    )));
+
+    let result = tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            println!("[dev] Ctrl+C received — shutting down devnet stack...");
+            Ok(())
+        }
+        status = clarinet.wait() => {
+            match status {
+                Ok(s) if s.success() => Err(anyhow!("[dev] Clarinet devnet exited unexpectedly.")),
+                Ok(s) => Err(anyhow!("[dev] Clarinet devnet exited with status: {s}")),
+                Err(e) => Err(anyhow!("[dev] Failed to wait for Clarinet devnet process: {e}")),
+            }
+        }
+        status = frontend.wait() => {
+            match status {
+                Ok(s) if s.success() => Err(anyhow!("[dev] Frontend dev server exited unexpectedly.")),
+                Ok(s) => Err(anyhow!("[dev] Frontend dev server exited with status: {s}")),
+                Err(e) => Err(anyhow!("[dev] Failed to wait for frontend dev server: {e}")),
+            }
+        }
+        watcher_result = &mut watcher => {
+            match watcher_result {
+                Ok(Ok(())) => Err(anyhow!("[dev] Contract watcher exited unexpectedly.")),
+                Ok(Err(e)) => Err(anyhow!("[dev] Contract watcher failed: {e}")),
+                Err(e) => Err(anyhow!("[dev] Contract watcher task join failed: {e}")),
+            }
+        }
+    };
+
+    shutdown_child("clarinet devnet", &mut clarinet).await;
+    shutdown_child("frontend dev server", &mut frontend).await;
+    watcher.abort();
+    let _ = watcher.await;
+
+    result?;
 
     Ok(())
 }
@@ -198,14 +233,12 @@ fn ensure_docker() -> Result<()> {
     Ok(())
 }
 
-async fn spawn_clarinet_devnet() -> Result<()> {
-    Command::new("clarinet")
+fn spawn_clarinet_devnet() -> Result<Child> {
+    let child = Command::new("clarinet")
         .args(["devnet", "start"])
         .current_dir("contracts")
-        .spawn()?
-        .wait()
-        .await?;
-    Ok(())
+        .spawn()?;
+    Ok(child)
 }
 
 async fn reset_local_devnet_state() -> Result<()> {
@@ -219,12 +252,28 @@ async fn reset_local_devnet_state() -> Result<()> {
 }
 
 async fn spawn_next_dev(network: &str) -> Result<()> {
-    Command::new("npm")
+    let mut child = spawn_next_dev_process(network)?;
+    let status = child.wait().await?;
+    if !status.success() {
+        return Err(anyhow!("[dev] Frontend dev server exited with status: {status}"));
+    }
+    Ok(())
+}
+
+fn spawn_next_dev_process(network: &str) -> Result<Child> {
+    let child = Command::new("npm")
         .args(["run", "dev"])
         .current_dir("frontend")
         .env("NEXT_PUBLIC_NETWORK", network)
-        .spawn()?
-        .wait()
-        .await?;
-    Ok(())
+        .spawn()?;
+    Ok(child)
+}
+
+async fn shutdown_child(name: &str, child: &mut Child) {
+    if child.id().is_none() {
+        return;
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    println!("[dev] Stopped {name}.");
 }
