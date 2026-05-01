@@ -142,10 +142,10 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
 
     let fe_dir = frontend_dir.clone();
     let ct_dir = contracts_root.clone();
-    run_npm_install_with_feedback(&pb, &fe_dir, "frontend").await?;
+    run_npm_install_with_feedback(&pb, &fe_dir, "frontend", "").await?;
 
     pb.set_message("Installing contract dependencies...");
-    run_npm_install_with_feedback(&pb, &ct_dir, "contracts").await?;
+    run_npm_install_with_feedback(&pb, &ct_dir, "contracts", "").await?;
 
     pb.println("  \x1b[32m✔\x1b[0m  \x1b[1mInstalled\x1b[0m    node_modules");
 
@@ -213,17 +213,112 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
     Ok(())
 }
 
+/// Standard Clarinet uses `Clarinet.toml` at the repo root next to `contracts/`,
+/// `settings/`, and `tests/`. scaffold-stacks expects `contracts/Clarinet.toml`
+/// with sources under `contracts/contracts/*.clar`. When only the standard
+/// layout is present, move artifacts into the scaffold layout in-place.
+async fn normalize_standard_clarinet_layout(root: &Path) -> Result<()> {
+    let nested_clarinet = root.join("contracts").join("Clarinet.toml");
+    if nested_clarinet.exists() {
+        return Ok(());
+    }
+
+    let root_clarinet = root.join("Clarinet.toml");
+    if !root_clarinet.exists() {
+        return Ok(());
+    }
+
+    let clar_root = root.join("contracts");
+    if !clar_root.is_dir() {
+        return Err(anyhow!(
+            "Found Clarinet.toml at the repo root but no contracts/ directory.\n\
+             Create a Clarinet project first or run init from your Clarinet repo root."
+        ));
+    }
+
+    let nested_sources = clar_root.join("contracts");
+    tokio::fs::create_dir_all(&nested_sources).await?;
+
+    let mut entries = tokio::fs::read_dir(&clar_root).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        let ft = entry.file_type().await?;
+        if ft.is_file() && path.extension().is_some_and(|e| e == "clar") {
+            let dest = nested_sources.join(entry.file_name());
+            tokio::fs::rename(&path, &dest).await?;
+        }
+    }
+
+    tokio::fs::rename(&root_clarinet, &nested_clarinet).await?;
+
+    let root_settings = root.join("settings");
+    let dest_settings = clar_root.join("settings");
+    if root_settings.exists() && root_settings.is_dir() {
+        if dest_settings.exists() {
+            return Err(anyhow!(
+                "[init] Both ./settings and ./contracts/settings exist.\n\
+                 Remove or merge one directory, then rerun stacksdapp init."
+            ));
+        }
+        tokio::fs::rename(&root_settings, &dest_settings).await?;
+    }
+
+    let root_tests = root.join("tests");
+    let dest_tests = clar_root.join("tests");
+    if root_tests.exists() && root_tests.is_dir() {
+        if dest_tests.exists() {
+            return Err(anyhow!(
+                "[init] Both ./tests and ./contracts/tests exist.\n\
+                 Remove or merge one directory, then rerun stacksdapp init."
+            ));
+        }
+        tokio::fs::rename(&root_tests, &dest_tests).await?;
+    }
+
+    let root_deployments = root.join("deployments");
+    let dest_deployments = clar_root.join("deployments");
+    if root_deployments.exists() && root_deployments.is_dir() {
+        if dest_deployments.exists() {
+            return Err(anyhow!(
+                "[init] Both ./deployments and ./contracts/deployments exist.\n\
+                 Remove or merge one directory, then rerun stacksdapp init."
+            ));
+        }
+        tokio::fs::rename(&root_deployments, &dest_deployments).await?;
+    }
+
+    for fname in ["package.json", "vitest.config.ts", "tsconfig.json"] {
+        let src = root.join(fname);
+        let dst = clar_root.join(fname);
+        if src.exists() && !dst.exists() {
+            tokio::fs::rename(&src, &dst).await?;
+        }
+    }
+
+    println!(
+        "[init] Detected standard Clarinet layout (Clarinet.toml at repo root).\n\
+         Normalized to scaffold-stacks layout: contracts/Clarinet.toml and contracts/contracts/*.clar."
+    );
+
+    Ok(())
+}
+
 pub async fn init_project() -> Result<()> {
     ensure_prerequisites().await?;
 
     let root = Path::new(".");
+    normalize_standard_clarinet_layout(root).await?;
+
     let contracts_root = root.join("contracts");
     let frontend_dir = root.join("frontend");
     let clarinet_toml = contracts_root.join("Clarinet.toml");
 
     if !clarinet_toml.exists() {
         return Err(anyhow!(
-            "No Clarinet project detected. Expected contracts/Clarinet.toml in the current directory."
+            "No Clarinet project detected.\n\
+             Expected either:\n\
+               • Clarinet.toml in the current directory (standard Clarinet), or\n\
+               • contracts/Clarinet.toml (scaffold-stacks layout)."
         ));
     }
 
@@ -257,17 +352,20 @@ pub async fn init_project() -> Result<()> {
 pub async fn upgrade_project() -> Result<()> {
     ensure_prerequisites().await?;
 
+    normalize_standard_clarinet_layout(Path::new(".")).await?;
+
     if !Path::new("contracts/Clarinet.toml").exists()
         || !Path::new("frontend/package.json").exists()
     {
         return Err(anyhow!(
-            "No scaffold-stacks project found. Run from a project containing contracts/Clarinet.toml and frontend/package.json."
+            "No scaffold-stacks project found. Run from a project containing Clarinet.toml (repo root or contracts/) and frontend/package.json.\n\
+             Run stacksdapp init first if you only have a Clarinet repo."
         ));
     }
 
     println!("[upgrade] Refreshing dependencies and regenerating bindings (non-destructive)...");
-    run_npm_install(Path::new("frontend"), "frontend").await?;
-    run_npm_install(Path::new("contracts"), "contracts").await?;
+    run_npm_install(Path::new("frontend"), "frontend", "[upgrade]").await?;
+    run_npm_install(Path::new("contracts"), "contracts", "[upgrade]").await?;
     stacksdapp_codegen::generate_all().await?;
     println!("[upgrade] ✔ Upgrade complete.");
     Ok(())
@@ -610,8 +708,8 @@ async fn ensure_contract_support_files(contracts_root: &Path, frontend_dir: &Pat
 }
 
 async fn run_generate_after_setup() -> Result<()> {
-    run_npm_install(Path::new("frontend"), "frontend").await?;
-    run_npm_install(Path::new("contracts"), "contracts").await?;
+    run_npm_install(Path::new("frontend"), "frontend", "[init]").await?;
+    run_npm_install(Path::new("contracts"), "contracts", "[init]").await?;
     stacksdapp_codegen::generate_all().await?;
     Ok(())
 }
@@ -627,26 +725,36 @@ async fn write_if_missing(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run_npm_install(dir: &Path, scope: &str) -> Result<()> {
+async fn run_npm_install(dir: &Path, scope: &str, message_prefix: &str) -> Result<()> {
     if !dir.join("package.json").exists() {
         return Ok(());
     }
-    let status = Command::new("npm")
-        .args([
-            "install",
-            "--no-audit",
-            "--no-fund",
-            "--prefer-offline",
-            "--progress=false",
-            "--loglevel=error",
-        ])
-        .current_dir(dir)
-        .status()
-        .await?;
-    if !status.success() {
-        return Err(anyhow!("npm install failed in {scope}/"));
-    }
+
+    let style = ProgressStyle::with_template(
+        "  {spinner:.yellow} {wide_msg:.dim}  \x1b[2m[{elapsed}]\x1b[0m",
+    )
+    .unwrap()
+    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(style);
+    pb.enable_steady_tick(Duration::from_millis(80));
+    let head = npm_install_message_head(message_prefix);
+    pb.set_message(format!("{head}Installing {scope} dependencies..."));
+
+    run_npm_install_with_feedback(&pb, dir, scope, message_prefix).await?;
+
+    pb.finish_and_clear();
+    println!("  \x1b[32m✔\x1b[0m  {head}Finished installing {scope} dependencies.");
     Ok(())
+}
+
+fn npm_install_message_head(message_prefix: &str) -> String {
+    if message_prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{message_prefix} ")
+    }
 }
 
 pub async fn add_contract(name: &str, template: &str) -> Result<()> {
@@ -871,7 +979,12 @@ async fn ensure_prerequisites() -> Result<()> {
     Ok(())
 }
 
-async fn run_npm_install_with_feedback(pb: &ProgressBar, dir: &Path, scope: &str) -> Result<()> {
+async fn run_npm_install_with_feedback(
+    pb: &ProgressBar,
+    dir: &Path,
+    scope: &str,
+    message_prefix: &str,
+) -> Result<()> {
     let mut child = Command::new("npm")
         .args([
             "install",
@@ -892,9 +1005,10 @@ async fn run_npm_install_with_feedback(pb: &ProgressBar, dir: &Path, scope: &str
         .ok_or_else(|| anyhow!("failed to capture npm install logs for {scope}"))?;
     let mut lines = BufReader::new(stderr).lines();
 
+    let head = npm_install_message_head(message_prefix);
     while let Some(line) = lines.next_line().await? {
         if let Some(dep) = parse_npm_dep_hint(&line) {
-            pb.set_message(format!("Installing {scope} dependencies... {dep}"));
+            pb.set_message(format!("{head}Installing {scope} dependencies... {dep}"));
         }
     }
 
