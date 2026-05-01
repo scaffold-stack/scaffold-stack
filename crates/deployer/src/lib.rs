@@ -1258,7 +1258,10 @@ fn topological_sort(contracts: &HashMap<String, Vec<String>>) -> anyhow::Result<
     for (name, deps) in contracts {
         in_degree.insert(name.as_str(), deps.len());
         for dep in deps {
-            dependents.entry(dep.as_str()).or_default().push(name.as_str());
+            dependents
+                .entry(dep.as_str())
+                .or_default()
+                .push(name.as_str());
         }
     }
 
@@ -1317,7 +1320,11 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-fn confirm_mainnet_deploy(deployer: &str, contracts: &[String], total_micro_stx: u64) -> Result<()> {
+fn confirm_mainnet_deploy(
+    deployer: &str,
+    contracts: &[String],
+    total_micro_stx: u64,
+) -> Result<()> {
     use std::io::{self, Write};
 
     println!("\n⚠️  Mainnet deployment confirmation required");
@@ -1327,7 +1334,11 @@ fn confirm_mainnet_deploy(deployer: &str, contracts: &[String], total_micro_stx:
         "  Estimated fee: {:.6} STX",
         total_micro_stx as f64 / 1_000_000.0
     );
-    println!("  Contracts ({}): {}", contracts.len(), contracts.join(", "));
+    println!(
+        "  Contracts ({}): {}",
+        contracts.len(),
+        contracts.join(", ")
+    );
     print!("\nType 'y' to continue with MAINNET broadcast: ");
     io::stdout().flush()?;
 
@@ -1379,7 +1390,8 @@ mod tests {
 
         let err = topological_sort(&graph).expect_err("cycle should fail");
         assert!(
-            err.to_string().contains("Circular contract dependency detected"),
+            err.to_string()
+                .contains("Circular contract dependency detected"),
             "unexpected error: {err}"
         );
     }
