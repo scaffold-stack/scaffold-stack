@@ -1,7 +1,19 @@
 // Network is driven by NEXT_PUBLIC_NETWORK env var.
 // stacksdapp dev --network testnet sets this automatically in frontend/.env.local
 
-const network = (process.env.NEXT_PUBLIC_NETWORK ?? 'devnet') as 'devnet' | 'testnet' | 'mainnet';
+type ScaffoldNetwork = 'devnet' | 'testnet' | 'mainnet';
+
+function resolveNetwork(value: string | undefined): ScaffoldNetwork {
+  const network = value ?? 'devnet';
+  if (network === 'devnet' || network === 'testnet' || network === 'mainnet') {
+    return network;
+  }
+  throw new Error(
+    `[scaffold-stacks] Invalid NEXT_PUBLIC_NETWORK="${network}". Expected one of: devnet | testnet | mainnet.`,
+  );
+}
+
+const network = resolveNetwork(process.env.NEXT_PUBLIC_NETWORK);
 
 const nodeUrl =
   network === 'mainnet'
@@ -17,6 +29,9 @@ export const scaffoldConfig = {
   requestNetwork: network === 'devnet' ? 'testnet' : network,
   targetNetwork: network === 'devnet' ? 'testnet' : network,
   nodeUrl,
+  hiroApiKey: process.env.NEXT_PUBLIC_HIRO_API_KEY ?? '',
+  explorerBaseUrl: network === 'mainnet' ? 'https://explorer.hiro.so/txid/' : 'https://explorer.hiro.so/txid/',
+  explorerChainQuery: network === 'mainnet' ? '?chain=mainnet' : '?chain=testnet',
   isDevnet:  network === 'devnet',
   isTestnet: network === 'testnet',
   isMainnet: network === 'mainnet',

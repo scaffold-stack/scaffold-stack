@@ -392,7 +392,7 @@ function ContractPanel({ name, children }: { name: string; children: React.React
 {% for fn in contract.functions %}
 {% if fn.access == "public" or fn.access == "read_only" %}
 function FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}({ num, isOpen, onToggle }: { num: string, isOpen: boolean, onToggle: () => void }) {
-  const { data, loading, call } = use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}();
+  const { data, loading, txid, txStatus, txStatusError, explorerUrl, call } = use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}();
   const isReadOnly = {% if fn.access == "read_only" %}true{% else %}false{% endif %};
 
   {% if fn.args %}
@@ -442,6 +442,32 @@ function FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | up
             <div style={Object.assign({}, S.resBox, { borderColor: isReadOnly ? '#2E2D2E' : '#2E2D2E' })}>
               <p style={S.resLabel}>RESULT</p>
               <pre style={S.resPre}>{JSON.stringify(data, null, 2)}</pre>
+            </div>
+          )}
+          {!isReadOnly && !!txid && (
+            <div style={Object.assign({}, S.resBox, { borderColor: '#2E2D2E' })}>
+              <p style={S.resLabel}>TRANSACTION</p>
+              <pre style={S.resPre}>{txid}</pre>
+              {!!txStatus && (
+                <p style={Object.assign({}, S.resPre, { marginTop: '8px' })}>
+                  status: {txStatus}
+                </p>
+              )}
+              {!!txStatusError && (
+                <p style={Object.assign({}, S.resPre, { marginTop: '8px', color: '#fca5a5' })}>
+                  {txStatusError}
+                </p>
+              )}
+              {!!explorerUrl && (
+                <a
+                  href={explorerUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={Object.assign({}, S.resPre, { display: 'inline-block', marginTop: '8px', color: '#93c5fd', textDecoration: 'underline' })}
+                >
+                  Open in explorer
+                </a>
+              )}
             </div>
           )}
         </form>

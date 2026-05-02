@@ -2,9 +2,12 @@
 // Re-run `stacksdapp generate` to update.
 
 "use client";
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { ClarityValue } from '@stacks/transactions';
 import * as contracts from './contracts';
+import { scaffoldConfig } from '../scaffold.config';
+
+type TxLifecycleStatus = 'pending' | 'success' | 'abort_by_response' | 'error';
 
 {% for contract in contracts %}
 {% for fn in contract.functions %}
@@ -14,6 +17,8 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [txid, setTxid] = useState<string | null>(null);
+  const [txStatus, setTxStatus] = useState<TxLifecycleStatus | null>(null);
+  const [txStatusError, setTxStatusError] = useState<string | null>(null);
 
   
   const isReadOnly = {% if fn.access == "read_only" %}true{% else %}false{% endif %};
@@ -22,6 +27,8 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
     setLoading(true);
     setError(null);
     setTxid(null);
+    setTxStatus(null);
+    setTxStatusError(null);
     try {
       // Use the generated contract function from the index
       const fn = (contracts as any).{{ contract.contract_name | camel }}_{{ fn.name | camel }};
@@ -32,6 +39,7 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
 
       if (!isReadOnly && result?.txid) {
         setTxid(result.txid);
+        setTxStatus('pending');
       }
       
       setData(result ?? null);
@@ -46,7 +54,73 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
     // Dependency array is stable because isReadOnly is a constant literal
   }, [isReadOnly]); 
 
-  return { data, loading, error, txid, call };
+  useEffect(() => {
+    if (isReadOnly || !txid || !scaffoldConfig.nodeUrl) return;
+
+    let mounted = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const headers: Record<string, string> = {};
+    if (scaffoldConfig.hiroApiKey) {
+      headers['x-api-key'] = scaffoldConfig.hiroApiKey;
+    }
+
+    const poll = async () => {
+      try {
+        const response = await fetch(
+          `${scaffoldConfig.nodeUrl}/extended/v1/tx/${txid}`,
+          {
+            headers,
+            cache: 'no-store',
+          },
+        );
+        if (!response.ok) {
+          throw new Error(`tx status request failed with ${response.status}`);
+        }
+        const payload = await response.json();
+        const status = String(payload?.tx_status ?? '').toLowerCase();
+        if (!mounted) return;
+
+        if (status.includes('success')) {
+          setTxStatus('success');
+          setTxStatusError(null);
+          return;
+        }
+        if (status.includes('abort')) {
+          setTxStatus('abort_by_response');
+          setTxStatusError(String(payload?.tx_result?.repr ?? 'Transaction aborted.'));
+          return;
+        }
+        if (status.includes('pending')) {
+          setTxStatus('pending');
+          timer = setTimeout(() => {
+            void poll();
+          }, 2500);
+          return;
+        }
+
+        setTxStatus('error');
+        setTxStatusError(payload?.tx_status ? `Unexpected tx status: ${payload.tx_status}` : 'Unknown tx status.');
+      } catch (err) {
+        if (!mounted) return;
+        setTxStatusError(err instanceof Error ? err.message : 'Failed to poll transaction status.');
+        timer = setTimeout(() => {
+          void poll();
+        }, 4000);
+      }
+    };
+
+    void poll();
+    return () => {
+      mounted = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [isReadOnly, txid]);
+
+  const explorerUrl = txid
+    ? `${scaffoldConfig.explorerBaseUrl}${txid}${scaffoldConfig.explorerChainQuery}`
+    : null;
+
+  return { data, loading, error, txid, txStatus, txStatusError, explorerUrl, call };
 }
 {% endif %}
 {% endfor %}

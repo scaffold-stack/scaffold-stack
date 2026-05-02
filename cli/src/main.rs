@@ -33,7 +33,13 @@ enum Commands {
         network: String,
     },
     /// Parse contracts and regenerate TypeScript bindings
-    Generate,
+    Generate {
+        /// Watch contracts and regenerate bindings on change
+        #[arg(long)]
+        watch: bool,
+    },
+    /// Adopt an existing Clarinet project in the current directory
+    Init,
     /// Add a new Clarity contract: stacks-dapp add <name> [--template blank|sip010|sip009]
     Add {
         /// Contract name
@@ -61,6 +67,8 @@ enum Commands {
     Clean,
     /// Check all prerequisites and print a status report
     Doctor,
+    /// Refresh dependencies and regenerate bindings
+    Upgrade,
 }
 
 #[tokio::main]
@@ -69,7 +77,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::New { name, no_git } => stacksdapp_scaffold::new_project(&name, !no_git).await,
         Commands::Dev { network } => stacksdapp_process_supervisor::dev(&network).await,
-        Commands::Generate => stacksdapp_codegen::generate_all().await,
+        Commands::Generate { watch } => run_generate(watch).await,
+        Commands::Init => stacksdapp_scaffold::init_project().await,
         Commands::Add { name, template } => {
             stacksdapp_scaffold::add_contract(&name, &template).await
         }
@@ -82,7 +91,21 @@ async fn main() -> Result<()> {
         Commands::Check => run_check().await,
         Commands::Clean => run_clean().await,
         Commands::Doctor => doctor::run().await,
+        Commands::Upgrade => stacksdapp_scaffold::upgrade_project().await,
     }
+}
+
+async fn run_generate(watch: bool) -> Result<()> {
+    use std::path::Path;
+    stacksdapp_codegen::generate_all().await?;
+    if watch {
+        println!(
+            "{}",
+            "[generate] Watching contracts/contracts for .clar changes...".cyan()
+        );
+        stacksdapp_watcher::watch_contracts(Path::new("contracts/contracts")).await?;
+    }
+    Ok(())
 }
 
 async fn run_test() -> Result<()> {

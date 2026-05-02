@@ -1,6 +1,6 @@
 [package]
 name = "stacksdapp-codegen"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "TypeScript code generation engine for Stacks dApps, using Tera templates to create type-safe contract hooks."
 license     = "MIT"

@@ -10,6 +10,86 @@ use which::which;
 
 static FRONTEND_TEMPLATE: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend-template");
 
+const DEFAULT_CONTRACTS_PACKAGE_JSON: &str = r#"{
+  "name": "contracts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@stacks/clarinet-sdk": "^3",
+    "@stacks/transactions": "7.4.0",
+    "typescript": "^5",
+    "vitest": "^1"
+  }
+}
+"#;
+
+const DEFAULT_VITEST_CONFIG: &str = r#"import { defineConfig } from 'vitest/config';
+export default defineConfig({
+  test: { environment: 'node' },
+});
+"#;
+
+const DEFAULT_CONTRACTS_TSCONFIG: &str = r#"{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["tests/**/*.ts"]
+}
+"#;
+
+const DEFAULT_FRONTEND_ENV_LOCAL: &str = r#"# Network: devnet | testnet | mainnet
+NEXT_PUBLIC_NETWORK=devnet
+
+# Required for testnet/mainnet deploy:
+# DEPLOYER_PRIVATE_KEY=your_private_key_hex
+"#;
+
+const DEFAULT_FRONTEND_ENV_LOCAL_EXAMPLE: &str = r#"# Network: devnet | testnet | mainnet
+NEXT_PUBLIC_NETWORK=devnet
+
+# Required for testnet/mainnet deploy:
+# DEPLOYER_PRIVATE_KEY=your_private_key_hex
+
+# Optional node URL override:
+# NEXT_PUBLIC_STACKS_NODE_URL=https://api.testnet.hiro.so
+"#;
+
+const DEFAULT_DEVNET_SETTINGS: &str = r#"[network]
+name = "devnet"
+deployment_fee_rate = 10
+
+[accounts.deployer]
+mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip blue scout claw"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+"#;
+
+const DEFAULT_TESTNET_SETTINGS: &str = r#"[network]
+name = "testnet"
+stacks_node_rpc_address = "https://api.testnet.hiro.so"
+deployment_fee_rate = 10
+
+[accounts.deployer]
+mnemonic = "<YOUR PRIVATE TESTNET MNEMONIC HERE>"
+"#;
+
+const DEFAULT_MAINNET_SETTINGS: &str = r#"[network]
+name = "mainnet"
+stacks_node_rpc_address = "https://api.hiro.so"
+deployment_fee_rate = 10
+
+[accounts.deployer]
+mnemonic = "<YOUR PRIVATE MAINNET MNEMONIC HERE>"
+"#;
+
 pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
     println!();
     println!("   \x1b[1;33mScaffold Stacks\x1b[0m  \x1b[2m\x1b[0m");
@@ -62,10 +142,10 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
 
     let fe_dir = frontend_dir.clone();
     let ct_dir = contracts_root.clone();
-    run_npm_install_with_feedback(&pb, &fe_dir, "frontend").await?;
+    run_npm_install_with_feedback(&pb, &fe_dir, "frontend", "").await?;
 
     pb.set_message("Installing contract dependencies...");
-    run_npm_install_with_feedback(&pb, &ct_dir, "contracts").await?;
+    run_npm_install_with_feedback(&pb, &ct_dir, "contracts", "").await?;
 
     pb.println("  \x1b[32m✔\x1b[0m  \x1b[1mInstalled\x1b[0m    node_modules");
 
@@ -133,6 +213,164 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
     Ok(())
 }
 
+/// Standard Clarinet uses `Clarinet.toml` at the repo root next to `contracts/`,
+/// `settings/`, and `tests/`. scaffold-stacks expects `contracts/Clarinet.toml`
+/// with sources under `contracts/contracts/*.clar`. When only the standard
+/// layout is present, move artifacts into the scaffold layout in-place.
+async fn normalize_standard_clarinet_layout(root: &Path) -> Result<()> {
+    let nested_clarinet = root.join("contracts").join("Clarinet.toml");
+    if nested_clarinet.exists() {
+        return Ok(());
+    }
+
+    let root_clarinet = root.join("Clarinet.toml");
+    if !root_clarinet.exists() {
+        return Ok(());
+    }
+
+    let clar_root = root.join("contracts");
+    if !clar_root.is_dir() {
+        return Err(anyhow!(
+            "Found Clarinet.toml at the repo root but no contracts/ directory.\n\
+             Create a Clarinet project first or run init from your Clarinet repo root."
+        ));
+    }
+
+    let nested_sources = clar_root.join("contracts");
+    tokio::fs::create_dir_all(&nested_sources).await?;
+
+    let mut entries = tokio::fs::read_dir(&clar_root).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        let ft = entry.file_type().await?;
+        if ft.is_file() && path.extension().is_some_and(|e| e == "clar") {
+            let dest = nested_sources.join(entry.file_name());
+            tokio::fs::rename(&path, &dest).await?;
+        }
+    }
+
+    tokio::fs::rename(&root_clarinet, &nested_clarinet).await?;
+
+    let root_settings = root.join("settings");
+    let dest_settings = clar_root.join("settings");
+    if root_settings.exists() && root_settings.is_dir() {
+        if dest_settings.exists() {
+            return Err(anyhow!(
+                "[init] Both ./settings and ./contracts/settings exist.\n\
+                 Remove or merge one directory, then rerun stacksdapp init."
+            ));
+        }
+        tokio::fs::rename(&root_settings, &dest_settings).await?;
+    }
+
+    let root_tests = root.join("tests");
+    let dest_tests = clar_root.join("tests");
+    if root_tests.exists() && root_tests.is_dir() {
+        if dest_tests.exists() {
+            return Err(anyhow!(
+                "[init] Both ./tests and ./contracts/tests exist.\n\
+                 Remove or merge one directory, then rerun stacksdapp init."
+            ));
+        }
+        tokio::fs::rename(&root_tests, &dest_tests).await?;
+    }
+
+    let root_deployments = root.join("deployments");
+    let dest_deployments = clar_root.join("deployments");
+    if root_deployments.exists() && root_deployments.is_dir() {
+        if dest_deployments.exists() {
+            return Err(anyhow!(
+                "[init] Both ./deployments and ./contracts/deployments exist.\n\
+                 Remove or merge one directory, then rerun stacksdapp init."
+            ));
+        }
+        tokio::fs::rename(&root_deployments, &dest_deployments).await?;
+    }
+
+    for fname in ["package.json", "vitest.config.ts", "tsconfig.json"] {
+        let src = root.join(fname);
+        let dst = clar_root.join(fname);
+        if src.exists() && !dst.exists() {
+            tokio::fs::rename(&src, &dst).await?;
+        }
+    }
+
+    println!(
+        "[init] Detected standard Clarinet layout (Clarinet.toml at repo root).\n\
+         Normalized to scaffold-stacks layout: contracts/Clarinet.toml and contracts/contracts/*.clar."
+    );
+
+    Ok(())
+}
+
+pub async fn init_project() -> Result<()> {
+    ensure_prerequisites().await?;
+
+    let root = Path::new(".");
+    normalize_standard_clarinet_layout(root).await?;
+
+    let contracts_root = root.join("contracts");
+    let frontend_dir = root.join("frontend");
+    let clarinet_toml = contracts_root.join("Clarinet.toml");
+
+    if !clarinet_toml.exists() {
+        return Err(anyhow!(
+            "No Clarinet project detected.\n\
+             Expected either:\n\
+               • Clarinet.toml in the current directory (standard Clarinet), or\n\
+               • contracts/Clarinet.toml (scaffold-stacks layout)."
+        ));
+    }
+
+    tokio::fs::create_dir_all(contracts_root.join("contracts")).await?;
+    tokio::fs::create_dir_all(contracts_root.join("settings")).await?;
+    tokio::fs::create_dir_all(contracts_root.join("tests")).await?;
+
+    if !frontend_dir.exists() {
+        tokio::fs::create_dir_all(&frontend_dir).await?;
+        FRONTEND_TEMPLATE
+            .extract(&frontend_dir)
+            .map_err(|e| anyhow!("Failed to copy frontend template: {e}"))?;
+        println!("[init] Added frontend template in ./frontend");
+    } else if !frontend_dir.join("scripts/export-abi.mjs").exists() {
+        return Err(anyhow!(
+            "frontend/ exists but is missing scripts/export-abi.mjs.\n\
+             To avoid overwriting existing frontend files, init will not continue automatically.\n\
+             Add that script or move/backup frontend/ and rerun `stacksdapp init`."
+        ));
+    } else {
+        println!("[init] Existing frontend detected. Keeping files unchanged.");
+    }
+
+    ensure_contract_support_files(&contracts_root, &frontend_dir).await?;
+    run_generate_after_setup().await?;
+
+    println!("[init] ✔ Existing Clarinet project initialized for scaffold-stacks.");
+    Ok(())
+}
+
+pub async fn upgrade_project() -> Result<()> {
+    ensure_prerequisites().await?;
+
+    normalize_standard_clarinet_layout(Path::new(".")).await?;
+
+    if !Path::new("contracts/Clarinet.toml").exists()
+        || !Path::new("frontend/package.json").exists()
+    {
+        return Err(anyhow!(
+            "No scaffold-stacks project found. Run from a project containing Clarinet.toml (repo root or contracts/) and frontend/package.json.\n\
+             Run stacksdapp init first if you only have a Clarinet repo."
+        ));
+    }
+
+    println!("[upgrade] Refreshing dependencies and regenerating bindings (non-destructive)...");
+    run_npm_install(Path::new("frontend"), "frontend", "[upgrade]").await?;
+    run_npm_install(Path::new("contracts"), "contracts", "[upgrade]").await?;
+    stacksdapp_codegen::generate_all().await?;
+    println!("[upgrade] ✔ Upgrade complete.");
+    Ok(())
+}
+
 async fn write_project_files(
     name: &str,
     root: &Path,
@@ -141,47 +379,19 @@ async fn write_project_files(
 ) -> Result<()> {
     tokio::fs::write(
         contracts_root.join("package.json"),
-        r#"{
-  "name": "contracts",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "vitest run"
-  },
-  "devDependencies": {
-    "@stacks/clarinet-sdk": "^3",
-    "@stacks/transactions": "7.4.0",
-    "typescript": "^5",
-    "vitest": "^1"
-  }
-}
-"#,
+        DEFAULT_CONTRACTS_PACKAGE_JSON,
     )
     .await?;
 
     tokio::fs::write(
         contracts_root.join("vitest.config.ts"),
-        r#"import { defineConfig } from 'vitest/config';
-export default defineConfig({
-  test: { environment: 'node' },
-});
-"#,
+        DEFAULT_VITEST_CONFIG,
     )
     .await?;
 
     tokio::fs::write(
         contracts_root.join("tsconfig.json"),
-        r#"{
-  "compilerOptions": {
-    "target": "ES2020",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "strict": true,
-    "skipLibCheck": true
-  },
-  "include": ["tests/**/*.ts"]
-}
-"#,
+        DEFAULT_CONTRACTS_TSCONFIG,
     )
     .await?;
 
@@ -446,32 +656,105 @@ settings/Simnet.toml
     )
     .await?;
 
-    tokio::fs::write(
-        frontend_dir.join(".env.local"),
-        r#"# Network: devnet | testnet | mainnet
-NEXT_PUBLIC_NETWORK=devnet
-
-# Required for testnet/mainnet deploy:
-# DEPLOYER_PRIVATE_KEY=your_private_key_hex
-"#,
-    )
-    .await?;
+    tokio::fs::write(frontend_dir.join(".env.local"), DEFAULT_FRONTEND_ENV_LOCAL).await?;
 
     tokio::fs::write(
         frontend_dir.join(".env.local.example"),
-        r#"# Network: devnet | testnet | mainnet
-NEXT_PUBLIC_NETWORK=devnet
-
-# Required for testnet/mainnet deploy:
-# DEPLOYER_PRIVATE_KEY=your_private_key_hex
-
-# Optional node URL override:
-# NEXT_PUBLIC_STACKS_NODE_URL=https://api.testnet.hiro.so
-"#,
+        DEFAULT_FRONTEND_ENV_LOCAL_EXAMPLE,
     )
     .await?;
 
     Ok(())
+}
+
+async fn ensure_contract_support_files(contracts_root: &Path, frontend_dir: &Path) -> Result<()> {
+    write_if_missing(
+        &contracts_root.join("package.json"),
+        DEFAULT_CONTRACTS_PACKAGE_JSON,
+    )
+    .await?;
+    write_if_missing(
+        &contracts_root.join("vitest.config.ts"),
+        DEFAULT_VITEST_CONFIG,
+    )
+    .await?;
+    write_if_missing(
+        &contracts_root.join("tsconfig.json"),
+        DEFAULT_CONTRACTS_TSCONFIG,
+    )
+    .await?;
+    write_if_missing(
+        &contracts_root.join("settings/Devnet.toml"),
+        DEFAULT_DEVNET_SETTINGS,
+    )
+    .await?;
+    write_if_missing(
+        &contracts_root.join("settings/Testnet.toml"),
+        DEFAULT_TESTNET_SETTINGS,
+    )
+    .await?;
+    write_if_missing(
+        &contracts_root.join("settings/Mainnet.toml"),
+        DEFAULT_MAINNET_SETTINGS,
+    )
+    .await?;
+    write_if_missing(&frontend_dir.join(".env.local"), DEFAULT_FRONTEND_ENV_LOCAL).await?;
+    write_if_missing(
+        &frontend_dir.join(".env.local.example"),
+        DEFAULT_FRONTEND_ENV_LOCAL_EXAMPLE,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn run_generate_after_setup() -> Result<()> {
+    run_npm_install(Path::new("frontend"), "frontend", "[init]").await?;
+    run_npm_install(Path::new("contracts"), "contracts", "[init]").await?;
+    stacksdapp_codegen::generate_all().await?;
+    Ok(())
+}
+
+async fn write_if_missing(path: &Path, contents: &str) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(path, contents).await?;
+    Ok(())
+}
+
+async fn run_npm_install(dir: &Path, scope: &str, message_prefix: &str) -> Result<()> {
+    if !dir.join("package.json").exists() {
+        return Ok(());
+    }
+
+    let style = ProgressStyle::with_template(
+        "  {spinner:.yellow} {wide_msg:.dim}  \x1b[2m[{elapsed}]\x1b[0m",
+    )
+    .unwrap()
+    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(style);
+    pb.enable_steady_tick(Duration::from_millis(80));
+    let head = npm_install_message_head(message_prefix);
+    pb.set_message(format!("{head}Installing {scope} dependencies..."));
+
+    run_npm_install_with_feedback(&pb, dir, scope, message_prefix).await?;
+
+    pb.finish_and_clear();
+    println!("  \x1b[32m✔\x1b[0m  {head}Finished installing {scope} dependencies.");
+    Ok(())
+}
+
+fn npm_install_message_head(message_prefix: &str) -> String {
+    if message_prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{message_prefix} ")
+    }
 }
 
 pub async fn add_contract(name: &str, template: &str) -> Result<()> {
@@ -696,7 +979,12 @@ async fn ensure_prerequisites() -> Result<()> {
     Ok(())
 }
 
-async fn run_npm_install_with_feedback(pb: &ProgressBar, dir: &Path, scope: &str) -> Result<()> {
+async fn run_npm_install_with_feedback(
+    pb: &ProgressBar,
+    dir: &Path,
+    scope: &str,
+    message_prefix: &str,
+) -> Result<()> {
     let mut child = Command::new("npm")
         .args([
             "install",
@@ -717,9 +1005,10 @@ async fn run_npm_install_with_feedback(pb: &ProgressBar, dir: &Path, scope: &str
         .ok_or_else(|| anyhow!("failed to capture npm install logs for {scope}"))?;
     let mut lines = BufReader::new(stderr).lines();
 
+    let head = npm_install_message_head(message_prefix);
     while let Some(line) = lines.next_line().await? {
         if let Some(dep) = parse_npm_dep_hint(&line) {
-            pb.set_message(format!("Installing {scope} dependencies... {dep}"));
+            pb.set_message(format!("{head}Installing {scope} dependencies... {dep}"));
         }
     }
 
