@@ -6,8 +6,21 @@ mod commands {
 }
 use commands::doctor;
 
+const CLI_BEFORE_HELP: &str = r#"
+  ┌─ Scaffold Stacks ─────────────────────────────────────────┐
+  │  Clarity contracts · Next.js · Bitcoin L2 (Stacks)         │
+  │  new · dev · generate · deploy · test — one workspace.      │
+  └───────────────────────────────────────────────────────────┘
+"#;
+
 #[derive(Parser)]
-#[command(name = "stacksdapp", version, about = "Scaffold-Stacks CLI")]
+#[command(
+    name = "stacksdapp",
+    version,
+    about = "Full-stack toolkit for Stacks: scaffold, run, and ship Clarity + Next.js apps.",
+    before_help = CLI_BEFORE_HELP,
+    after_help = "Examples:\n  stacksdapp new my-dapp && cd my-dapp && stacksdapp dev\n  stacksdapp generate\n  stacksdapp deploy --network testnet"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
