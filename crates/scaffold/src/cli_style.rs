@@ -35,11 +35,7 @@ pub fn print_new_project_banner() {
         "╯".dimmed()
     );
     let title_row = format!("{:^width$}", "Scaffold Stacks", width = INNER);
-    let tag_row = format!(
-        "{:^width$}",
-        "Clarity · Next.js · Stacks",
-        width = INNER
-    );
+    let tag_row = format!("{:^width$}", "Clarity · Next.js · Stacks", width = INNER);
     println!();
     println!("{top}");
     println!(

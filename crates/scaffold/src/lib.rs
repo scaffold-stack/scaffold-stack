@@ -270,14 +270,8 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
             "contracts/settings/Testnet.toml".bold().white()
         )
     );
-    println!(
-        "          {}",
-        "[accounts.deployer]".dimmed()
-    );
-    println!(
-        "          {}",
-        "mnemonic = \"…\"".dimmed()
-    );
+    println!("          {}", "[accounts.deployer]".dimmed());
+    println!("          {}", "mnemonic = \"…\"".dimmed());
     println!(
         "    {}  {}",
         "4".cyan().bold(),
