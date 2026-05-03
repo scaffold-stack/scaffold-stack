@@ -1,4 +1,11 @@
+mod cli_style;
+
 use anyhow::{anyhow, Result};
+use cli_style::{
+    footer_repo_link, print_creating_line, print_new_project_banner, print_success_block,
+    section_alternative, section_recommended, step_done_string,
+};
+use colored::Colorize;
 use include_dir::{include_dir, Dir};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
@@ -90,19 +97,63 @@ deployment_fee_rate = 10
 mnemonic = "<YOUR PRIVATE MAINNET MNEMONIC HERE>"
 "#;
 
+/// Pre-commit hook: blocks staging Testnet/Mainnet settings that look like a real BIP39 phrase.
+/// Override (emergency only): SCAFFOLD_ALLOW_COMMITTED_MNEMONIC=1 git commit ...
+const GIT_HOOK_PRE_COMMIT: &str = r#"#!/bin/sh
+# Installed by scaffold-stacks — block likely seed phrases in Testnet/Mainnet settings.
+if [ -n "${SCAFFOLD_ALLOW_COMMITTED_MNEMONIC}" ]; then
+  exit 0
+fi
+
+# Use a for-loop (not `| while read`) so `exit 1` aborts the hook reliably.
+for f in $(git diff --cached --name-only --diff-filter=ACM); do
+  case "$f" in
+    */settings/Testnet.toml|*/settings/Mainnet.toml) ;;
+    *) continue ;;
+  esac
+
+  content=$(git show ":$f" 2>/dev/null) || continue
+  mnemonic=$(printf '%s\n' "$content" | sed -n 's/^[[:space:]]*mnemonic[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+  [ -z "$mnemonic" ] && continue
+
+  # Scaffold placeholders use angle brackets; real BIP39 phrases do not.
+  mn_first=$(printf '%.1s' "$mnemonic")
+  [ "$mn_first" = '<' ] && continue
+
+  # Rough BIP39 heuristic: 12+ whitespace-separated tokens (typical seed length).
+  words=$(printf '%s\n' "$mnemonic" | awk '{ print NF }')
+  if [ "$words" -ge 12 ] 2>/dev/null; then
+    echo "" >&2
+    echo "================================================================" >&2
+    echo "  scaffold-stacks git hook: possible seed phrase in commit" >&2
+    echo "================================================================" >&2
+    echo "  Staged file: $f" >&2
+    echo "  [accounts.deployer].mnemonic has $words whitespace-separated tokens." >&2
+    echo "  Committing real mnemonics to git is unsafe (history, forks, leaks)." >&2
+    echo "" >&2
+    echo "  Prefer env-based keys or a gitignored secrets file. To force this commit:" >&2
+    echo "    SCAFFOLD_ALLOW_COMMITTED_MNEMONIC=1 git commit   # not recommended" >&2
+    echo "================================================================" >&2
+    echo "" >&2
+    exit 1
+  fi
+done
+
+exit 0
+"#;
+
 pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
-    println!();
-    println!("   \x1b[1;33mScaffold Stacks\x1b[0m  \x1b[2m\x1b[0m");
-    println!("  \x1b[2m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m");
-    println!("  \x1b[1mCreating\x1b[0m  \x1b[1;36m{name}\x1b[0m");
-    println!();
+    print_new_project_banner();
+    print_creating_line(name);
 
     ensure_prerequisites().await?;
 
     let root = Path::new(name);
     if root.exists() {
         return Err(anyhow!(
-            "  \x1b[31m✗\x1b[0m Directory '{name}' already exists"
+            "{} Directory '{}' already exists",
+            "✗".red().bold(),
+            name
         ));
     }
 
@@ -133,9 +184,7 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
 
     write_project_files(name, root, &frontend_dir, &contracts_root).await?;
 
-    pb.println(format!(
-        "  \x1b[32m✔\x1b[0m  \x1b[1mScaffolded\x1b[0m   {name}/"
-    ));
+    pb.println(step_done_string("Scaffolded", &format!("{name}/")));
 
     // ── Step 2: Install dependencies (parallel) ───────────────────────────────
     pb.set_message("Installing frontend dependencies...");
@@ -147,7 +196,7 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
     pb.set_message("Installing contract dependencies...");
     run_npm_install_with_feedback(&pb, &ct_dir, "contracts", "").await?;
 
-    pb.println("  \x1b[32m✔\x1b[0m  \x1b[1mInstalled\x1b[0m    node_modules");
+    pb.println(step_done_string("Installed", "node_modules"));
 
     // ── Step 3: Git init ──────────────────────────────────────────────────────
     if git_init {
@@ -160,6 +209,8 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
             .stderr(Stdio::null())
             .status()
             .await?;
+
+        try_set_git_hooks_path(root).await?;
 
         Command::new("git")
             .args(["add", "-A"])
@@ -177,38 +228,82 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
             .status()
             .await?;
 
-        pb.println("  \x1b[32m✔\x1b[0m  \x1b[1mInitialised\x1b[0m  git (main)");
+        pb.println(step_done_string("Initialised", "git (main)"));
+        pb.println(format!(
+            "  {}  {}",
+            "··".dimmed(),
+            "pre-commit hook: blocks likely mnemonics in contracts/settings/Testnet|Mainnet.toml"
+                .dimmed()
+        ));
+        pb.println(format!(
+            "  {}  {}",
+            "··".dimmed(),
+            "after clone: npm run setup-hooks  or  git config core.hooksPath .githooks".dimmed()
+        ));
     }
 
     pb.finish_and_clear();
 
     // ── Success output ────────────────────────────────────────────────────────
-    println!("  \x1b[1;32m✔ Done!\x1b[0m  Project \x1b[1;36m{name}\x1b[0m is ready.");
-    println!("  \x1b[2m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m");
-    println!();
-    println!("  \x1b[1;33m Recommended\x1b[0m  Deploy to testnet \x1b[2m(no Docker needed)\x1b[0m");
-    println!();
-    println!("     \x1b[1;36m1\x1b[0m  cd {name}");
-    println!("     \x1b[1;36m2\x1b[0m  Get testnet STX \x1b[2m→\x1b[0m  https://explorer.hiro.so/sandbox/faucet?chain=testnet");
+    print_success_block(name);
+    section_recommended();
     println!(
-        "     \x1b[1;36m3\x1b[0m  Add mnemonic to \x1b[1mcontracts/settings/Testnet.toml\x1b[0m"
+        "    {}  {}",
+        "1".cyan().bold(),
+        format!("cd {}", name).dimmed()
     );
-    println!("        \x1b[2m[accounts.deployer]\x1b[0m");
-    println!("        \x1b[2mmnemonic = \"your 24 words here\"\x1b[0m");
-    println!("     \x1b[1;36m4\x1b[0m  \x1b[1mstacksdapp deploy --network testnet\x1b[0m");
-    println!("     \x1b[1;36m5\x1b[0m  \x1b[1mstacksdapp dev --network testnet\x1b[0m");
+    println!(
+        "    {}  {}",
+        "2".cyan().bold(),
+        format!(
+            "{}  {}",
+            "Get testnet STX".white(),
+            "https://explorer.hiro.so/sandbox/faucet?chain=testnet".dimmed()
+        )
+    );
+    println!(
+        "    {}  {}",
+        "3".cyan().bold(),
+        format!(
+            "{} {}",
+            "Edit".white(),
+            "contracts/settings/Testnet.toml".bold().white()
+        )
+    );
+    println!("          {}", "[accounts.deployer]".dimmed());
+    println!("          {}", "mnemonic = \"…\"".dimmed());
+    println!(
+        "    {}  {}",
+        "4".cyan().bold(),
+        "stacksdapp deploy --network testnet".bold().green()
+    );
+    println!(
+        "    {}  {}",
+        "5".cyan().bold(),
+        "stacksdapp dev --network testnet".bold().green()
+    );
     println!();
-    println!("  \x1b[2m───────────────────────────────────────\x1b[0m");
+    section_alternative();
+    println!(
+        "    {}  {}  {}",
+        "1".cyan().bold(),
+        format!("cd {}", name).dimmed(),
+        format!("{} {}", "·".dimmed(), "start Docker Desktop".dimmed())
+    );
+    println!(
+        "    {}  {}  {}",
+        "2".cyan().bold(),
+        "stacksdapp dev".bold().green(),
+        format!("{} {}", "←".dimmed(), "local chain + Next.js".dimmed())
+    );
+    println!(
+        "    {}  {}  {}",
+        "3".cyan().bold(),
+        "stacksdapp deploy --network devnet".bold().green(),
+        format!("{} {}", "←".dimmed(), "second terminal".dimmed())
+    );
     println!();
-    println!("  \x1b[1;34m Alternative\x1b[0m  Local devnet \x1b[2m(Docker required)\x1b[0m");
-    println!();
-    println!("     \x1b[1;36m1\x1b[0m  cd {name}  \x1b[2m+\x1b[0m  Start Docker Desktop");
-    println!("     \x1b[1;36m2\x1b[0m  \x1b[1mstacksdapp dev\x1b[0m                               \x1b[2m← starts local chain + frontend\x1b[0m");
-    println!("     \x1b[1;36m3\x1b[0m  \x1b[1mstacksdapp deploy --network devnet\x1b[0m           \x1b[2m← second terminal\x1b[0m");
-    println!();
-    println!("  \x1b[2m───────────────────────────────────────\x1b[0m");
-    println!("  \x1b[2m  https://github.com/scaffold-stack/scaffold-stack\x1b[0m");
-    println!();
+    footer_repo_link();
 
     Ok(())
 }
@@ -345,6 +440,9 @@ pub async fn init_project() -> Result<()> {
     ensure_contract_support_files(&contracts_root, &frontend_dir).await?;
     run_generate_after_setup().await?;
 
+    write_git_hooks(Path::new(".")).await?;
+    let _ = try_set_git_hooks_path(Path::new(".")).await;
+
     println!("[init] ✔ Existing Clarinet project initialized for scaffold-stacks.");
     Ok(())
 }
@@ -367,6 +465,8 @@ pub async fn upgrade_project() -> Result<()> {
     run_npm_install(Path::new("frontend"), "frontend", "[upgrade]").await?;
     run_npm_install(Path::new("contracts"), "contracts", "[upgrade]").await?;
     stacksdapp_codegen::generate_all().await?;
+    write_git_hooks(Path::new(".")).await?;
+    let _ = try_set_git_hooks_path(Path::new(".")).await;
     println!("[upgrade] ✔ Upgrade complete.");
     Ok(())
 }
@@ -594,7 +694,7 @@ describe('counter', () => {
     .await?;
 
     tokio::fs::write(root.join("package.json"), format!(
-        "{{\n  \"name\": \"{name}\",\n  \"private\": true,\n  \"scripts\": {{\n    \"dev\": \"stacksdapp dev\",\n    \"generate\": \"stacksdapp generate\",\n    \"deploy\": \"stacksdapp deploy\",\n    \"test\": \"stacksdapp test\",\n    \"check\": \"stacksdapp check\"\n  }}\n}}\n"
+        "{{\n  \"name\": \"{name}\",\n  \"private\": true,\n  \"scripts\": {{\n    \"dev\": \"stacksdapp dev\",\n    \"generate\": \"stacksdapp generate\",\n    \"deploy\": \"stacksdapp deploy\",\n    \"test\": \"stacksdapp test\",\n    \"check\": \"stacksdapp check\",\n    \"setup-hooks\": \"git config core.hooksPath .githooks\"\n  }}\n}}\n"
     )).await?;
 
     tokio::fs::write(
@@ -610,11 +710,11 @@ node_modules/
 .env.local
 .env.*.local
 
-# Clarinet devnet state
+# Clarinet devnet / generated settings (keep Devnet.toml, Testnet.toml, Mainnet.toml tracked)
 contracts/.cache/
 contracts/.devnet/
 contracts/settings/Simnet.toml
-contracts/settings
+contracts/settings/Epoch*.toml
 
 # Next.js build
 frontend/.next/
@@ -663,6 +763,8 @@ settings/Simnet.toml
         DEFAULT_FRONTEND_ENV_LOCAL_EXAMPLE,
     )
     .await?;
+
+    write_git_hooks(root).await?;
 
     Ok(())
 }
@@ -1047,4 +1149,38 @@ fn parse_npm_dep_hint(line: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Writes `.githooks/pre-commit` (mnemonic guard for Testnet/Mainnet settings).
+async fn write_git_hooks(root: &Path) -> Result<()> {
+    let hooks_dir = root.join(".githooks");
+    tokio::fs::create_dir_all(&hooks_dir).await?;
+    let hook_path = hooks_dir.join("pre-commit");
+    tokio::fs::write(&hook_path, GIT_HOOK_PRE_COMMIT).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = tokio::fs::metadata(&hook_path).await?.permissions();
+        perms.set_mode(0o755);
+        tokio::fs::set_permissions(&hook_path, perms).await?;
+    }
+    Ok(())
+}
+
+/// Points this repo at `.githooks` so the pre-commit hook runs (no-op if not a git work tree).
+async fn try_set_git_hooks_path(root: &Path) -> Result<()> {
+    if !root.join(".git").exists() {
+        return Ok(());
+    }
+    let status = Command::new("git")
+        .args(["config", "core.hooksPath", ".githooks"])
+        .current_dir(root)
+        .status()
+        .await?;
+    if !status.success() {
+        eprintln!(
+            "[scaffold-stacks] Could not set core.hooksPath; run: git config core.hooksPath .githooks"
+        );
+    }
+    Ok(())
 }
