@@ -1,16 +1,28 @@
 [package]
 name = "stacksdapp-scaffold"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "The asset provider and scaffolding engine containing the Next.js frontend templates and project initialization logic."
 license     = "MIT"
 repository  = "https://github.com/scaffold-stack/scaffold-stack"
 homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 
+# Do not use frontend-template/**/* — local npm install adds node_modules (~700MB+).
 include = [
+    "Cargo.toml",
     "src/**/*",
-    "frontend-template/**/*",
-    "Cargo.toml"
+    "frontend-template/package.json",
+    "frontend-template/package-lock.json",
+    "frontend-template/tsconfig.json",
+    "frontend-template/next.config.ts",
+    "frontend-template/tailwind.config.ts",
+    "frontend-template/postcss.config.js",
+    "frontend-template/env.local.example",
+    "frontend-template/vercel.json",
+    "frontend-template/.gitignore",
+    "frontend-template/public/**/*",
+    "frontend-template/scripts/**/*",
+    "frontend-template/src/**/*",
 ]
 
 [dependencies]
@@ -18,7 +30,7 @@ anyhow.workspace     = true
 tokio.workspace      = true
 fs_extra.workspace   = true
 which.workspace      = true
-stacksdapp-codegen  = {version = "0.1.4", path = "../codegen" }
+stacksdapp-codegen  = {version = "0.1.5", path = "../codegen" }
 include_dir = "0.7"
 indicatif.workspace = true
 colored.workspace = true

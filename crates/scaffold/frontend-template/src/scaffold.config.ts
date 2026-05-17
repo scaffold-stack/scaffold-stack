@@ -1,6 +1,8 @@
 // Network is driven by NEXT_PUBLIC_NETWORK env var.
 // stacksdapp dev --network testnet sets this automatically in frontend/.env.local
 
+import { createNetwork, type StacksNetwork, type StacksNetworkName } from '@stacks/network';
+
 type ScaffoldNetwork = 'devnet' | 'testnet' | 'mainnet';
 
 function resolveNetwork(value: string | undefined): ScaffoldNetwork {
@@ -36,3 +38,14 @@ export const scaffoldConfig = {
   isTestnet: network === 'testnet',
   isMainnet: network === 'mainnet',
 } as const;
+
+/** Network object for @stacks/transactions read-only calls (optional Hiro API key). */
+export function getReadOnlyNetwork(): StacksNetworkName | StacksNetwork {
+  const networkName: StacksNetworkName = scaffoldConfig.isDevnet
+    ? 'devnet'
+    : scaffoldConfig.targetNetwork;
+  if (scaffoldConfig.hiroApiKey) {
+    return createNetwork(networkName, scaffoldConfig.hiroApiKey);
+  }
+  return networkName;
+}

@@ -120,7 +120,7 @@ pub async fn parse_project(contracts_dir: &Path) -> Result<Vec<ContractAbi>> {
     let clarinet_toml = contracts_dir.join("Clarinet.toml");
     if !clarinet_toml.exists() {
         return Err(anyhow!(
-            "No scaffold-stacks project found. Run from the directory created by stacks-dapp new"
+            "No scaffold-stacks project found. Run from the directory created by stacksdapp new"
         ));
     }
 
