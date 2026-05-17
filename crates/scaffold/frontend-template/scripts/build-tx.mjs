@@ -12,8 +12,6 @@ import {
   getAddressFromPrivateKey,
   TransactionVersion,
 } from "@stacks/transactions";
-import { StacksMainnet, StacksTestnet, StacksDevnet } from "@stacks/network";
-
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
 const input = JSON.parse(Buffer.concat(chunks).toString());
@@ -21,11 +19,9 @@ const input = JSON.parse(Buffer.concat(chunks).toString());
 const { mode, privateKey, contractName, source, nonce, network } = input;
 
 function getNetwork(name) {
-  switch (name) {
-    case "mainnet": return new StacksMainnet();
-    case "testnet": return new StacksTestnet();
-    default:        return new StacksDevnet();
-  }
+  if (name === "mainnet") return "mainnet";
+  if (name === "testnet") return "testnet";
+  return "devnet";
 }
 
 function getTxVersion(name) {
