@@ -1,6 +1,6 @@
 [package]
 name    = "stacksdapp"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 description = "The official stacksdapp CLI: A complete toolkit to scaffold, build, and deploy full-stack Bitcoin applications on Stacks."
 license     = "MIT"
