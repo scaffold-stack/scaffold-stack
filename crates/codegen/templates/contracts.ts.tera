@@ -3,7 +3,7 @@
 
 import { request } from '@stacks/connect';
 import { fetchCallReadOnlyFunction, cvToValue, ClarityValue } from '@stacks/transactions';
-import { scaffoldConfig } from '../scaffold.config';
+import { getReadOnlyNetwork, scaffoldConfig } from '../scaffold.config';
 import { callDevnetContract, getDevnetSenderAddress } from '../lib/devnet';
 
 let _deployments: Record<string, any> = { contracts: {} };
@@ -17,11 +17,6 @@ function getContractId(name: string): { address: string; contractName: string } 
   }
   const dot = contractId.lastIndexOf('.');
   return { address: contractId.slice(0, dot), contractName: contractId.slice(dot + 1) };
-}
-
-function getStacksApiHeaders(): Record<string, string> | undefined {
-  if (!scaffoldConfig.hiroApiKey) return undefined;
-  return { 'x-api-key': scaffoldConfig.hiroApiKey };
 }
 
 {% for contract in contracts %}
@@ -66,11 +61,8 @@ export async function {{ contract.contract_name | camel }}_{{ fn.name | camel }}
     contractName,
     functionName: '{{ fn.name }}',
     functionArgs,
-    network: scaffoldConfig.isDevnet ? 'devnet' : scaffoldConfig.targetNetwork,
+    network: getReadOnlyNetwork(),
     senderAddress: senderAddress ?? getDevnetSenderAddress() ?? address,
-    fetchOptions: {
-      headers: getStacksApiHeaders(),
-    },
   });
   return cvToValue(result);
 }
