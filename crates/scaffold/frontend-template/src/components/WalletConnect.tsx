@@ -1,18 +1,8 @@
 "use client";
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { connect, disconnect, isConnected, getLocalStorage } from '@stacks/connect';
 import { addressAtom, isMountedAtom } from '../store/wallet';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
-
-
-type WalletContextValue = {
-  address: string | null;
-  connected: boolean;
-  connect: () => Promise<void>;
-  disconnect: () => void;
-};
-
-const WalletContext = createContext<WalletContextValue | undefined>(undefined);
 
 function getStoredStxAddress() {
   const stored = getLocalStorage();
@@ -34,7 +24,8 @@ function getResponseStxAddress(addresses: Array<{ address: string; symbol?: stri
   );
 }
 
-export function WalletProvider({ children }: { children: React.ReactNode }) {
+/** Syncs Leather/Xverse connection state into Jotai atoms for the app. */
+export function WalletProvider({ children }: { children: ReactNode }) {
   const [, setAddress] = useAtom(addressAtom);
   const [, setMounted] = useAtom(isMountedAtom);
 
@@ -70,14 +61,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   return <>{children}</>;
 }
-
-
-export function useWallet() {
-  const ctx = useContext(WalletContext);
-  if (!ctx) throw new Error('useWallet must be used within WalletProvider');
-  return ctx;
-}
-
 
 export function WalletConnect() {
   const address = useAtomValue(addressAtom);
