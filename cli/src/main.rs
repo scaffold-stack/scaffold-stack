@@ -53,7 +53,7 @@ enum Commands {
     },
     /// Adopt an existing Clarinet project in the current directory
     Init,
-    /// Add a new Clarity contract: stacks-dapp add <name> [--template blank|sip010|sip009]
+    /// Add a new Clarity contract: stacksdapp add <name> [--template blank|sip010|sip009]
     Add {
         /// Contract name
         name: String,
@@ -72,7 +72,7 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Run contract tests (vitest)
+    /// Run contract and frontend tests (vitest)
     Test,
     /// Type-check all Clarity contracts
     Check,
@@ -122,43 +122,106 @@ async fn run_generate(watch: bool) -> Result<()> {
 }
 
 async fn run_test() -> Result<()> {
-    use tokio::process::Command;
-
-    println!("{}", "[test] Running contract tests (vitest)...".cyan());
-    if tokio::fs::metadata("contracts/node_modules").await.is_err() {
-        println!("{}", "[test] Installing contract dependencies...".cyan());
-        let install = Command::new("npm")
-            .args([
-                "install",
-                "--no-audit",
-                "--no-fund",
-                "--prefer-offline",
-                "--progress=false",
-                "--loglevel=error",
-            ])
-            .current_dir("contracts")
-            .status()
-            .await;
-        match install {
-            Ok(s) if s.success() => {}
-            Ok(_) => anyhow::bail!("npm install failed in contracts/"),
-            Err(_) => anyhow::bail!("Node.js >=20 is required. Install from nodejs.org"),
-        }
+    if !tokio::fs::metadata("contracts/Clarinet.toml").await.is_ok() {
+        anyhow::bail!(
+            "No scaffold-stacks project found. Run from the directory created by stacksdapp new"
+        );
     }
 
-    let contract_status = Command::new("npm")
-        .args(["run", "test"])
-        .current_dir("contracts")
-        .status()
-        .await;
-    match contract_status {
-        Ok(s) if !s.success() => anyhow::bail!("Contract tests failed."),
-        Err(_) => anyhow::bail!("Node.js >=20 is required. Install from nodejs.org"),
-        Ok(_) => println!("{}", "[test] Contract tests passed.".green()),
+    run_vitest_suite("contracts", "contract", VitestRunMode::NpmScript).await?;
+
+    if tokio::fs::metadata("frontend/package.json").await.is_ok() {
+        run_vitest_suite("frontend", "frontend", VitestRunMode::RunPassWithNoTests).await?;
     }
 
     println!("{}", "All tests passed.".green().bold());
     Ok(())
+}
+
+enum VitestRunMode {
+    /// Uses `npm run test` (contracts use `vitest run` in package.json).
+    NpmScript,
+    /// Runs `vitest run --passWithNoTests` so empty frontend suites still pass.
+    RunPassWithNoTests,
+}
+
+async fn ensure_npm_dependencies(dir: &str) -> Result<()> {
+    use tokio::process::Command;
+
+    if tokio::fs::metadata(format!("{dir}/node_modules")).await.is_ok() {
+        return Ok(());
+    }
+
+    println!(
+        "{}",
+        format!("[test] Installing {dir} dependencies...").cyan()
+    );
+    let install = Command::new("npm")
+        .args([
+            "install",
+            "--no-audit",
+            "--no-fund",
+            "--prefer-offline",
+            "--progress=false",
+            "--loglevel=error",
+        ])
+        .current_dir(dir)
+        .status()
+        .await;
+
+    match install {
+        Ok(s) if s.success() => Ok(()),
+        Ok(_) => anyhow::bail!("npm install failed in {dir}/"),
+        Err(_) => anyhow::bail!("Node.js >=20 is required. Install from nodejs.org"),
+    }
+}
+
+async fn run_vitest_suite(dir: &str, label: &str, mode: VitestRunMode) -> Result<()> {
+    use tokio::process::Command;
+
+    ensure_npm_dependencies(dir).await?;
+
+    println!(
+        "{}",
+        format!("[test] Running {label} tests (vitest)...").cyan()
+    );
+
+    let status = match mode {
+        VitestRunMode::NpmScript => {
+            Command::new("npm")
+                .args(["run", "test"])
+                .current_dir(dir)
+                .status()
+                .await
+        }
+        VitestRunMode::RunPassWithNoTests => {
+            Command::new("npx")
+                .args(["vitest", "run", "--passWithNoTests"])
+                .current_dir(dir)
+                .status()
+                .await
+        }
+    };
+
+    match status {
+        Ok(s) if s.success() => {
+            println!(
+                "{}",
+                format!("[test] {} tests passed.", capitalize_test_label(label)).green()
+            );
+            Ok(())
+        }
+        Ok(_) => anyhow::bail!("{} tests failed.", capitalize_test_label(label)),
+        Err(_) => anyhow::bail!("Node.js >=20 is required. Install from nodejs.org"),
+    }
+}
+
+fn capitalize_test_label(label: &str) -> String {
+    let mut chars = label.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+    }
 }
 
 async fn run_check() -> Result<()> {
@@ -228,7 +291,7 @@ async fn run_clean() -> Result<()> {
 
     println!(
         "{}",
-        "[clean] Done. Run `stacks-dapp generate` to regenerate bindings.".green()
+        "[clean] Done. Run `stacksdapp generate` to regenerate bindings.".green()
     );
     Ok(())
 }
