@@ -32,7 +32,7 @@ stacksdapp --version
 
 ```bash
 git clone https://github.com/scaffold-stack/scaffold-stack.git
-cd stackscaffold
+cd scaffold-stack
 cargo install --path cli
 stacksdapp --version
 ```
@@ -249,19 +249,19 @@ The file watcher calls this pipeline automatically on every `.clar` save during 
 ## Crate Architecture
 
 ```
-cli/                    # Binary — clap CLI entrypoint
+cli/                              # Binary — clap CLI entrypoint
 crates/
-  scaffold/             # stacksdapp new + stacksdapp add
-  parser/               # Clarity ABI → Rust structs
-  codegen/              # Rust structs → TypeScript via Tera
-  watcher/              # notify file watcher + debounce
-  deployer/             # clarinet deployments generate + apply
-  process_supervisor/   # orchestrates dev per network
-templates/
-  contracts.ts.tera
-  hooks.ts.tera
-  debug_ui.tsx.tera
-frontend-template/      # copied into every new project
+  scaffold/                       # stacksdapp new + stacksdapp add
+    frontend-template/            # copied into every new project's frontend/
+  parser/                         # Clarity ABI → Rust structs
+  codegen/                        # Rust structs → TypeScript via Tera
+    templates/
+      contracts.ts.tera
+      hooks.ts.tera
+      debug_ui.tsx.tera
+  watcher/                        # notify file watcher + debounce
+  deployer/                       # clarinet deployments generate + apply
+  process_supervisor/             # orchestrates dev per network
 ```
 
 ---
@@ -270,7 +270,7 @@ frontend-template/      # copied into every new project
 
 ```bash
 git clone https://github.com/scaffold-stack/scaffold-stack.git
-cd stackscaffold
+cd scaffold-stack
 cargo build
 cargo test --all
 ```
