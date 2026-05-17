@@ -67,7 +67,7 @@ fn ensure_project_root() -> Result<()> {
         || !Path::new("frontend/package.json").exists()
     {
         return Err(anyhow!(
-            "No scaffold-stacks project found. Run from the directory created by stacks-dapp new"
+            "No scaffold-stacks project found. Run from the directory created by stacksdapp new"
         ));
     }
     Ok(())
@@ -140,7 +140,7 @@ async fn dev_devnet() -> Result<()> {
 
 // ── testnet / mainnet ─────────────────────────────────────────────────────────
 // No local chain — just run the frontend pointed at the remote network.
-// Contracts must already be deployed (`stacks-dapp deploy --network testnet`).
+// Contracts must already be deployed (`stacksdapp deploy --network testnet`).
 
 async fn dev_remote(network: &str) -> Result<()> {
     println!(
@@ -166,12 +166,12 @@ async fn dev_remote(network: &str) -> Result<()> {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// Overwrite frontend/.env.local with the correct NEXT_PUBLIC_NETWORK.
-/// This means `stacks-dapp dev --network testnet` automatically switches
+/// This means `stacksdapp dev --network testnet` automatically switches
 /// the frontend without the developer having to touch .env.local manually.
 async fn write_network_env(network: &str) -> Result<()> {
     let env_path = Path::new("frontend/.env.local");
     let content = format!(
-        "# Auto-written by stacks-dapp dev --network {network}\n\
+        "# Auto-written by stacksdapp dev --network {network}\n\
          NEXT_PUBLIC_NETWORK={network}\n"
     );
     fs::write(env_path, content).await?;
@@ -185,7 +185,7 @@ fn check_deployments(network: &str) -> Result<()> {
     if !path.exists() {
         println!(
             "[dev] Warning: deployments.json not found.\n\
-             Run `stacks-dapp deploy --network {network}` first so the frontend \
+             Run `stacksdapp deploy --network {network}` first so the frontend \
              knows your contract addresses."
         );
         return Ok(());
@@ -197,7 +197,7 @@ fn check_deployments(network: &str) -> Result<()> {
         if deployed_network != network && !deployed_network.is_empty() {
             println!(
                 "[dev] Warning: deployments.json is for '{}' but you requested '{}'.\n\
-                 Run `stacks-dapp deploy --network {network}` to deploy to {network} first.",
+                 Run `stacksdapp deploy --network {network}` to deploy to {network} first.",
                 deployed_network, network
             );
         }
@@ -205,7 +205,7 @@ fn check_deployments(network: &str) -> Result<()> {
         if contracts.map(|c| c.is_empty()).unwrap_or(true) {
             println!(
                 "[dev] Warning: No contracts in deployments.json.\n\
-                 Run `stacks-dapp deploy --network {network}` to populate it."
+                 Run `stacksdapp deploy --network {network}` to populate it."
             );
         }
     }
