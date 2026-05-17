@@ -2099,7 +2099,7 @@ dependencies = [
 
 [[package]]
 name = "stacksdapp-codegen"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "serde",
@@ -2130,7 +2130,7 @@ dependencies = [
 
 [[package]]
 name = "stacksdapp-parser"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde",

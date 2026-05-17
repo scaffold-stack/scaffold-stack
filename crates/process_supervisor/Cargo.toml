@@ -12,5 +12,5 @@ anyhow.workspace = true
 tokio.workspace  = true
 serde_json.workspace = true
 which.workspace     = true
-stacksdapp-codegen = {version = "0.1.4", path = "../codegen" }
+stacksdapp-codegen = {version = "0.1.5", path = "../codegen" }
 stacksdapp-watcher = {version = "0.1.2", path = "../watcher" }
