@@ -12,7 +12,7 @@ name = "stacksdapp"
 path = "src/main.rs"
 
 [dependencies]
-stacksdapp-scaffold           = {version = "0.1.6", path = "../crates/scaffold" }
+stacksdapp-scaffold           = {version = "0.1.7", path = "../crates/scaffold" }
 stacksdapp-parser             = {version = "0.1.2", path = "../crates/parser" }
 stacksdapp-codegen            = {version = "0.1.5", path = "../crates/codegen" }
 stacksdapp-watcher            = {version = "0.1.2", path = "../crates/watcher" }
