@@ -5,7 +5,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "vitest"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "next": "^15",
@@ -13,7 +13,7 @@
     "react-dom": "^18",
     "@stacks/connect": "^8",
     "@stacks/transactions": "^7",
-    "@stacks/network": "^6",
+    "@stacks/network": "^7",
     "pino-pretty": "^11",
     "jotai": "^2.19.0"
   },
