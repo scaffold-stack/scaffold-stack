@@ -7,10 +7,22 @@ license     = "MIT"
 repository  = "https://github.com/scaffold-stack/scaffold-stack"
 homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 
+# Do not use frontend-template/**/* — local npm install adds node_modules (~700MB+).
 include = [
+    "Cargo.toml",
     "src/**/*",
-    "frontend-template/**/*",
-    "Cargo.toml"
+    "frontend-template/package.json",
+    "frontend-template/package-lock.json",
+    "frontend-template/tsconfig.json",
+    "frontend-template/next.config.ts",
+    "frontend-template/tailwind.config.ts",
+    "frontend-template/postcss.config.js",
+    "frontend-template/env.local.example",
+    "frontend-template/vercel.json",
+    "frontend-template/.gitignore",
+    "frontend-template/public/**/*",
+    "frontend-template/scripts/**/*",
+    "frontend-template/src/**/*",
 ]
 
 [dependencies]
