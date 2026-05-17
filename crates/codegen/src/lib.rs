@@ -78,7 +78,7 @@ pub async fn generate_all() -> Result<()> {
         || !project_root.join("frontend/package.json").exists()
     {
         anyhow::bail!(
-            "No scaffold-stacks project found. Run from the directory created by stacks-dapp new"
+            "No scaffold-stacks project found. Run from the directory created by stacksdapp new"
         );
     }
 
@@ -124,7 +124,7 @@ pub async fn generate_all() -> Result<()> {
 
     // Write empty deployments.json if it doesn't exist yet so that
     // contracts.ts can always require() it without crashing at import time.
-    // The real content is written by `stacks-dapp deploy`.
+    // The real content is written by `stacksdapp deploy`.
     let deployments_path = out_dir.join("deployments.json");
     if !deployments_path.exists() {
         tokio::fs::write(
@@ -132,7 +132,7 @@ pub async fn generate_all() -> Result<()> {
             r#"{ "network": "", "deployed_at": "", "contracts": {} }"#,
         )
         .await?;
-        println!("[generate] Created empty deployments.json (run stacks-dapp deploy to populate)");
+        println!("[generate] Created empty deployments.json (run stacksdapp deploy to populate)");
     }
 
     let written = render(&abis, &out_dir)?;
