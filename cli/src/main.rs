@@ -148,7 +148,10 @@ enum VitestRunMode {
 async fn ensure_npm_dependencies(dir: &str) -> Result<()> {
     use tokio::process::Command;
 
-    if tokio::fs::metadata(format!("{dir}/node_modules")).await.is_ok() {
+    if tokio::fs::metadata(format!("{dir}/node_modules"))
+        .await
+        .is_ok()
+    {
         return Ok(());
     }
 
