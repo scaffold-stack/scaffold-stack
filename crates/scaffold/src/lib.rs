@@ -68,7 +68,10 @@ NEXT_PUBLIC_NETWORK=devnet
 # NEXT_PUBLIC_STACKS_NODE_URL=https://api.testnet.hiro.so
 "#;
 
-const DEFAULT_DEVNET_SETTINGS: &str = r#"[network]
+const DEVNET_MNEMONIC_WARNING: &str =
+    "# WARNING: These are public test mnemonics. NEVER use them on testnet or mainnet.\n\n";
+
+const DEFAULT_DEVNET_SETTINGS_BODY: &str = r#"[network]
 name = "devnet"
 deployment_fee_rate = 10
 
@@ -78,6 +81,103 @@ balance = 100_000_000_000_000
 sbtc_balance = 1_000_000_000
 derivation = "m/44'/5757'/0'/0/0"
 "#;
+
+const DEFAULT_FULL_DEVNET_SETTINGS_BODY: &str = r#"[network]
+name = "devnet"
+deployment_fee_rate = 10
+
+[accounts.deployer]
+mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip blue scout claw"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_1]
+mnemonic = "sell invite acquire kitten bamboo drastic jelly vivid peace spawn twice guilt pave pen trash pretty park cube fragile unaware remain midnight betray rebuild"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_2]
+mnemonic = "hold excess usual excess ring elephant install account glad dry fragile donkey gaze humble truck breeze nation gasp vacuum limb head keep delay hospital"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_3]
+mnemonic = "cycle puppy glare enroll cost improve round trend wrist mushroom scorpion tower claim oppose clever elephant dinosaur eight problem before frozen dune wagon high"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_4]
+mnemonic = "board list obtain sugar hour worth raven scout denial thunder horse logic fury scorpion fold genuine phrase wealth news aim below celery when cabin"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_5]
+mnemonic = "hurry aunt blame peanut heavy update captain human rice crime juice adult scale device promote vast project quiz unit note reform update climb purchase"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_6]
+mnemonic = "area desk dutch sign gold cricket dawn toward giggle vibrant indoor bench warfare wagon number tiny universe sand talk dilemma pottery bone trap buddy"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_7]
+mnemonic = "prevent gallery kind limb income control noise together echo rival record wedding sense uncover school version force bleak nuclear include danger skirt enact arrow"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_8]
+mnemonic = "female adjust gallery certain visit token during great side clown fitness like hurt clip knife warm bench start reunion globe detail dream depend fortune"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.faucet]
+mnemonic = "shadow private easily thought say logic fault paddle word top book during ignore notable orange flight clock image wealth health outside kitten belt reform"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[devnet]
+disable_stacks_explorer = false
+disable_stacks_api = false
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_1"
+slots = 2
+btc_address = "mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_2"
+slots = 2
+btc_address = "muYdXKmX9bByAueDe6KFfHd5Ff1gdN9ErG"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_3"
+slots = 2
+btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"
+"#;
+
+fn devnet_settings_with_warning(body: &str) -> String {
+    format!("{DEVNET_MNEMONIC_WARNING}{body}")
+}
 
 const DEFAULT_TESTNET_SETTINGS: &str = r#"[network]
 name = "testnet"
@@ -518,98 +618,11 @@ version = 2
     )
     .await?;
 
-    tokio::fs::write(contracts_root.join("settings/Devnet.toml"), r#"[network]
-name = "devnet"
-deployment_fee_rate = 10
-
-[accounts.deployer]
-mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip blue scout claw"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_1]
-mnemonic = "sell invite acquire kitten bamboo drastic jelly vivid peace spawn twice guilt pave pen trash pretty park cube fragile unaware remain midnight betray rebuild"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_2]
-mnemonic = "hold excess usual excess ring elephant install account glad dry fragile donkey gaze humble truck breeze nation gasp vacuum limb head keep delay hospital"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_3]
-mnemonic = "cycle puppy glare enroll cost improve round trend wrist mushroom scorpion tower claim oppose clever elephant dinosaur eight problem before frozen dune wagon high"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_4]
-mnemonic = "board list obtain sugar hour worth raven scout denial thunder horse logic fury scorpion fold genuine phrase wealth news aim below celery when cabin"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_5]
-mnemonic = "hurry aunt blame peanut heavy update captain human rice crime juice adult scale device promote vast project quiz unit note reform update climb purchase"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_6]
-mnemonic = "area desk dutch sign gold cricket dawn toward giggle vibrant indoor bench warfare wagon number tiny universe sand talk dilemma pottery bone trap buddy"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_7]
-mnemonic = "prevent gallery kind limb income control noise together echo rival record wedding sense uncover school version force bleak nuclear include danger skirt enact arrow"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_8]
-mnemonic = "female adjust gallery certain visit token during great side clown fitness like hurt clip knife warm bench start reunion globe detail dream depend fortune"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.faucet]
-mnemonic = "shadow private easily thought say logic fault paddle word top book during ignore notable orange flight clock image wealth health outside kitten belt reform"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[devnet]
-disable_stacks_explorer = false
-disable_stacks_api = false
-
-[[devnet.pox_stacking_orders]]
-start_at_cycle = 1
-duration = 10
-auto_extend = true
-wallet = "wallet_1"
-slots = 2
-btc_address = "mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC"
-
-[[devnet.pox_stacking_orders]]
-start_at_cycle = 1
-duration = 10
-auto_extend = true
-wallet = "wallet_2"
-slots = 2
-btc_address = "muYdXKmX9bByAueDe6KFfHd5Ff1gdN9ErG"
-
-[[devnet.pox_stacking_orders]]
-start_at_cycle = 1
-duration = 10
-auto_extend = true
-wallet = "wallet_3"
-slots = 2
-btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"
-"#).await?;
+    tokio::fs::write(
+        contracts_root.join("settings/Devnet.toml"),
+        devnet_settings_with_warning(DEFAULT_FULL_DEVNET_SETTINGS_BODY),
+    )
+    .await?;
 
     tokio::fs::write(
         contracts_root.join("settings/Testnet.toml"),
@@ -785,9 +798,10 @@ async fn ensure_contract_support_files(contracts_root: &Path, frontend_dir: &Pat
         DEFAULT_CONTRACTS_TSCONFIG,
     )
     .await?;
+    let devnet_settings = devnet_settings_with_warning(DEFAULT_DEVNET_SETTINGS_BODY);
     write_if_missing(
         &contracts_root.join("settings/Devnet.toml"),
-        DEFAULT_DEVNET_SETTINGS,
+        &devnet_settings,
     )
     .await?;
     write_if_missing(
