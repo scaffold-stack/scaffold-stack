@@ -9,6 +9,15 @@ import { scaffoldConfig } from '../scaffold.config';
 
 type TxLifecycleStatus = 'pending' | 'success' | 'abort_by_response' | 'error';
 
+const TX_POLL_INITIAL_DELAY_MS = 1500;
+const TX_POLL_INTERVAL_MS = 2500;
+const TX_POLL_MAX_TRANSIENT_ERRORS = 20;
+
+/** Hiro may return 404 until the tx is indexed — not a failure. */
+function isTransientTxPollHttpStatus(status: number): boolean {
+  return status === 404 || status === 408 || status === 429 || status === 502 || status === 503 || status === 504;
+}
+
 {% for contract in contracts %}
 {% for fn in contract.functions %}
 {% if fn.access == "public" or fn.access == "read_only" %}
@@ -59,10 +68,17 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
 
     let mounted = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let transientErrors = 0;
     const headers: Record<string, string> = {};
     if (scaffoldConfig.hiroApiKey) {
       headers['x-api-key'] = scaffoldConfig.hiroApiKey;
     }
+
+    const scheduleRetry = () => {
+      timer = setTimeout(() => {
+        void poll();
+      }, TX_POLL_INTERVAL_MS);
+    };
 
     const poll = async () => {
       try {
@@ -74,8 +90,24 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
           },
         );
         if (!response.ok) {
+          if (isTransientTxPollHttpStatus(response.status)) {
+            transientErrors += 1;
+            if (!mounted) return;
+            if (transientErrors >= TX_POLL_MAX_TRANSIENT_ERRORS) {
+              setTxStatus('error');
+              setTxStatusError(
+                `Transaction status unavailable (HTTP ${response.status}) after ${transientErrors} attempts.`,
+              );
+              return;
+            }
+            setTxStatus('pending');
+            setTxStatusError(null);
+            scheduleRetry();
+            return;
+          }
           throw new Error(`tx status request failed with ${response.status}`);
         }
+        transientErrors = 0;
         const payload = await response.json();
         const status = String(payload?.tx_status ?? '').toLowerCase();
         if (!mounted) return;
@@ -92,9 +124,8 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
         }
         if (status.includes('pending')) {
           setTxStatus('pending');
-          timer = setTimeout(() => {
-            void poll();
-          }, 2500);
+          setTxStatusError(null);
+          scheduleRetry();
           return;
         }
 
@@ -102,14 +133,23 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
         setTxStatusError(payload?.tx_status ? `Unexpected tx status: ${payload.tx_status}` : 'Unknown tx status.');
       } catch (err) {
         if (!mounted) return;
-        setTxStatusError(err instanceof Error ? err.message : 'Failed to poll transaction status.');
-        timer = setTimeout(() => {
-          void poll();
-        }, 4000);
+        transientErrors += 1;
+        if (transientErrors >= TX_POLL_MAX_TRANSIENT_ERRORS) {
+          setTxStatus('error');
+          setTxStatusError(
+            err instanceof Error ? err.message : 'Failed to poll transaction status.',
+          );
+          return;
+        }
+        setTxStatus('pending');
+        setTxStatusError(null);
+        scheduleRetry();
       }
     };
 
-    void poll();
+    timer = setTimeout(() => {
+      void poll();
+    }, TX_POLL_INITIAL_DELAY_MS);
     return () => {
       mounted = false;
       if (timer) clearTimeout(timer);
