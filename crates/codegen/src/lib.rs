@@ -85,9 +85,14 @@ pub async fn generate_all() -> Result<()> {
     let frontend_dir = project_root.join("frontend");
     if !frontend_dir.join("node_modules").exists() {
         println!("[generate] Installing frontend dependencies...");
+        let subcommand = if frontend_dir.join("package-lock.json").exists() {
+            "ci"
+        } else {
+            "install"
+        };
         let status = tokio::process::Command::new("npm")
+            .arg(subcommand)
             .args([
-                "install",
                 "--no-audit",
                 "--no-fund",
                 "--prefer-offline",

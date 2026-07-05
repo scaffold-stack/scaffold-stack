@@ -10,14 +10,14 @@ A Rust-powered CLI (`stacksdapp`) and Next.js template for building full-stack S
 |---|---|---|
 | **Rust** 1.75+ | [rustup.rs](https://rustup.rs) | Building the CLI |
 | **Node.js** 20+ | [nodejs.org](https://nodejs.org) | Frontend + contract tests |
-| **Clarinet** | `brew install clarinet` | Contract toolchain |
+| **Clarinet** 3.21+ | `brew install clarinet` | Contract toolchain |
 | **Leather or Xverse** | [leather.io](https://leather.io) | Wallet for testnet/mainnet |
 | **Docker Desktop** | [docker.com](https://docker.com) | Local devnet only |
 
 ```bash
 rustc --version      # rustc 1.75+
 node --version       # v20+
-clarinet --version   # clarinet 3.x
+clarinet --version   # clarinet 3.21+
 ```
 
 ---
@@ -134,7 +134,7 @@ stacksdapp test
 # Runs Vitest in frontend/
 ```
 
-Contract tests run entirely in Node via `initSimnet()` — no Docker, no devnet required.
+Contract tests run entirely in Node via `initSimnet()` — no Docker, no devnet required. Contract ABIs are cached in `contracts/.cache/` and only re-exported when sources change.
 
 ### Type-check contracts
 
@@ -218,6 +218,7 @@ my-app/
 | `stacksdapp dev --network testnet` | Run frontend against testnet (no Docker) |
 | `stacksdapp dev --network mainnet` | Run frontend against mainnet (no Docker) |
 | `stacksdapp dev` | Start local devnet + frontend + watcher (Docker required) |
+| `stacksdapp dev --auto-deploy` | Devnet + auto-deploy contracts once the chain is ready |
 | `stacksdapp deploy --network testnet` | Deploy to testnet |
 | `stacksdapp deploy --network testnet --contract <name>` | Deploy only one contract by name |
 | `stacksdapp deploy --network testnet --dry-run` | Generate plan + estimated fee without broadcasting |

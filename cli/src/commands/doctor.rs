@@ -152,7 +152,6 @@ async fn check_node() -> Check {
 async fn check_clarinet() -> Check {
     match version_output("clarinet", &["--version"]).await {
         Some(v) => {
-            // "clarinet 3.14.1" or just "3.14.1"
             let version = v
                 .trim()
                 .trim_start_matches("clarinet ")
@@ -166,7 +165,15 @@ async fn check_clarinet() -> Check {
                 .unwrap_or("0")
                 .parse()
                 .unwrap_or(0);
-            if major >= 3 {
+            if major < 3 {
+                Check {
+                    name: "Clarinet",
+                    result: CheckResult::Warn(format!(
+                        "{version} — Clarinet 3.21+ required. \
+                         Run: brew upgrade clarinet  OR  cargo install clarinet --locked"
+                    )),
+                }
+            } else if meets_semver(&version, 3, 21) {
                 Check {
                     name: "Clarinet",
                     result: CheckResult::Ok(version),
@@ -175,8 +182,8 @@ async fn check_clarinet() -> Check {
                 Check {
                     name: "Clarinet",
                     result: CheckResult::Warn(format!(
-                        "{version} — Clarinet 3.x required. \
-                         Run: brew install clarinet  OR  cargo install clarinet"
+                        "{version} — Clarinet 3.21+ recommended (templates target 3.21). \
+                         Run: brew upgrade clarinet"
                     )),
                 }
             }

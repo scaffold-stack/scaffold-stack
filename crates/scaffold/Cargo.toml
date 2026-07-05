@@ -1,6 +1,6 @@
 [package]
 name = "stacksdapp-scaffold"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 description = "The asset provider and scaffolding engine containing the Next.js frontend templates and project initialization logic."
 license     = "MIT"
@@ -11,6 +11,7 @@ homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 include = [
     "Cargo.toml",
     "src/**/*",
+    "contracts-template/package-lock.json",
     "frontend-template/package.json",
     "frontend-template/package-lock.json",
     "frontend-template/tsconfig.json",
@@ -30,7 +31,7 @@ anyhow.workspace     = true
 tokio.workspace      = true
 fs_extra.workspace   = true
 which.workspace      = true
-stacksdapp-codegen  = {version = "0.1.5", path = "../codegen" }
+stacksdapp-codegen  = {version = "0.1.6", path = "../codegen" }
 include_dir = "0.7"
 indicatif.workspace = true
 colored.workspace = true
