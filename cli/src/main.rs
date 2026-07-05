@@ -40,10 +40,14 @@ enum Commands {
     ///
     /// devnet  (default): spins up local Clarinet chain + Next.js + watcher
     /// testnet/mainnet:   runs Next.js pointed at remote network (no local chain)
+    /// Use --auto-deploy with devnet to deploy contracts once the local chain is ready.
     Dev {
         /// Network to target: devnet | testnet | mainnet
         #[arg(long, default_value = "devnet")]
         network: String,
+        /// After devnet is ready, deploy contracts automatically (devnet only)
+        #[arg(long)]
+        auto_deploy: bool,
     },
     /// Parse contracts and regenerate TypeScript bindings
     Generate {
@@ -89,7 +93,10 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::New { name, no_git } => stacksdapp_scaffold::new_project(&name, !no_git).await,
-        Commands::Dev { network } => stacksdapp_process_supervisor::dev(&network).await,
+        Commands::Dev {
+            network,
+            auto_deploy,
+        } => stacksdapp_process_supervisor::dev(&network, auto_deploy).await,
         Commands::Generate { watch } => run_generate(watch).await,
         Commands::Init => stacksdapp_scaffold::init_project().await,
         Commands::Add { name, template } => {
@@ -159,9 +166,17 @@ async fn ensure_npm_dependencies(dir: &str) -> Result<()> {
         "{}",
         format!("[test] Installing {dir} dependencies...").cyan()
     );
+    let subcommand = if tokio::fs::metadata(format!("{dir}/package-lock.json"))
+        .await
+        .is_ok()
+    {
+        "ci"
+    } else {
+        "install"
+    };
     let install = Command::new("npm")
+        .arg(subcommand)
         .args([
-            "install",
             "--no-audit",
             "--no-fund",
             "--prefer-offline",
@@ -198,8 +213,8 @@ async fn run_vitest_suite(dir: &str, label: &str, mode: VitestRunMode) -> Result
                 .await
         }
         VitestRunMode::RunPassWithNoTests => {
-            Command::new("npx")
-                .args(["vitest", "run", "--passWithNoTests"])
+            Command::new("npm")
+                .args(["run", "test"])
                 .current_dir(dir)
                 .status()
                 .await
