@@ -101,6 +101,10 @@ struct DeploymentFile {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+pub async fn wait_for_devnet_node() -> Result<()> {
+    wait_for_node("http://localhost:3999").await
+}
+
 pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool) -> Result<()> {
     if !Path::new("contracts/Clarinet.toml").exists() {
         return Err(anyhow!(
