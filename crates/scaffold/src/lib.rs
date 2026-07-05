@@ -17,8 +17,7 @@ use which::which;
 
 static FRONTEND_TEMPLATE: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend-template");
 
-const CONTRACTS_PACKAGE_LOCK: &str =
-    include_str!("../contracts-template/package-lock.json");
+const CONTRACTS_PACKAGE_LOCK: &str = include_str!("../contracts-template/package-lock.json");
 
 const DEFAULT_CONTRACTS_PACKAGE_JSON: &str = r#"{
   "name": "contracts",

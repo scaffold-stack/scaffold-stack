@@ -63,9 +63,7 @@ pub async fn dev(network: &str, auto_deploy: bool) -> Result<()> {
         "devnet" => dev_devnet(auto_deploy).await,
         "testnet" | "mainnet" => {
             if auto_deploy {
-                println!(
-                    "[dev] --auto-deploy applies to devnet only; ignoring for {network}."
-                );
+                println!("[dev] --auto-deploy applies to devnet only; ignoring for {network}.");
             }
             dev_remote(network).await
         }
