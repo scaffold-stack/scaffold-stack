@@ -17,37 +17,72 @@ use which::which;
 
 static FRONTEND_TEMPLATE: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend-template");
 
+const CONTRACTS_PACKAGE_LOCK: &str =
+    include_str!("../contracts-template/package-lock.json");
+
 const DEFAULT_CONTRACTS_PACKAGE_JSON: &str = r#"{
   "name": "contracts",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:report": "vitest run -- --coverage --costs"
   },
   "devDependencies": {
-    "@stacks/clarinet-sdk": "^3",
+    "@stacks/clarinet-sdk": "3.21.0",
     "@stacks/transactions": "7.4.0",
+    "@types/node": "^24",
     "typescript": "^5",
-    "vitest": "^1"
+    "vitest": "^4.1.8",
+    "vitest-environment-clarinet": "^3.0.0"
   }
 }
 "#;
 
-const DEFAULT_VITEST_CONFIG: &str = r#"import { defineConfig } from 'vitest/config';
+const DEFAULT_VITEST_CONFIG: &str = r#"import { defineConfig } from "vitest/config";
+import {
+  vitestSetupFilePath,
+  getClarinetVitestsArgv,
+} from "@stacks/clarinet-sdk/vitest";
+
 export default defineConfig({
-  test: { environment: 'node' },
+  test: {
+    environment: "clarinet",
+    pool: "forks",
+    isolate: false,
+    maxWorkers: 1,
+    setupFiles: [vitestSetupFilePath],
+    environmentOptions: {
+      clarinet: {
+        ...getClarinetVitestsArgv(),
+      },
+    },
+  },
 });
 "#;
 
 const DEFAULT_CONTRACTS_TSCONFIG: &str = r#"{
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ESNext",
+    "useDefineForClassFields": true,
     "module": "ESNext",
+    "lib": ["ESNext"],
+    "skipLibCheck": true,
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
     "strict": true,
-    "skipLibCheck": true
+    "noImplicitAny": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
   },
-  "include": ["tests/**/*.ts"]
+  "include": [
+    "node_modules/@stacks/clarinet-sdk/vitest-helpers/src",
+    "tests"
+  ]
 }
 "#;
 
@@ -562,6 +597,7 @@ pub async fn upgrade_project() -> Result<()> {
     }
 
     println!("[upgrade] Refreshing dependencies and regenerating bindings (non-destructive)...");
+    ensure_contract_support_files(Path::new("contracts"), Path::new("frontend")).await?;
     run_npm_install(Path::new("frontend"), "frontend", "[upgrade]").await?;
     run_npm_install(Path::new("contracts"), "contracts", "[upgrade]").await?;
     stacksdapp_codegen::generate_all().await?;
@@ -580,6 +616,12 @@ async fn write_project_files(
     tokio::fs::write(
         contracts_root.join("package.json"),
         DEFAULT_CONTRACTS_PACKAGE_JSON,
+    )
+    .await?;
+
+    tokio::fs::write(
+        contracts_root.join("package-lock.json"),
+        CONTRACTS_PACKAGE_LOCK,
     )
     .await?;
 
@@ -606,13 +648,14 @@ telemetry = false
 cache_dir = "./.cache"
 requirements = []
 
+[repl.analysis]
+passes = ["check_checker"]
+check_checker = {{ trusted_sender = false, trusted_caller = false, callee_filter = false }}
+
 [contracts.counter]
 path = "contracts/counter.clar"
-clarity_version = 4
+clarity_version = 5
 epoch = "latest"
-
-[repl.costs_version]
-version = 2
 "#
         ),
     )
@@ -680,26 +723,26 @@ mnemonic = "<YOUR PRIVATE MAINNET MNEMONIC HERE>"
 
     tokio::fs::write(
         contracts_root.join("tests/counter.test.ts"),
-        r#"import { describe, expect, it } from 'vitest';
-import { initSimnet } from '@stacks/clarinet-sdk';
-import { Cl } from '@stacks/transactions';
+        r#"import { describe, expect, it } from "vitest";
+import { Cl } from "@stacks/transactions";
 
-const simnet = await initSimnet();
 const accounts = simnet.getAccounts();
-const address1 = accounts.get('wallet_1')!;
+const address1 = accounts.get("wallet_1")!;
 
-describe('counter', () => {
-  it('increments', () => {
-    const { result } = simnet.callPublicFn('counter', 'increment', [], address1);
-    expect(result.value.value).toBe(1n);
+describe("counter", () => {
+  it("increments", () => {
+    const { result } = simnet.callPublicFn("counter", "increment", [], address1);
+    expect(result).toBeOk(Cl.uint(1));
   });
-  it('get-count returns current value', () => {
-    const { result } = simnet.callReadOnlyFn('counter', 'get-count', [], address1);
-    expect(result.value.value).toBe(1n);
+  it("get-count returns current value", () => {
+    simnet.callPublicFn("counter", "increment", [], address1);
+    const { result } = simnet.callReadOnlyFn("counter", "get-count", [], address1);
+    expect(result).toBeOk(Cl.uint(1));
   });
-  it('decrement', () => {
-    const { result } = simnet.callPublicFn('counter', 'decrement', [], address1);
-    expect(result.value.value).toBe(0n);
+  it("decrement", () => {
+    simnet.callPublicFn("counter", "increment", [], address1);
+    const { result } = simnet.callPublicFn("counter", "decrement", [], address1);
+    expect(result).toBeOk(Cl.uint(0));
   });
 });
 "#,
@@ -786,6 +829,11 @@ async fn ensure_contract_support_files(contracts_root: &Path, frontend_dir: &Pat
     write_if_missing(
         &contracts_root.join("package.json"),
         DEFAULT_CONTRACTS_PACKAGE_JSON,
+    )
+    .await?;
+    write_if_missing(
+        &contracts_root.join("package-lock.json"),
+        CONTRACTS_PACKAGE_LOCK,
     )
     .await?;
     write_if_missing(
@@ -935,23 +983,25 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
     (ok true)))
 "#
             ),
-            String::from(
-                r#"import { describe, expect, it } from 'vitest';
-import { initSimnet } from '@stacks/clarinet-sdk';
-import { Cl } from '@stacks/transactions';
+            format!(
+                r#"import {{ describe, expect, it }} from "vitest";
+import {{ Cl }} from "@stacks/transactions";
 
-const simnet = await initSimnet();
 const accounts = simnet.getAccounts();
-const deployer = accounts.get('deployer')!;
-const wallet1 = accounts.get('wallet_1')!;
+const deployer = accounts.get("deployer")!;
 
-describe('token FT', () => {
-  it('mints tokens', () => {
-    const { result } = simnet.callPublicFn('token', 'mint', [Cl.uint(100), Cl.standardPrincipal(deployer)], deployer);
-    expect(result.value.type).toBe('true');
-  });
-});
-"#,
+describe("{name} FT", () => {{
+  it("mints tokens", () => {{
+    const {{ result }} = simnet.callPublicFn(
+      "{name}",
+      "mint",
+      [Cl.uint(100), Cl.standardPrincipal(deployer)],
+      deployer
+    );
+    expect(result).toBeOk(Cl.bool(true));
+  }});
+}});
+"#
             ),
             Some("SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard"),
         ),
@@ -1001,22 +1051,25 @@ describe('token FT', () => {
     (ok token-id)))
 "#
             ),
-            String::from(
-                r#"import { describe, expect, it } from 'vitest';
-import { initSimnet } from '@stacks/clarinet-sdk';
-import { Cl } from '@stacks/transactions';
+            format!(
+                r#"import {{ describe, expect, it }} from "vitest";
+import {{ Cl }} from "@stacks/transactions";
 
-const simnet = await initSimnet();
 const accounts = simnet.getAccounts();
-const deployer = accounts.get('deployer')!;
+const deployer = accounts.get("deployer")!;
 
-describe('nft NFT', () => {
-  it('mints a token', () => {
-    const { result } = simnet.callPublicFn('nft', 'mint', [Cl.standardPrincipal(deployer)], deployer);
-    expect(result.value.value).toBe(1n);
-  });
-});
-"#,
+describe("{name} NFT", () => {{
+  it("mints a token", () => {{
+    const {{ result }} = simnet.callPublicFn(
+      "{name}",
+      "mint",
+      [Cl.standardPrincipal(deployer)],
+      deployer
+    );
+    expect(result).toBeOk(Cl.uint(1));
+  }});
+}});
+"#
             ),
             Some("SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait"),
         ),
@@ -1026,18 +1079,16 @@ describe('nft NFT', () => {
                 ";; {name}.clar\n\n(define-read-only (get-info)\n  (ok \"{name} contract\"))\n"
             ),
             format!(
-                r#"import {{ describe, expect, it }} from 'vitest';
-import {{ initSimnet }} from '@stacks/clarinet-sdk';
-import {{ Cl }} from '@stacks/transactions';
+                r#"import {{ describe, expect, it }} from "vitest";
+import {{ Cl }} from "@stacks/transactions";
 
-const simnet = await initSimnet();
 const accounts = simnet.getAccounts();
-const address1 = accounts.get('wallet_1')!;
+const address1 = accounts.get("wallet_1")!;
 
-describe('{name}', () => {{
-  it('returns contract info', () => {{
-    const {{ result }} = simnet.callReadOnlyFn('{name}', 'get-info', [], address1);
-    expect(result).toBeOk(Cl.stringAscii('{name} contract'));
+describe("{name}", () => {{
+  it("returns contract info", () => {{
+    const {{ result }} = simnet.callReadOnlyFn("{name}", "get-info", [], address1);
+    expect(result).toBeOk(Cl.stringAscii("{name} contract"));
   }});
 }});
 "#
@@ -1069,7 +1120,7 @@ describe('{name}', () => {{
 
     // Add the new contract definition
     existing.push_str(&format!(
-        "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = 4\nepoch = \"latest\"\n"
+        "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = 5\nepoch = \"latest\"\n"
     ));
 
     tokio::fs::write(clarinet_toml_path, existing).await?;
@@ -1101,9 +1152,11 @@ async fn run_npm_install_with_feedback(
     scope: &str,
     message_prefix: &str,
 ) -> Result<()> {
+    let use_ci = dir.join("package-lock.json").exists();
+    let subcommand = if use_ci { "ci" } else { "install" };
     let mut child = Command::new("npm")
+        .arg(subcommand)
         .args([
-            "install",
             "--no-audit",
             "--no-fund",
             "--prefer-offline",
