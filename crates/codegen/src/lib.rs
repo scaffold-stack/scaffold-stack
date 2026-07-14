@@ -72,6 +72,15 @@ impl Filter for UpperCamelFilter {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 pub async fn generate_all() -> Result<()> {
+    generate_all_impl(false).await
+}
+
+/// Same as [`generate_all`] but suppresses progress logs (for nested CLI steps).
+pub async fn generate_all_quiet() -> Result<()> {
+    generate_all_impl(true).await
+}
+
+async fn generate_all_impl(quiet: bool) -> Result<()> {
     let project_root = std::env::current_dir()?;
     let contracts_dir = project_root.join("contracts");
     if !contracts_dir.join("Clarinet.toml").exists()
@@ -82,9 +91,15 @@ pub async fn generate_all() -> Result<()> {
         );
     }
 
+    let log = |msg: String| {
+        if !quiet {
+            println!("{msg}");
+        }
+    };
+
     let frontend_dir = project_root.join("frontend");
     if !frontend_dir.join("node_modules").exists() {
-        println!("[generate] Installing frontend dependencies...");
+        log("[generate] Installing frontend dependencies...".into());
         let subcommand = if frontend_dir.join("package-lock.json").exists() {
             "ci"
         } else {
@@ -107,29 +122,26 @@ pub async fn generate_all() -> Result<()> {
         }
     }
 
-    println!("[generate] Parsing contract ABIs...");
+    log("[generate] Parsing contract ABIs...".into());
     let abis = stacksdapp_parser::parse_project(&contracts_dir).await?;
 
     if abis.is_empty() {
-        println!("[generate] No user contracts found in Clarinet.toml — nothing to generate.");
+        log("[generate] No user contracts found in Clarinet.toml — nothing to generate.".into());
         return Ok(());
     }
 
-    println!(
+    log(format!(
         "[generate] Found {} contract(s): {}",
         abis.len(),
         abis.iter()
             .map(|a| a.contract_name.as_str())
             .collect::<Vec<_>>()
             .join(", ")
-    );
+    ));
 
     let out_dir = project_root.join("frontend/src/generated");
     tokio::fs::create_dir_all(&out_dir).await?;
 
-    // Write empty deployments.json if it doesn't exist yet so that
-    // contracts.ts can always require() it without crashing at import time.
-    // The real content is written by `stacksdapp deploy`.
     let deployments_path = out_dir.join("deployments.json");
     if !deployments_path.exists() {
         tokio::fs::write(
@@ -137,20 +149,20 @@ pub async fn generate_all() -> Result<()> {
             r#"{ "network": "", "deployed_at": "", "contracts": {} }"#,
         )
         .await?;
-        println!("[generate] Created empty deployments.json (run stacksdapp deploy to populate)");
+        log("[generate] Created empty deployments.json (run stacksdapp deploy to populate)".into());
     }
 
-    let written = render(&abis, &out_dir)?;
+    let written = render_with_quiet(&abis, &out_dir, quiet)?;
 
     if written == 0 {
-        println!("[generate] All files already up to date.");
+        log("[generate] All files already up to date.".into());
     } else {
-        println!("[generate] Done — {written} file(s) written.");
+        log(format!("[generate] Done — {written} file(s) written."));
     }
 
     let network = std::env::var("NEXT_PUBLIC_NETWORK").unwrap_or_else(|_| "<network>".into());
     let stale = find_stale_deployments(&abis, &out_dir);
-    if !stale.is_empty() {
+    if !stale.is_empty() && !quiet {
         warn_redeploy_required(&stale, &network);
     }
 
@@ -159,6 +171,10 @@ pub async fn generate_all() -> Result<()> {
 
 /// Render all templates. Returns the number of files actually written.
 pub fn render(abis: &[ContractAbi], out_dir: &Path) -> Result<usize> {
+    render_with_quiet(abis, out_dir, false)
+}
+
+fn render_with_quiet(abis: &[ContractAbi], out_dir: &Path, quiet: bool) -> Result<usize> {
     let mut tera = Tera::default();
     tera.register_filter("camel", CamelFilter);
     tera.register_filter("upper_camel", UpperCamelFilter);
@@ -197,14 +213,17 @@ pub fn render(abis: &[ContractAbi], out_dir: &Path) -> Result<usize> {
     written += write_if_changed(
         out_dir.join("contracts.ts"),
         &tera.render("contracts.ts.tera", &ctx)?,
+        quiet,
     )?;
     written += write_if_changed(
         out_dir.join("hooks.ts"),
         &tera.render("hooks.ts.tera", &ctx)?,
+        quiet,
     )?;
     written += write_if_changed(
         out_dir.join("DebugContracts.tsx"),
         &tera.render("debug_ui.tsx.tera", &ctx)?,
+        quiet,
     )?;
 
     Ok(written)
@@ -257,32 +276,53 @@ fn hash_bytes(bytes: &[u8]) -> Vec<u8> {
 fn find_stale_deployments(abis: &[ContractAbi], out_dir: &Path) -> Vec<String> {
     let deployments_path = out_dir.join("deployments.json");
     let Ok(raw) = std::fs::read_to_string(&deployments_path) else {
-        return vec![]; // no deployments yet — nothing to compare
+        return vec![]; // no deployments file — nothing to compare
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return vec![];
     };
+    stale_contract_names(abis, &json)
+}
 
-    let deployed = json["contracts"].as_object();
+/// Contracts that were previously deployed under a *different* on-chain name
+/// (e.g. version bump `counter` → `counter-v2`). Undeployed / empty deployments
+/// are not stale — they just have not been deployed yet.
+fn stale_contract_names(abis: &[ContractAbi], json: &serde_json::Value) -> Vec<String> {
+    let network = json["network"].as_str().unwrap_or("").trim();
+    let Some(deployed) = json["contracts"].as_object() else {
+        return vec![];
+    };
+    // Fresh scaffold / post-clean: not "out of sync".
+    if network.is_empty() || deployed.is_empty() {
+        return vec![];
+    }
 
     abis.iter()
-        .filter(|abi| {
-            match deployed.and_then(|d| d.get(&abi.contract_name)) {
-                None => true, // never deployed
-                Some(entry) => {
-                    let deployed_id = entry["contract_id"].as_str().unwrap_or("");
-                    // If the deployed name doesn't end with the current contract name,
-                    // the contract has been renamed (versioned) and needs redeployment
-                    !deployed_id.ends_with(&format!(".{}", abi.contract_name))
-                }
+        .filter_map(|abi| {
+            let entry = deployed.get(&abi.contract_name)?;
+            let deployed_id = entry["contract_id"].as_str().unwrap_or("").trim();
+            if deployed_id.is_empty() {
+                return None;
+            }
+            if deployment_id_matches(deployed_id, &abi.contract_name) {
+                None
+            } else {
+                Some(abi.contract_name.clone())
             }
         })
-        .map(|abi| abi.contract_name.clone())
         .collect()
 }
 
+/// `ST….counter` or bare `counter` matches local name `counter`.
+fn deployment_id_matches(deployed_id: &str, contract_name: &str) -> bool {
+    match deployed_id.rsplit_once('.') {
+        Some((_, name)) => name == contract_name,
+        None => deployed_id == contract_name,
+    }
+}
+
 /// Write file only if content changed. Returns 1 if written, 0 if skipped.
-fn write_if_changed(path: PathBuf, contents: &str) -> Result<usize> {
+fn write_if_changed(path: PathBuf, contents: &str, quiet: bool) -> Result<usize> {
     let new_bytes = contents.as_bytes();
     let new_hash = hash_bytes(new_bytes);
 
@@ -297,7 +337,9 @@ fn write_if_changed(path: PathBuf, contents: &str) -> Result<usize> {
     }
     let mut file = fs::File::create(&path)?;
     file.write_all(new_bytes)?;
-    println!("[generated] {}", path.display());
+    if !quiet {
+        println!("[generated] {}", path.display());
+    }
     Ok(1)
 }
 
@@ -307,15 +349,105 @@ fn warn_redeploy_required(stale: &[String], network: &str) {
     eprintln!("\n{}", "━".repeat(60));
     eprintln!("  ⚠  REDEPLOYMENT REQUIRED");
     eprintln!("{}", "━".repeat(60));
-    eprintln!("  Contracts on-chain are out of sync with local source:");
+    eprintln!("  On-chain contract ids no longer match local names:");
     eprintln!("  {}", names);
     eprintln!();
-    eprintln!("  Clarity contracts are immutable. Your changes won't take");
-    eprintln!("  effect until you redeploy:");
+    eprintln!("  Clarity contracts are immutable. Redeploy so bindings");
+    eprintln!("  point at the current contract ids:");
     eprintln!();
     eprintln!("    stacksdapp deploy --network {network}");
     eprintln!("    where network is either devnet/testnet/mainnet");
     eprintln!();
-    eprintln!("  Until then, calls to new/changed functions will fail.");
+    eprintln!("  Until then, calls to renamed/versioned contracts will fail.");
     eprintln!("{}\n", "━".repeat(60));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stacksdapp_parser::ContractAbi;
+
+    fn abi(name: &str) -> ContractAbi {
+        ContractAbi {
+            contract_id: format!(".{}", name),
+            contract_name: name.to_string(),
+            functions: vec![],
+            variables: vec![],
+            maps: vec![],
+            fungible_tokens: vec![],
+            non_fungible_tokens: vec![],
+        }
+    }
+
+    #[test]
+    fn empty_deployments_are_not_stale() {
+        let json = serde_json::json!({
+            "network": "",
+            "deployed_at": "",
+            "contracts": {}
+        });
+        let stale = stale_contract_names(&[abi("counter")], &json);
+        assert!(stale.is_empty(), "fresh project must not warn: {stale:?}");
+    }
+
+    #[test]
+    fn matching_deployment_is_not_stale() {
+        let json = serde_json::json!({
+            "network": "devnet",
+            "deployed_at": "2026-01-01T00:00:00Z",
+            "contracts": {
+                "counter": {
+                    "contract_id": "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.counter",
+                    "tx_id": "0xabc",
+                    "block_height": 1
+                }
+            }
+        });
+        let stale = stale_contract_names(&[abi("counter")], &json);
+        assert!(stale.is_empty(), "in-sync deploy must not warn: {stale:?}");
+    }
+
+    #[test]
+    fn renamed_deployment_is_stale() {
+        let json = serde_json::json!({
+            "network": "devnet",
+            "deployed_at": "2026-01-01T00:00:00Z",
+            "contracts": {
+                "counter": {
+                    "contract_id": "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.counter-v2",
+                    "tx_id": "0xabc",
+                    "block_height": 1
+                }
+            }
+        });
+        let stale = stale_contract_names(&[abi("counter")], &json);
+        assert_eq!(stale, vec!["counter".to_string()]);
+    }
+
+    #[test]
+    fn undeployed_sibling_is_not_stale() {
+        // New local contract while others are deployed — not a rename mismatch.
+        let json = serde_json::json!({
+            "network": "devnet",
+            "contracts": {
+                "counter": {
+                    "contract_id": "ST1.counter",
+                    "tx_id": "0x1",
+                    "block_height": 1
+                }
+            }
+        });
+        let stale = stale_contract_names(&[abi("counter"), abi("hello-token")], &json);
+        assert!(
+            stale.is_empty(),
+            "missing entry is undeployed, not stale: {stale:?}"
+        );
+    }
+
+    #[test]
+    fn deployment_id_match_is_exact_suffix() {
+        assert!(deployment_id_matches("ST1.counter", "counter"));
+        assert!(!deployment_id_matches("ST1.my-counter", "counter"));
+        assert!(deployment_id_matches("counter", "counter"));
+    }
 }

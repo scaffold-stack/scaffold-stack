@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Result};
+use colored::Colorize;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::sync::oneshot;
 use tokio::{fs, io::AsyncRead};
 
 /// Returns true if Clarinet.toml contains any [[project.requirements]] entries.
@@ -19,11 +21,6 @@ async fn prefetch_requirements() -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "[dev] Detected [[project.requirements]] in Clarinet.toml — fetching external contracts..."
-    );
-    println!("[dev] This requires internet access. Run once; results are cached in ./.cache/");
-
     let mut child = Command::new("clarinet")
         .args(["requirements"])
         .current_dir("contracts")
@@ -36,7 +33,7 @@ async fn prefetch_requirements() -> Result<()> {
             )
         })?;
 
-    attach_prefixed_output(&mut child, "clarinet");
+    attach_filtered_output(&mut child, OutputStyle::Clarinet);
 
     let status = child.wait().await?;
     if !status.success() {
@@ -52,7 +49,6 @@ async fn prefetch_requirements() -> Result<()> {
         ));
     }
 
-    println!("[dev] ✔ Requirements fetched and cached.");
     Ok(())
 }
 
@@ -63,7 +59,9 @@ pub async fn dev(network: &str, auto_deploy: bool) -> Result<()> {
         "devnet" => dev_devnet(auto_deploy).await,
         "testnet" | "mainnet" => {
             if auto_deploy {
-                println!("[dev] --auto-deploy applies to devnet only; ignoring for {network}.");
+                stacksdapp_shell::warn(format!(
+                    "[dev] --auto-deploy applies to devnet only; ignoring for {network}."
+                ));
             }
             dev_remote(network).await
         }
@@ -85,35 +83,103 @@ fn ensure_project_root() -> Result<()> {
     Ok(())
 }
 
+fn network_display(network: &str) -> &'static str {
+    match network {
+        "mainnet" => "Mainnet",
+        "devnet" => "Devnet",
+        _ => "Testnet",
+    }
+}
+
+fn print_ready_panel(local_url: &str) {
+    if stacksdapp_shell::is_quiet() {
+        return;
+    }
+    println!();
+    stacksdapp_shell::rule();
+    println!();
+    stacksdapp_shell::kv("Local", local_url);
+    println!();
+    stacksdapp_shell::rule();
+    println!();
+    println!(
+        "{}",
+        "Watching for file changes...".truecolor(156, 163, 175)
+    );
+    println!();
+    stacksdapp_shell::rule();
+}
+
 async fn dev_devnet(auto_deploy: bool) -> Result<()> {
-    println!("[dev] Starting devnet stack (Docker required)...");
+    stacksdapp_shell::print_banner("Development Mode 🌱");
 
-    ensure_docker()?;
+    let step = stacksdapp_shell::begin_step("Environment configured");
+    if let Err(e) = ensure_docker() {
+        step.fail();
+        return Err(e);
+    }
+    if let Err(e) = reset_local_devnet_state().await {
+        step.fail();
+        return Err(e);
+    }
+    if let Err(e) = write_network_env("devnet").await {
+        step.fail();
+        return Err(e);
+    }
+    step.finish();
 
-    // Clarinet devnet can get stuck on stale cached chainstate snapshots.
-    // Starting from a clean local devnet state avoids reorg-corrupted API
-    // indexes and frozen tips that block contract deployments from finalizing.
-    reset_local_devnet_state().await?;
+    let connected = format!("Connected to {}", network_display("devnet"));
+    let step = stacksdapp_shell::begin_step(&connected);
+    if let Err(e) = prefetch_requirements().await {
+        step.fail();
+        return Err(e);
+    }
+    step.finish();
 
-    write_network_env("devnet").await?;
-
-    prefetch_requirements().await?;
-    stacksdapp_codegen::generate_all().await?;
+    let step = stacksdapp_shell::begin_step("Contract bindings ready");
+    if let Err(e) = stacksdapp_codegen::generate_all_quiet().await {
+        step.fail();
+        return Err(e);
+    }
+    step.finish();
 
     let mut clarinet = spawn_clarinet_devnet()?;
-    attach_prefixed_output(&mut clarinet, "clarinet");
+    attach_filtered_output(&mut clarinet, OutputStyle::Clarinet);
 
     let health_monitor = tokio::spawn(monitor_devnet_chain_health());
 
     let deploy_task = if auto_deploy {
-        println!("[dev] --auto-deploy enabled: will deploy contracts once devnet is ready.");
         Some(tokio::spawn(run_auto_deploy()))
     } else {
         None
     };
 
-    let mut frontend = spawn_next_dev_process("devnet")?;
-    attach_prefixed_output(&mut frontend, "next");
+    let step = stacksdapp_shell::begin_step("Next.js started");
+    let mut frontend = match spawn_next_dev_process("devnet") {
+        Ok(c) => c,
+        Err(e) => {
+            step.fail();
+            return Err(e);
+        }
+    };
+    let (ready_tx, ready_rx) = oneshot::channel();
+    attach_next_output(&mut frontend, Some(ready_tx));
+    match tokio::time::timeout(Duration::from_secs(120), ready_rx).await {
+        Ok(Ok(url)) => {
+            step.finish();
+            print_ready_panel(&url);
+        }
+        Ok(Err(_)) => {
+            step.fail();
+            return Err(anyhow!("Frontend dev server closed before becoming ready."));
+        }
+        Err(_) => {
+            step.fail();
+            return Err(anyhow!(
+                "Frontend did not become ready within 120s. Check that port 3000 is free."
+            ));
+        }
+    }
 
     let mut watcher = tokio::spawn(stacksdapp_watcher::watch_contracts(Path::new(
         "contracts/contracts",
@@ -121,28 +187,31 @@ async fn dev_devnet(auto_deploy: bool) -> Result<()> {
 
     let result = tokio::select! {
         _ = tokio::signal::ctrl_c() => {
-            println!("[dev] Ctrl+C received — shutting down devnet stack...");
+            if !stacksdapp_shell::is_quiet() {
+                println!();
+                println!("{}", "Shutting down...".truecolor(156, 163, 175));
+            }
             Ok(())
         }
         status = clarinet.wait() => {
             match status {
-                Ok(s) if s.success() => Err(anyhow!("[dev] Clarinet devnet exited unexpectedly.")),
-                Ok(s) => Err(anyhow!("[dev] Clarinet devnet exited with status: {s}")),
-                Err(e) => Err(anyhow!("[dev] Failed to wait for Clarinet devnet process: {e}")),
+                Ok(s) if s.success() => Err(anyhow!("Clarinet devnet exited unexpectedly.")),
+                Ok(s) => Err(anyhow!("Clarinet devnet exited with status: {s}")),
+                Err(e) => Err(anyhow!("Failed to wait for Clarinet devnet process: {e}")),
             }
         }
         status = frontend.wait() => {
             match status {
-                Ok(s) if s.success() => Err(anyhow!("[dev] Frontend dev server exited unexpectedly.")),
-                Ok(s) => Err(anyhow!("[dev] Frontend dev server exited with status: {s}")),
-                Err(e) => Err(anyhow!("[dev] Failed to wait for frontend dev server: {e}")),
+                Ok(s) if s.success() => Err(anyhow!("Frontend dev server exited unexpectedly.")),
+                Ok(s) => Err(anyhow!("Frontend dev server exited with status: {s}")),
+                Err(e) => Err(anyhow!("Failed to wait for frontend dev server: {e}")),
             }
         }
         watcher_result = &mut watcher => {
             match watcher_result {
-                Ok(Ok(())) => Err(anyhow!("[dev] Contract watcher exited unexpectedly.")),
-                Ok(Err(e)) => Err(anyhow!("[dev] Contract watcher failed: {e}")),
-                Err(e) => Err(anyhow!("[dev] Contract watcher task join failed: {e}")),
+                Ok(Ok(())) => Err(anyhow!("Contract watcher exited unexpectedly.")),
+                Ok(Err(e)) => Err(anyhow!("Contract watcher failed: {e}")),
+                Err(e) => Err(anyhow!("Contract watcher task join failed: {e}")),
             }
         }
     };
@@ -165,22 +234,94 @@ async fn dev_devnet(auto_deploy: bool) -> Result<()> {
 }
 
 async fn dev_remote(network: &str) -> Result<()> {
-    println!(
-        "[dev] Starting frontend for {} (no local chain needed)...",
-        network
-    );
+    stacksdapp_shell::print_banner("Development Mode 🌱");
 
-    check_deployments(network)?;
-    write_network_env(network).await?;
-    stacksdapp_codegen::generate_all().await?;
-    spawn_next_dev(network).await?;
-    Ok(())
+    let step = stacksdapp_shell::begin_step("Environment configured");
+    check_deployments(network);
+    if let Err(e) = write_network_env(network).await {
+        step.fail();
+        return Err(e);
+    }
+    step.finish();
+
+    let connected = format!("Connected to {}", network_display(network));
+    let step = stacksdapp_shell::begin_step(&connected);
+    // Network is selected via .env.local; no local chain handshake required.
+    step.finish();
+
+    let step = stacksdapp_shell::begin_step("Contract bindings ready");
+    if let Err(e) = stacksdapp_codegen::generate_all_quiet().await {
+        step.fail();
+        return Err(e);
+    }
+    step.finish();
+
+    let step = stacksdapp_shell::begin_step("Next.js started");
+    let mut frontend = match spawn_next_dev_process(network) {
+        Ok(c) => c,
+        Err(e) => {
+            step.fail();
+            return Err(e);
+        }
+    };
+    let (ready_tx, ready_rx) = oneshot::channel();
+    attach_next_output(&mut frontend, Some(ready_tx));
+    match tokio::time::timeout(Duration::from_secs(120), ready_rx).await {
+        Ok(Ok(url)) => {
+            step.finish();
+            print_ready_panel(&url);
+        }
+        Ok(Err(_)) => {
+            step.fail();
+            return Err(anyhow!("Frontend dev server closed before becoming ready."));
+        }
+        Err(_) => {
+            step.fail();
+            return Err(anyhow!(
+                "Frontend did not become ready within 120s. Check that port 3000 is free."
+            ));
+        }
+    }
+
+    let mut watcher = tokio::spawn(stacksdapp_watcher::watch_contracts(Path::new(
+        "contracts/contracts",
+    )));
+
+    let result = tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            if !stacksdapp_shell::is_quiet() {
+                println!();
+                println!("{}", "Shutting down...".truecolor(156, 163, 175));
+            }
+            Ok(())
+        }
+        status = frontend.wait() => {
+            match status {
+                Ok(s) if s.success() => Ok(()),
+                Ok(s) => Err(anyhow!("Frontend dev server exited with status: {s}")),
+                Err(e) => Err(anyhow!("Failed to wait for frontend: {e}")),
+            }
+        }
+        watcher_result = &mut watcher => {
+            match watcher_result {
+                Ok(Ok(())) => Err(anyhow!("Contract watcher exited unexpectedly.")),
+                Ok(Err(e)) => Err(anyhow!("Contract watcher failed: {e}")),
+                Err(e) => Err(anyhow!("Contract watcher task join failed: {e}")),
+            }
+        }
+    };
+
+    shutdown_child("frontend dev server", &mut frontend).await;
+    watcher.abort();
+    let _ = watcher.await;
+
+    result
 }
 
 async fn run_auto_deploy() {
     match stacksdapp_deployer::wait_for_devnet_node().await {
         Ok(()) => {
-            if let Err(e) = stacksdapp_deployer::deploy("devnet", None, false).await {
+            if let Err(e) = stacksdapp_deployer::deploy("devnet", None, false, false).await {
                 eprintln!("[dev] Auto-deploy failed: {e:#}");
                 eprintln!(
                     "[dev] You can deploy manually in another terminal: stacksdapp deploy --network devnet"
@@ -252,30 +393,228 @@ async fn fetch_local_stacks_tip(client: &reqwest::Client) -> Option<u64> {
     json.get("stacks_tip_height")?.as_u64()
 }
 
-fn attach_prefixed_output(child: &mut Child, prefix: &str) {
-    let tag = prefix.to_string();
+#[derive(Clone, Copy)]
+enum OutputStyle {
+    Clarinet,
+}
+
+fn attach_filtered_output(child: &mut Child, style: OutputStyle) {
     if let Some(stdout) = child.stdout.take() {
-        spawn_prefixed_stream(stdout, tag.clone(), false);
+        spawn_filtered_stream(stdout, style, false);
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_prefixed_stream(stderr, tag, true);
+        spawn_filtered_stream(stderr, style, true);
     }
 }
 
-fn spawn_prefixed_stream<R>(reader: R, prefix: String, is_stderr: bool)
+fn spawn_filtered_stream<R>(reader: R, style: OutputStyle, is_stderr: bool)
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            if is_stderr {
-                eprintln!("[{prefix}] {line}");
-            } else {
-                println!("[{prefix}] {line}");
+            match style {
+                OutputStyle::Clarinet => {
+                    // Keep Clarinet noise down during startup; surface failures.
+                    let lower = line.to_ascii_lowercase();
+                    if lower.contains("error")
+                        || lower.contains("failed")
+                        || lower.contains("panic")
+                        || is_stderr && !line.trim().is_empty()
+                    {
+                        eprintln!("{}", line);
+                    }
+                }
             }
         }
     });
+}
+
+fn attach_next_output(child: &mut Child, ready: Option<oneshot::Sender<String>>) {
+    let ready = std::sync::Arc::new(tokio::sync::Mutex::new(ready));
+    if let Some(stdout) = child.stdout.take() {
+        spawn_next_stream(stdout, std::sync::Arc::clone(&ready));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_next_stream(stderr, ready);
+    }
+}
+
+fn spawn_next_stream<R>(
+    reader: R,
+    ready: std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Sender<String>>>>,
+) where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(reader).lines();
+        let mut local_url = String::from("http://localhost:3000");
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(url) = extract_local_url(&line) {
+                local_url = url;
+            }
+
+            if is_next_ready_line(&line) {
+                let mut slot = ready.lock().await;
+                if let Some(tx) = slot.take() {
+                    let _ = tx.send(local_url.clone());
+                }
+                continue;
+            }
+
+            // Don't spam startup banner lines before Ready.
+            {
+                let slot = ready.lock().await;
+                if slot.is_some() && should_suppress_next_startup(&line) {
+                    continue;
+                }
+            }
+
+            if let Some(formatted) = format_next_line(&line) {
+                println!("{formatted}");
+            }
+        }
+    });
+}
+
+fn extract_local_url(line: &str) -> Option<String> {
+    // "- Local:        http://localhost:3000" or "Local: http://127.0.0.1:3000"
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("local:") && !lower.contains("localhost:") && !lower.contains("127.0.0.1:") {
+        return None;
+    }
+    for part in line.split_whitespace() {
+        if part.starts_with("http://") || part.starts_with("https://") {
+            return Some(part.trim_end_matches(',').to_string());
+        }
+    }
+    None
+}
+
+fn is_next_ready_line(line: &str) -> bool {
+    let t = line.trim();
+    t.contains("Ready in")
+        || t.contains("started server on")
+        || t.contains("✓ Ready")
+        || t.contains("✔ Ready")
+}
+
+fn should_suppress_next_startup(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() {
+        return true;
+    }
+    t.starts_with("▲")
+        || t.contains("Next.js")
+        || t.contains("Local:")
+        || t.contains("Network:")
+        || t.contains("Environments:")
+        || t.contains("Experiments")
+        || t.starts_with("- ")
+}
+
+fn format_next_line(line: &str) -> Option<String> {
+    let t = line.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if should_suppress_next_startup(t) {
+        return None;
+    }
+
+    let ts = timestamp_now();
+
+    // ✓ Compiled / Ready / Rebuilt in 248ms
+    if t.contains("Compiled")
+        || t.contains("compiled")
+        || t.contains("Rebuilt")
+        || t.contains("rebuilt")
+    {
+        if let Some(dur) = extract_duration_fragment(t) {
+            return Some(format!(
+                "[{ts}] {} {}",
+                "✓".truecolor(52, 211, 153),
+                format!("Rebuilt in {dur}").white()
+            ));
+        }
+    }
+
+    // GET /path 200  (and similar access logs)
+    if let Some(formatted) = format_http_access(t) {
+        return Some(format!("[{ts}] {formatted}"));
+    }
+
+    // Errors / warnings — keep visible
+    let lower = t.to_ascii_lowercase();
+    if lower.contains("error") || lower.contains("warn") || lower.contains("failed") {
+        return Some(format!("[{ts}] {t}"));
+    }
+
+    // Fast Refresh notices
+    if t.contains("Fast Refresh") || t.contains("hot reloaded") {
+        return Some(format!(
+            "[{ts}] {} {}",
+            "✓".truecolor(52, 211, 153),
+            "Hot reloaded".white()
+        ));
+    }
+
+    None
+}
+
+fn extract_duration_fragment(line: &str) -> Option<&str> {
+    // "in 248ms" or "in 1.2s"
+    let lower = line.to_ascii_lowercase();
+    let idx = lower.find(" in ")?;
+    let rest = line[idx + 4..].trim();
+    let end = rest
+        .find(|c: char| c.is_whitespace() || c == ')' || c == ',')
+        .unwrap_or(rest.len());
+    let dur = rest[..end].trim();
+    if dur.ends_with("ms") || dur.ends_with('s') {
+        Some(dur)
+    } else {
+        None
+    }
+}
+
+fn format_http_access(line: &str) -> Option<String> {
+    // Examples: "GET / 200", "○ GET /counter 200 in 12ms"
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let method_idx = parts.iter().position(|p| {
+        matches!(
+            *p,
+            "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+        )
+    })?;
+    let method = parts[method_idx];
+    let path = parts.get(method_idx + 1)?;
+    let status = parts
+        .iter()
+        .skip(method_idx + 2)
+        .find(|p| p.chars().all(|c| c.is_ascii_digit()) && p.len() == 3)?;
+
+    Some(format!(
+        "{}  {:<20} {}",
+        method.truecolor(156, 163, 175),
+        path.white(),
+        status.truecolor(52, 211, 153)
+    ))
+}
+
+fn timestamp_now() -> String {
+    // Local HH:MM:SS without extra crates.
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Approximate local time via UTC offset is hard without chrono; use UTC clock for stability.
+    let hours = (secs / 3600) % 24;
+    let mins = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{hours:02}:{mins:02}:{s:02}")
 }
 
 async fn write_network_env(network: &str) -> Result<()> {
@@ -285,40 +624,33 @@ async fn write_network_env(network: &str) -> Result<()> {
          NEXT_PUBLIC_NETWORK={network}\n"
     );
     fs::write(env_path, content).await?;
-    println!("[dev] Set NEXT_PUBLIC_NETWORK={network} in frontend/.env.local");
     Ok(())
 }
 
-fn check_deployments(network: &str) -> Result<()> {
+fn check_deployments(network: &str) {
     let path = Path::new("frontend/src/generated/deployments.json");
     if !path.exists() {
-        println!(
-            "[dev] Warning: deployments.json not found.\n\
-             Run `stacksdapp deploy --network {network}` first so the frontend \
-             knows your contract addresses."
-        );
-        return Ok(());
+        stacksdapp_shell::warn(format!(
+            "deployments.json not found — run `stacksdapp deploy --network {network}` so the frontend knows contract addresses."
+        ));
+        return;
     }
 
     let raw = std::fs::read_to_string(path).unwrap_or_default();
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
         let deployed_network = json["network"].as_str().unwrap_or("");
         if deployed_network != network && !deployed_network.is_empty() {
-            println!(
-                "[dev] Warning: deployments.json is for '{}' but you requested '{}'.\n\
-                 Run `stacksdapp deploy --network {network}` to deploy to {network} first.",
-                deployed_network, network
-            );
+            stacksdapp_shell::warn(format!(
+                "deployments.json is for '{deployed_network}' but you requested '{network}'. Run `stacksdapp deploy --network {network}` first."
+            ));
         }
         let contracts = json["contracts"].as_object();
         if contracts.map(|c| c.is_empty()).unwrap_or(true) {
-            println!(
-                "[dev] Warning: No contracts in deployments.json.\n\
-                 Run `stacksdapp deploy --network {network}` to populate it."
-            );
+            stacksdapp_shell::warn(format!(
+                "No contracts in deployments.json — run `stacksdapp deploy --network {network}` to populate it."
+            ));
         }
     }
-    Ok(())
 }
 
 fn ensure_docker() -> Result<()> {
@@ -356,20 +688,7 @@ async fn reset_local_devnet_state() -> Result<()> {
     for path in ["contracts/.cache", "contracts/.devnet"] {
         if fs::metadata(path).await.is_ok() {
             fs::remove_dir_all(path).await?;
-            println!("[dev] Removed stale {path}");
         }
-    }
-    Ok(())
-}
-
-async fn spawn_next_dev(network: &str) -> Result<()> {
-    let mut child = spawn_next_dev_process(network)?;
-    attach_prefixed_output(&mut child, "next");
-    let status = child.wait().await?;
-    if !status.success() {
-        return Err(anyhow!(
-            "[dev] Frontend dev server exited with status: {status}"
-        ));
     }
     Ok(())
 }
@@ -404,5 +723,5 @@ async fn shutdown_child(name: &str, child: &mut Child) {
     }
     let _ = child.start_kill();
     let _ = child.wait().await;
-    println!("[dev] Stopped {name}.");
+    stacksdapp_shell::debug(1, format!("Stopped {name}."));
 }

@@ -1,10 +1,12 @@
-//! Terminal styling for `stacksdapp new` — Foundry-inspired: ASCII wordmark, boxed tagline, semantic colors.
+//! Terminal styling for `stacksdapp new` — Scaffold Stacks mockup layout.
 
-use colored::{ColoredString, Colorize};
+use colored::Colorize;
 
-const INNER: usize = 49;
+const BOX_INNER: usize = 48;
+/// Visible width of the left "next steps" column (plain text, no ANSI).
+const COL_LEFT: usize = 50;
 
-/// FIGlet-style wordmark: **stacks** + **dapp** (standard font).
+/// FIGlet-style **STACKSDAPP** wordmark (standard font).
 const WORDMARK_STACKSDAPP: &[&str] = &[
     r" ____ _____  _    ____ _  ______    ____    _    ____  ____  ",
     r"/ ___|_   _|/ \  / ___| |/ / ___|  |  _ \  / \  |  _ \|  _ \ ",
@@ -13,113 +15,288 @@ const WORDMARK_STACKSDAPP: &[&str] = &[
     r"|____/ |_/_/   \_\____|_|\_\____/  |____/_/   \_\_|   |_|    ",
 ];
 
-pub fn print_new_project_banner() {
-    println!();
-    for (i, line) in WORDMARK_STACKSDAPP.iter().enumerate() {
-        match i {
-            0 | 4 => println!("{}", line.truecolor(110, 118, 135)),
-            _ => println!("{}", line.bold().truecolor(255, 204, 92)),
-        }
-    }
+fn lavender(s: &str) -> colored::ColoredString {
+    s.truecolor(167, 139, 250)
+}
 
-    let top = format!(
-        "    {} {} {}",
-        "╭".dimmed(),
-        "─".repeat(INNER).dimmed(),
-        "╮".dimmed()
-    );
-    let bot = format!(
-        "    {} {} {}",
-        "╰".dimmed(),
-        "─".repeat(INNER).dimmed(),
-        "╯".dimmed()
-    );
-    let title_row = format!("{:^width$}", "Scaffold Stacks", width = INNER);
-    let tag_row = format!("{:^width$}", "Clarity · Next.js · Stacks", width = INNER);
+fn soft_grey(s: &str) -> colored::ColoredString {
+    s.truecolor(156, 163, 175)
+}
+
+fn soft_blue(s: &str) -> colored::ColoredString {
+    s.truecolor(147, 197, 253)
+}
+
+fn mint_check() -> colored::ColoredString {
+    "✔".truecolor(52, 211, 153).bold()
+}
+
+fn dim_check() -> colored::ColoredString {
+    "✓".truecolor(107, 114, 128)
+}
+
+fn border(ch: &str) -> colored::ColoredString {
+    ch.truecolor(75, 85, 99)
+}
+
+fn spaces(n: usize) -> String {
+    " ".repeat(n)
+}
+
+fn mint_cmd(s: &str) -> colored::ColoredString {
+    s.truecolor(52, 211, 153).bold()
+}
+
+/// Banner + config overview box shown at the start of `stacksdapp new`.
+pub fn print_new_project_banner() {
+    if stacksdapp_shell::is_quiet() {
+        return;
+    }
     println!();
-    println!("{top}");
-    println!(
-        "    {} {} {}",
-        "│".dimmed(),
-        title_row.bold().yellow(),
-        "│".dimmed()
-    );
-    println!(
-        "    {} {} {}",
-        "│".dimmed(),
-        tag_row.truecolor(175, 180, 195),
-        "│".dimmed()
-    );
-    println!("{bot}");
-    println!("    {}", "━".repeat(53).dimmed());
+    for line in WORDMARK_STACKSDAPP {
+        println!("{}", lavender(line).bold());
+    }
     println!();
+    println!(
+        "{}",
+        "Scaffold Stacks dApps with Clarity, Next.js & Stacks".white()
+    );
+    println!();
+    print_overview_box();
+    println!();
+}
+
+fn print_overview_box() {
+    let rows = [
+        ("Framework", "Scaffold Stacks CLI"),
+        ("Contracts", "Clarity"),
+        ("Frontend", "Next.js"),
+        ("Network", "Stacks"),
+    ];
+    println!(
+        "{}{}{}",
+        border("╭"),
+        border(&"─".repeat(BOX_INNER)),
+        border("╮")
+    );
+    for (label, value) in rows {
+        let plain = format!(" ✔  {label}: {value}");
+        let pad = BOX_INNER.saturating_sub(plain.chars().count());
+        println!(
+            "{} {}  {}: {}{} {}",
+            border("│"),
+            mint_check(),
+            soft_grey(label),
+            value.white(),
+            spaces(pad),
+            border("│")
+        );
+    }
+    println!(
+        "{}{}{}",
+        border("╰"),
+        border(&"─".repeat(BOX_INNER)),
+        border("╯")
+    );
 }
 
 pub fn print_creating_line(name: &str) {
+    if stacksdapp_shell::is_quiet() {
+        return;
+    }
     println!(
-        "    {} {}",
-        "Creating".bold().white(),
-        format!("{name}/").bold().cyan()
+        "{} Creating new project: {}",
+        mint_check(),
+        name.truecolor(52, 211, 153).bold()
     );
-    println!();
 }
 
 pub fn step_done_string(label: &str, detail: &str) -> String {
-    format!(
-        "  {}  {}   {}",
-        "✔".green().bold(),
-        label.bold().white(),
-        detail
-    )
+    format!("  {}  {} {}", dim_check(), label.white(), detail.white())
 }
 
-pub fn dim_rule(len: usize) -> ColoredString {
-    "━".repeat(len).dimmed()
+pub fn note_line(text: &str) -> String {
+    format!("     {}", soft_grey(text))
 }
 
 pub fn print_success_block(name: &str) {
+    if stacksdapp_shell::is_quiet() {
+        return;
+    }
     println!(
-        "    {}  {}",
-        "✔ Done!".green().bold(),
-        format!("Project {} is ready.", name.bold().cyan())
+        "  {}  {} Project {} is ready.",
+        dim_check(),
+        "Done!".truecolor(52, 211, 153).bold(),
+        name.truecolor(52, 211, 153).bold()
     );
-    println!("    {}", dim_rule(53));
     println!();
-}
-
-pub fn section_recommended() {
     println!(
-        "    {}  {}",
-        "Recommended".bold().yellow(),
-        "Deploy to testnet".bold().white()
-    );
-    println!(
-        "    {}",
-        "              Hiro API · no local chain — use the faucet for STX".dimmed()
+        "{}",
+        soft_grey("──────────────────────────────────────────────────────────────")
     );
     println!();
 }
 
-pub fn section_alternative() {
-    println!("    {}", "─".repeat(53).dimmed());
+/// Dual-column recommended next steps + documentation footer.
+pub fn print_next_steps(name: &str) {
+    if stacksdapp_shell::is_quiet() {
+        return;
+    }
+
+    println!("{} {}", "💡", lavender("RECOMMENDED NEXT STEPS").bold());
     println!();
+
+    let left_h = "Option 1: Deploy to Testnet (Recommended)";
+    print!("  ");
+    print!("{}", soft_blue("Option 1: Deploy to Testnet").bold());
+    print!(" {}", soft_grey("(Recommended)"));
+    print!("{}", spaces(COL_LEFT.saturating_sub(left_h.len())));
+    print!(" {} ", soft_grey("│"));
     println!(
-        "    {}  {}",
-        "Alternative".bold().truecolor(130, 175, 255),
-        "Local devnet".bold().white()
-    );
-    println!(
-        "    {}",
-        "              Docker + Clarinet — mirroring production closer".dimmed()
+        "{} {}",
+        "💻",
+        soft_blue("Option 2: Local Devnet (Alternative)").bold()
     );
     println!();
+
+    struct Step {
+        plain: String,
+        is_cmd: bool,
+        detail: Option<&'static str>,
+    }
+
+    let left: [Step; 5] = [
+        Step {
+            plain: format!("cd {name}"),
+            is_cmd: false,
+            detail: None,
+        },
+        Step {
+            plain: "Get testnet STX".into(),
+            is_cmd: false,
+            detail: Some("https://explorer.hiro.so/sandbox/faucet?chain=testnet"),
+        },
+        Step {
+            plain: "Edit contracts/settings/Testnet.toml".into(),
+            is_cmd: false,
+            detail: Some(r#"accounts.deployer.mnemonic = "...""#),
+        },
+        Step {
+            plain: "stacksdapp deploy --network testnet".into(),
+            is_cmd: true,
+            detail: None,
+        },
+        Step {
+            plain: "stacksdapp dev --network testnet".into(),
+            is_cmd: true,
+            detail: None,
+        },
+    ];
+
+    let right: [Step; 3] = [
+        Step {
+            plain: format!("cd {name} && start Docker Desktop"),
+            is_cmd: false,
+            detail: None,
+        },
+        Step {
+            plain: "stacksdapp dev".into(),
+            is_cmd: true,
+            detail: Some("# local chain + Next.js"),
+        },
+        Step {
+            plain: "stacksdapp deploy --network devnet".into(),
+            is_cmd: true,
+            detail: Some("# second terminal"),
+        },
+    ];
+
+    let rows = left.len().max(right.len());
+    for i in 0..rows {
+        let n = i + 1;
+
+        print!("  ");
+        let left_w = if let Some(step) = left.get(i) {
+            let num = format!("{n}. ");
+            print!("{}", soft_blue(&num).bold());
+            if step.is_cmd {
+                print!("{}", mint_cmd(&step.plain));
+            } else {
+                print!("{}", step.plain.white());
+            }
+            num.len() + step.plain.chars().count()
+        } else {
+            0
+        };
+        print!("{}", spaces(COL_LEFT.saturating_sub(left_w)));
+        print!(" {} ", soft_grey("│"));
+
+        if let Some(step) = right.get(i) {
+            let num = format!("{n}. ");
+            print!("{}", soft_blue(&num).bold());
+            if step.is_cmd {
+                print!("{}", mint_cmd(&step.plain));
+            } else {
+                print!("{}", step.plain.white());
+            }
+            if let Some(note) = step.detail {
+                if note.starts_with('#') {
+                    print!("  {}", soft_grey(note));
+                }
+            }
+        }
+        println!();
+
+        // Detail under left (URL / mnemonic). Skip divider if too wide.
+        if let Some(step) = left.get(i) {
+            if let Some(detail) = step.detail {
+                let detail_plain = format!("   {detail}");
+                if detail_plain.chars().count() > COL_LEFT {
+                    println!("     {}", soft_grey(detail));
+                } else {
+                    print!("  ");
+                    print!("   {}", soft_grey(detail));
+                    print!(
+                        "{}",
+                        spaces(COL_LEFT.saturating_sub(detail_plain.chars().count()))
+                    );
+                    print!(" {} ", soft_grey("│"));
+                    println!();
+                }
+            }
+        }
+    }
+
+    println!();
+    footer_docs_box();
 }
 
-pub fn footer_repo_link() {
-    println!("    {}", "─".repeat(53).dimmed());
+fn footer_docs_box() {
+    let url = "https://scaffoldstacks.mintlify.app/";
+    let label = "Documentation";
+    let plain = format!(" ⓘ  {label}  {url}");
+    let inner = plain.chars().count().max(42);
     println!(
-        "    {}",
-        "https://github.com/scaffold-stack/scaffold-stack".dimmed()
+        "{}{}{}",
+        border("╭"),
+        border(&"─".repeat(inner)),
+        border("╮")
+    );
+    let pad = inner.saturating_sub(plain.chars().count());
+    println!(
+        "{} {}  {}  {}{} {}",
+        border("│"),
+        soft_blue("ⓘ"),
+        soft_grey(label),
+        lavender(url),
+        spaces(pad),
+        border("│")
+    );
+    println!(
+        "{}{}{}",
+        border("╰"),
+        border(&"─".repeat(inner)),
+        border("╯")
     );
     println!();
 }

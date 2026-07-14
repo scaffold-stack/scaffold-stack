@@ -1,7 +1,7 @@
 use anyhow::Result;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -39,13 +39,25 @@ pub async fn watch_contracts(contracts_dir: &Path) -> Result<()> {
                     }
                 }
 
-                println!("[watcher] .clar change detected — regenerating...");
-                if let Err(e) = stacksdapp_codegen::generate_all().await {
-                    eprintln!("[watcher] codegen error: {e}");
+                if let Err(e) = stacksdapp_codegen::generate_all_quiet().await {
+                    eprintln!("[{}] ✗ Contract bindings failed: {e}", timestamp_now());
+                } else {
+                    println!("[{}] ✓ Contract bindings updated", timestamp_now());
                 }
             }
         }
     }
 
     Ok(())
+}
+
+fn timestamp_now() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let hours = (secs / 3600) % 24;
+    let mins = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{hours:02}:{mins:02}:{s:02}")
 }

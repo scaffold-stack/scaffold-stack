@@ -299,6 +299,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db8b397918185f0161ff3d6fcaa9e4bfc09b8367caf6e1d4a2848e5477ed027b"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1555,7 +1564,7 @@ dependencies = [
  "rustc-hash",
  "rustls",
  "socket2",
- "thiserror",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "web-time",
@@ -1576,7 +1585,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror",
+ "thiserror 2.0.18",
  "tinyvec",
  "tracing",
  "web-time",
@@ -2082,24 +2091,28 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stacksdapp"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "clap_complete",
  "colored",
  "indicatif",
+ "serde_json",
  "stacksdapp-codegen",
  "stacksdapp-deployer",
  "stacksdapp-parser",
  "stacksdapp-process-supervisor",
  "stacksdapp-scaffold",
+ "stacksdapp-shell",
  "stacksdapp-watcher",
+ "thiserror 1.0.69",
  "tokio",
 ]
 
 [[package]]
 name = "stacksdapp-codegen"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -2112,12 +2125,13 @@ dependencies = [
 
 [[package]]
 name = "stacksdapp-deployer"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bip39",
  "bitcoin",
  "chrono",
+ "colored",
  "hex",
  "reqwest",
  "serde",
@@ -2141,13 +2155,15 @@ dependencies = [
 
 [[package]]
 name = "stacksdapp-process-supervisor"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "anyhow",
+ "colored",
  "reqwest",
  "serde_json",
  "stacksdapp-codegen",
  "stacksdapp-deployer",
+ "stacksdapp-shell",
  "stacksdapp-watcher",
  "tokio",
  "which",
@@ -2155,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "stacksdapp-scaffold"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "colored",
@@ -2163,8 +2179,20 @@ dependencies = [
  "include_dir",
  "indicatif",
  "stacksdapp-codegen",
+ "stacksdapp-shell",
  "tokio",
  "which",
+]
+
+[[package]]
+name = "stacksdapp-shell"
+version = "0.2.0"
+dependencies = [
+ "colored",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -2278,11 +2306,31 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+dependencies = [
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
 version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 2.0.18",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

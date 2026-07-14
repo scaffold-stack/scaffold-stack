@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.9). Leave empty to use the pushed tag."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: stacksdapp-x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: stacksdapp-aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact: stacksdapp-x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-release-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --package stacksdapp --target ${{ matrix.target }}
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/stacksdapp"
+          STAGE="${{ matrix.artifact }}"
+          mkdir -p "$STAGE"
+          cp "$BIN" "$STAGE/stacksdapp"
+          cp README.md CHANGELOG.md "$STAGE/"
+          chmod +x "$STAGE/stacksdapp"
+          tar -czf "${STAGE}.tar.gz" "$STAGE"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+  github-release:
+    name: GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Resolve tag
+        id: meta
+        shell: bash
+        run: |
+          if [[ -n "${{ github.event.inputs.tag }}" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          CLI_VER=$(grep -E '^version' cli/Cargo.toml | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+          echo "cli_version=$CLI_VER" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=$TAG cli=$CLI_VER"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: stacksdapp ${{ steps.meta.outputs.tag }}
+          body: |
+            ## stacksdapp ${{ steps.meta.outputs.tag }}
+
+            CLI crate version: **${{ steps.meta.outputs.cli_version }}**
+
+            ### Install from this release
+            Download the archive for your platform, extract, and place `stacksdapp` on your `PATH`.
+
+            ### Or via crates.io
+            ```bash
+            cargo install stacksdapp --locked
+            ```
+
+            See [CHANGELOG.md](https://github.com/scaffold-stack/scaffold-stack/blob/main/CHANGELOG.md) for details.
+          files: dist/**/*.tar.gz
+          draft: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

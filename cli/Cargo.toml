@@ -1,6 +1,6 @@
 [package]
 name    = "stacksdapp"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2021"
 description = "The official stacksdapp CLI: A complete toolkit to scaffold, build, and deploy full-stack Bitcoin applications on Stacks."
 license     = "MIT"
@@ -12,14 +12,18 @@ name = "stacksdapp"
 path = "src/main.rs"
 
 [dependencies]
-stacksdapp-scaffold           = {version = "0.1.8", path = "../crates/scaffold" }
+stacksdapp-scaffold           = {version = "0.2.0", path = "../crates/scaffold" }
 stacksdapp-parser             = {version = "0.1.2", path = "../crates/parser" }
-stacksdapp-codegen            = {version = "0.1.6", path = "../crates/codegen" }
+stacksdapp-codegen            = {version = "0.2.0", path = "../crates/codegen" }
 stacksdapp-watcher            = {version = "0.1.2", path = "../crates/watcher" }
-stacksdapp-deployer           = {version = "0.1.4", path = "../crates/deployer" }
-stacksdapp-process-supervisor = {version = "0.1.6", path = "../crates/process_supervisor" }
+stacksdapp-deployer           = {version = "0.2.0", path = "../crates/deployer" }
+stacksdapp-process-supervisor = {version = "0.2.0", path = "../crates/process_supervisor" }
+thiserror.workspace = true
 clap.workspace      = true
+clap_complete.workspace = true
 tokio.workspace     = true
 anyhow.workspace    = true
 colored.workspace   = true
 indicatif.workspace = true
+serde_json.workspace = true
+stacksdapp-shell    = { version = "0.2.0", path = "../crates/shell" }

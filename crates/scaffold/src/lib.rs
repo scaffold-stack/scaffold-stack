@@ -2,8 +2,8 @@ mod cli_style;
 
 use anyhow::{anyhow, Result};
 use cli_style::{
-    footer_repo_link, print_creating_line, print_new_project_banner, print_success_block,
-    section_alternative, section_recommended, step_done_string,
+    note_line, print_creating_line, print_new_project_banner, print_next_steps,
+    print_success_block, step_done_string,
 };
 use colored::Colorize;
 use include_dir::{include_dir, Dir};
@@ -277,6 +277,8 @@ exit 0
 "#;
 
 pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
+    validate_project_name(name)?;
+
     print_new_project_banner();
     print_creating_line(name);
 
@@ -362,17 +364,12 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
             .status()
             .await?;
 
-        pb.println(step_done_string("Initialised", "git (main)"));
-        pb.println(format!(
-            "  {}  {}",
-            "··".dimmed(),
-            "pre-commit hook: blocks likely mnemonics in contracts/settings/Testnet|Mainnet.toml"
-                .dimmed()
+        pb.println(step_done_string("Initialized", "git (main)"));
+        pb.println(note_line(
+            "pre-commit hook: blocks likely mnemonics in contracts/settings/Testnet/Mainnet.toml",
         ));
-        pb.println(format!(
-            "  {}  {}",
-            "··".dimmed(),
-            "after clone: npm run setup-hooks  or  git config core.hooksPath .githooks".dimmed()
+        pb.println(note_line(
+            "after clone: npm run setup-hooks or git config core.hooksPath .githooks",
         ));
     }
 
@@ -380,64 +377,7 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
 
     // ── Success output ────────────────────────────────────────────────────────
     print_success_block(name);
-    section_recommended();
-    println!(
-        "    {}  {}",
-        "1".cyan().bold(),
-        format!("cd {}", name).dimmed()
-    );
-    println!(
-        "    {}  {}",
-        "2".cyan().bold(),
-        format!(
-            "{}  {}",
-            "Get testnet STX".white(),
-            "https://explorer.hiro.so/sandbox/faucet?chain=testnet".dimmed()
-        )
-    );
-    println!(
-        "    {}  {}",
-        "3".cyan().bold(),
-        format!(
-            "{} {}",
-            "Edit".white(),
-            "contracts/settings/Testnet.toml".bold().white()
-        )
-    );
-    println!("          {}", "[accounts.deployer]".dimmed());
-    println!("          {}", "mnemonic = \"…\"".dimmed());
-    println!(
-        "    {}  {}",
-        "4".cyan().bold(),
-        "stacksdapp deploy --network testnet".bold().green()
-    );
-    println!(
-        "    {}  {}",
-        "5".cyan().bold(),
-        "stacksdapp dev --network testnet".bold().green()
-    );
-    println!();
-    section_alternative();
-    println!(
-        "    {}  {}  {}",
-        "1".cyan().bold(),
-        format!("cd {}", name).dimmed(),
-        format!("{} {}", "·".dimmed(), "start Docker Desktop".dimmed())
-    );
-    println!(
-        "    {}  {}  {}",
-        "2".cyan().bold(),
-        "stacksdapp dev".bold().green(),
-        format!("{} {}", "←".dimmed(), "local chain + Next.js".dimmed())
-    );
-    println!(
-        "    {}  {}  {}",
-        "3".cyan().bold(),
-        "stacksdapp deploy --network devnet".bold().green(),
-        format!("{} {}", "←".dimmed(), "second terminal".dimmed())
-    );
-    println!();
-    footer_repo_link();
+    print_next_steps(name);
 
     Ok(())
 }
@@ -572,6 +512,7 @@ pub async fn init_project() -> Result<()> {
     }
 
     ensure_contract_support_files(&contracts_root, &frontend_dir).await?;
+    ensure_stacksdapp_toml(root).await?;
     run_generate_after_setup().await?;
 
     write_git_hooks(Path::new(".")).await?;
@@ -596,6 +537,7 @@ pub async fn upgrade_project() -> Result<()> {
     }
 
     println!("[upgrade] Refreshing dependencies and regenerating bindings (non-destructive)...");
+    ensure_stacksdapp_toml(Path::new(".")).await?;
     ensure_contract_support_files(Path::new("contracts"), Path::new("frontend")).await?;
     run_npm_install(Path::new("frontend"), "frontend", "[upgrade]").await?;
     run_npm_install(Path::new("contracts"), "contracts", "[upgrade]").await?;
@@ -603,6 +545,24 @@ pub async fn upgrade_project() -> Result<()> {
     write_git_hooks(Path::new(".")).await?;
     let _ = try_set_git_hooks_path(Path::new(".")).await;
     println!("[upgrade] ✔ Upgrade complete.");
+    Ok(())
+}
+
+async fn ensure_stacksdapp_toml(root: &Path) -> Result<()> {
+    let path = root.join(stacksdapp_shell::CONFIG_FILE);
+    if path.exists() {
+        return Ok(());
+    }
+    let name = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty() && *s != ".")
+        .unwrap_or("stacksdapp-project");
+    tokio::fs::write(&path, stacksdapp_shell::default_config_toml(name)).await?;
+    println!(
+        "[scaffold] Wrote {} (project root marker for subdirectory commands)",
+        stacksdapp_shell::CONFIG_FILE
+    );
     Ok(())
 }
 
@@ -748,9 +708,19 @@ describe("counter", () => {
     )
     .await?;
 
-    tokio::fs::write(root.join("package.json"), format!(
+    tokio::fs::write(
+        root.join("package.json"),
+        format!(
         "{{\n  \"name\": \"{name}\",\n  \"private\": true,\n  \"scripts\": {{\n    \"dev\": \"stacksdapp dev\",\n    \"generate\": \"stacksdapp generate\",\n    \"deploy\": \"stacksdapp deploy\",\n    \"test\": \"stacksdapp test\",\n    \"check\": \"stacksdapp check\",\n    \"setup-hooks\": \"git config core.hooksPath .githooks\"\n  }}\n}}\n"
-    )).await?;
+    ),
+    )
+    .await?;
+
+    tokio::fs::write(
+        root.join(stacksdapp_shell::CONFIG_FILE),
+        stacksdapp_shell::default_config_toml(name),
+    )
+    .await?;
 
     tokio::fs::write(
         root.join(".gitignore"),
@@ -921,6 +891,8 @@ fn npm_install_message_head(message_prefix: &str) -> String {
 }
 
 pub async fn add_contract(name: &str, template: &str) -> Result<()> {
+    validate_contract_name(name)?;
+
     let contracts_dir = Path::new("contracts/contracts");
     if !contracts_dir.exists() {
         return Err(anyhow!(
@@ -932,6 +904,13 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
     if path.exists() {
         return Err(anyhow!("Contract '{}' already exists", name));
     }
+
+    stacksdapp_shell::print_banner("Adding Contract ✨");
+    stacksdapp_shell::kv("Contract", name);
+    if template != "blank" {
+        stacksdapp_shell::kv("Template", template);
+    }
+    println!();
 
     // ── Template Selection ───────────────────────────────────────────────────
     let (contract_source, test_source, contract_id) = match template {
@@ -1096,20 +1075,32 @@ describe("{name}", () => {{
         ),
     };
 
-    // 1. Write clarity contract and test files
-    tokio::fs::write(&path, contract_source).await?;
+    let step = stacksdapp_shell::begin_step("Created contract");
+    if let Err(e) = tokio::fs::write(&path, &contract_source).await {
+        step.fail();
+        return Err(e.into());
+    }
     let test_path = Path::new("contracts/tests").join(format!("{name}.test.ts"));
     if !test_path.exists() {
-        tokio::fs::write(&test_path, test_source).await?;
+        if let Err(e) = tokio::fs::write(&test_path, &test_source).await {
+            step.fail();
+            return Err(e.into());
+        }
     }
+    step.finish();
 
-    // 2. Update Clarinet.toml
+    let step = stacksdapp_shell::begin_step("Updated project configuration");
     let clarinet_toml_path = Path::new("contracts/Clarinet.toml");
-    let mut existing = tokio::fs::read_to_string(clarinet_toml_path).await?;
+    let mut existing = match tokio::fs::read_to_string(clarinet_toml_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            step.fail();
+            return Err(e.into());
+        }
+    };
 
     existing = existing.replace("requirements = []", "");
 
-    // Add remote requirement if specified
     if let Some(req_id) = contract_id {
         let req_block = format!("\n[[project.requirements]]\ncontract_id = \"{}\"\n", req_id);
         if !existing.contains(&format!("contract_id = \"{}\"", req_id)) {
@@ -1117,17 +1108,59 @@ describe("{name}", () => {{
         }
     }
 
-    // Add the new contract definition
     existing.push_str(&format!(
         "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = 5\nepoch = \"latest\"\n"
     ));
 
-    tokio::fs::write(clarinet_toml_path, existing).await?;
+    if let Err(e) = tokio::fs::write(clarinet_toml_path, existing).await {
+        step.fail();
+        return Err(e.into());
+    }
+    step.finish();
 
-    // Regenerate Bindings
-    stacksdapp_codegen::generate_all().await?;
+    let step = stacksdapp_shell::begin_step("Generated TypeScript bindings");
+    if let Err(e) = stacksdapp_codegen::generate_all_quiet().await {
+        step.fail();
+        return Err(e);
+    }
+    step.finish();
 
-    println!("  \x1b[32m✔\x1b[0m  \x1b[1mAdded\x1b[0m  contracts/contracts/{name}.clar");
+    if !stacksdapp_shell::is_quiet() {
+        println!();
+        stacksdapp_shell::rule();
+        println!();
+        println!("{}", "Created".bold().white());
+        println!();
+        println!(
+            "{}",
+            format!("contracts/contracts/{name}.clar").truecolor(52, 211, 153)
+        );
+        println!();
+        println!("{}", "Generated".bold().white());
+        println!();
+        for f in ["contracts.ts", "hooks.ts", "DebugContracts.tsx"] {
+            println!(
+                "{} {}",
+                "✓".truecolor(52, 211, 153),
+                f.truecolor(156, 163, 175)
+            );
+        }
+        println!();
+        stacksdapp_shell::rule();
+        println!();
+        println!("{}", "Next".bold().white());
+        println!();
+        println!(
+            "{}",
+            "stacksdapp deploy --network testnet"
+                .truecolor(52, 211, 153)
+                .bold()
+        );
+        println!();
+        println!("{}", "Done.".truecolor(156, 163, 175));
+        println!();
+    }
+
     Ok(())
 }
 
@@ -1249,4 +1282,134 @@ async fn try_set_git_hooks_path(root: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Project directory / package name: single relative segment, no path traversal.
+fn validate_project_name(name: &str) -> Result<()> {
+    validate_safe_path_segment(name, "Project name")?;
+    if name.len() > 64 {
+        return Err(anyhow!(
+            "Project name must be at most 64 characters (got {})",
+            name.len()
+        ));
+    }
+    if !is_valid_identifier_name(name) {
+        return Err(anyhow!(
+            "Invalid project name '{name}'. Use a letter followed by letters, digits, hyphens, or underscores (e.g. my-dapp)."
+        ));
+    }
+    Ok(())
+}
+
+/// Clarinet / Clarity contract name: safe file stem + valid on-chain contract id charset.
+fn validate_contract_name(name: &str) -> Result<()> {
+    validate_safe_path_segment(name, "Contract name")?;
+    // Stacks contract names are limited to 40 characters on-chain.
+    if name.len() > 40 {
+        return Err(anyhow!(
+            "Contract name must be at most 40 characters (got {})",
+            name.len()
+        ));
+    }
+    if !is_valid_identifier_name(name) {
+        return Err(anyhow!(
+            "Invalid contract name '{name}'. Use a letter followed by letters, digits, hyphens, or underscores (e.g. my-token)."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_safe_path_segment(name: &str, label: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(anyhow!("{label} cannot be empty"));
+    }
+    if name != name.trim() {
+        return Err(anyhow!(
+            "{label} cannot have leading or trailing whitespace"
+        ));
+    }
+    if name.contains(['/', '\\', '\0']) {
+        return Err(anyhow!(
+            "{label} cannot contain path separators or null bytes (got '{name}')"
+        ));
+    }
+    if name == "." || name == ".." {
+        return Err(anyhow!("{label} cannot be '.' or '..'"));
+    }
+
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return Err(anyhow!("{label} cannot be an absolute path (got '{name}')"));
+    }
+    let mut components = path.components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(os)), None) => {
+            let segment = os
+                .to_str()
+                .ok_or_else(|| anyhow!("{label} contains invalid UTF-8"))?;
+            if segment != name {
+                return Err(anyhow!(
+                    "{label} must be a single directory name without path components (got '{name}')"
+                ));
+            }
+        }
+        _ => {
+            return Err(anyhow!(
+                "{label} must be a single directory name without path components (got '{name}')"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_valid_identifier_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_name_accepts_simple_names() {
+        assert!(validate_project_name("my-dapp").is_ok());
+        assert!(validate_project_name("MyApp_1").is_ok());
+    }
+
+    #[test]
+    fn project_name_rejects_traversal_and_paths() {
+        assert!(validate_project_name("../evil").is_err());
+        assert!(validate_project_name("foo/bar").is_err());
+        assert!(validate_project_name("foo\\bar").is_err());
+        assert!(validate_project_name("..").is_err());
+        assert!(validate_project_name("/tmp/x").is_err());
+        assert!(validate_project_name("").is_err());
+        assert!(validate_project_name(" bad").is_err());
+    }
+
+    #[test]
+    fn project_name_rejects_invalid_charset() {
+        assert!(validate_project_name("1dapp").is_err());
+        assert!(validate_project_name("my dapp").is_err());
+        assert!(validate_project_name("my.dapp").is_err());
+    }
+
+    #[test]
+    fn contract_name_accepts_clarity_ids() {
+        assert!(validate_contract_name("counter").is_ok());
+        assert!(validate_contract_name("sip010-token").is_ok());
+    }
+
+    #[test]
+    fn contract_name_rejects_traversal_and_overlong() {
+        assert!(validate_contract_name("../x").is_err());
+        assert!(validate_contract_name("a/b").is_err());
+        assert!(validate_contract_name(&"a".repeat(41)).is_err());
+        assert!(validate_contract_name("9bad").is_err());
+    }
 }

@@ -8,6 +8,7 @@ members = [
     "crates/watcher",
     "crates/deployer",
     "crates/process_supervisor",
+    "crates/shell",
 ]
 
 [workspace.dependencies]
@@ -17,7 +18,8 @@ serde_json     = "1"
 anyhow         = "1"
 thiserror      = "1"
 tera           = "1"
-clap           = { version = "4", features = ["derive"] }
+clap           = { version = "4", features = ["derive", "env"] }
+clap_complete  = "4"
 reqwest        = { version = "0.12", features = ["json", "rustls-tls"] }
 notify         = "6"
 indicatif      = "0.17"
