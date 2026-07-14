@@ -214,7 +214,11 @@ my-app/
 
 | Command | Description |
 |---|---|
-| `stacksdapp new <name>` | Scaffold a new project |
+| `stacksdapp new <name>` | Scaffold a new monorepo workspace |
+| `stacksdapp init` | Adopt an existing Clarinet project in the current directory |
+| `stacksdapp doctor [--strict] [--json]` | Check prerequisites (Rust, Node, Clarinet, Docker, …) |
+| `stacksdapp upgrade` | Refresh dependencies and regenerate bindings |
+| `stacksdapp completions <shell>` | Print shell completions (`bash`, `zsh`, `fish`, `powershell`, `elvish`) |
 | `stacksdapp dev --network testnet` | Run frontend against testnet (no Docker) |
 | `stacksdapp dev --network mainnet` | Run frontend against mainnet (no Docker) |
 | `stacksdapp dev` | Start local devnet + frontend + watcher (Docker required) |
@@ -222,28 +226,41 @@ my-app/
 | `stacksdapp deploy --network testnet` | Deploy to testnet |
 | `stacksdapp deploy --network testnet --contract <name>` | Deploy only one contract by name |
 | `stacksdapp deploy --network testnet --dry-run` | Generate plan + estimated fee without broadcasting |
+| `stacksdapp deploy --network testnet -y` | Non-interactive deploy (skip confirmation / Clarinet fee prompts) |
 | `stacksdapp deploy --network mainnet` | Deploy to mainnet |
 | `stacksdapp deploy --network devnet` | Deploy to local devnet |
-| `stacksdapp generate` | Parse ABIs → regenerate TS bindings + debug UI |
+| `stacksdapp generate [--watch]` | Parse ABIs → regenerate TS bindings + debug UI |
 | `stacksdapp add <name>` | Add a blank Clarity contract |
 | `stacksdapp add <name> --template sip010` | Add a SIP-010 fungible token |
 | `stacksdapp add <name> --template sip009` | Add a SIP-009 NFT |
 | `stacksdapp test` | Run contract + frontend tests |
 | `stacksdapp check` | Type-check all Clarity contracts |
-| `stacksdapp clean` | Remove generated files and devnet state |
+| `stacksdapp clean [--force]` | Remove generated files and devnet state |
 
----
+### Global flags
 
-## How Auto-Codegen Works
+| Flag | Description |
+|---|---|
+| `-v` / `-vv`… | Increase diagnostic verbosity |
+| `-q` / `--quiet` | Suppress non-error human logs |
+| `--color auto\|always\|never` | Color control (default `auto`) |
+| `--json` | Machine-readable stdout (single JSON object) |
+| `--root <PATH>` | Project root (or set `STACKSDAPP_ROOT`); otherwise walks up for `stacksdapp.toml` / `contracts/Clarinet.toml` |
 
-`stacksdapp generate` runs in four stages:
+### Exit codes
 
-1. **Parse** — `export-abi.mjs` calls `initSimnet()` to extract the ABI of every contract in `Clarinet.toml`
-2. **Normalise** — maps Clarity types to TypeScript (`uint128` → `bigint`, `string-ascii` → `string`, tuples → typed objects)
-3. **Render** — Tera templates produce `contracts.ts` (typed call wrappers), `hooks.ts` (React hooks), and `DebugContracts.tsx` (live debug panel)
-4. **Write** — SHA-256 hashes new vs existing output; only writes if content changed, keeping Next.js hot-reload fast
-
-The file watcher calls this pipeline automatically on every `.clar` save during `stacksdapp dev`.
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | Generic / unexpected error |
+| `2` | Project not found or invalid `--root` |
+| `3` | Missing / failing prerequisite (`doctor`, clarinet, node, …) |
+| `4` | User aborted (confirmations) |
+| `5` | Input / argument validation |
+| `6` | Contract type-check failed |
+| `7` | Tests failed |
+| `8` | Deploy failed |
+| `10` | Generate / codegen failed |
 
 ---
 
@@ -252,7 +269,8 @@ The file watcher calls this pipeline automatically on every `.clar` save during 
 ```
 cli/                              # Binary — clap CLI entrypoint
 crates/
-  scaffold/                       # stacksdapp new + stacksdapp add
+  shell/                          # verbosity / quiet / color / JSON + project root discovery
+  scaffold/                       # stacksdapp new + init + add + upgrade
     frontend-template/            # copied into every new project's frontend/
   parser/                         # Clarity ABI → Rust structs
   codegen/                        # Rust structs → TypeScript via Tera
@@ -269,12 +287,17 @@ crates/
 
 ## Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, release, and PR guidelines.
+
 ```bash
 git clone https://github.com/scaffold-stack/scaffold-stack.git
 cd scaffold-stack
-cargo build
+cargo build -p stacksdapp
 cargo test --all
+bash scripts/ci-smoke.sh
 ```
+
+Release notes live in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
