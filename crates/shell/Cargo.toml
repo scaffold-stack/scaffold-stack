@@ -1,0 +1,17 @@
+[package]
+name = "stacksdapp-shell"
+version = "0.2.0"
+edition = "2021"
+description = "Shared CLI output controls for stacksdapp (verbosity, quiet, color, JSON)."
+license = "MIT"
+repository = "https://github.com/scaffold-stack/scaffold-stack"
+homepage = "https://github.com/scaffold-stack/scaffold-stack"
+
+[dependencies]
+colored.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+
+[dev-dependencies]
+tempfile.workspace = true
