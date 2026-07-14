@@ -905,6 +905,13 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
         return Err(anyhow!("Contract '{}' already exists", name));
     }
 
+    stacksdapp_shell::print_banner("Adding Contract ✨");
+    stacksdapp_shell::kv("Contract", name);
+    if template != "blank" {
+        stacksdapp_shell::kv("Template", template);
+    }
+    println!();
+
     // ── Template Selection ───────────────────────────────────────────────────
     let (contract_source, test_source, contract_id) = match template {
         "sip010" => (
@@ -1068,20 +1075,32 @@ describe("{name}", () => {{
         ),
     };
 
-    // 1. Write clarity contract and test files
-    tokio::fs::write(&path, contract_source).await?;
+    let step = stacksdapp_shell::begin_step("Created contract");
+    if let Err(e) = tokio::fs::write(&path, &contract_source).await {
+        step.fail();
+        return Err(e.into());
+    }
     let test_path = Path::new("contracts/tests").join(format!("{name}.test.ts"));
     if !test_path.exists() {
-        tokio::fs::write(&test_path, test_source).await?;
+        if let Err(e) = tokio::fs::write(&test_path, &test_source).await {
+            step.fail();
+            return Err(e.into());
+        }
     }
+    step.finish();
 
-    // 2. Update Clarinet.toml
+    let step = stacksdapp_shell::begin_step("Updated project configuration");
     let clarinet_toml_path = Path::new("contracts/Clarinet.toml");
-    let mut existing = tokio::fs::read_to_string(clarinet_toml_path).await?;
+    let mut existing = match tokio::fs::read_to_string(clarinet_toml_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            step.fail();
+            return Err(e.into());
+        }
+    };
 
     existing = existing.replace("requirements = []", "");
 
-    // Add remote requirement if specified
     if let Some(req_id) = contract_id {
         let req_block = format!("\n[[project.requirements]]\ncontract_id = \"{}\"\n", req_id);
         if !existing.contains(&format!("contract_id = \"{}\"", req_id)) {
@@ -1089,17 +1108,59 @@ describe("{name}", () => {{
         }
     }
 
-    // Add the new contract definition
     existing.push_str(&format!(
         "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = 5\nepoch = \"latest\"\n"
     ));
 
-    tokio::fs::write(clarinet_toml_path, existing).await?;
+    if let Err(e) = tokio::fs::write(clarinet_toml_path, existing).await {
+        step.fail();
+        return Err(e.into());
+    }
+    step.finish();
 
-    // Regenerate Bindings
-    stacksdapp_codegen::generate_all().await?;
+    let step = stacksdapp_shell::begin_step("Generated TypeScript bindings");
+    if let Err(e) = stacksdapp_codegen::generate_all_quiet().await {
+        step.fail();
+        return Err(e);
+    }
+    step.finish();
 
-    println!("  \x1b[32m✔\x1b[0m  \x1b[1mAdded\x1b[0m  contracts/contracts/{name}.clar");
+    if !stacksdapp_shell::is_quiet() {
+        println!();
+        stacksdapp_shell::rule();
+        println!();
+        println!("{}", "Created".bold().white());
+        println!();
+        println!(
+            "{}",
+            format!("contracts/contracts/{name}.clar").truecolor(52, 211, 153)
+        );
+        println!();
+        println!("{}", "Generated".bold().white());
+        println!();
+        for f in ["contracts.ts", "hooks.ts", "DebugContracts.tsx"] {
+            println!(
+                "{} {}",
+                "✓".truecolor(52, 211, 153),
+                f.truecolor(156, 163, 175)
+            );
+        }
+        println!();
+        stacksdapp_shell::rule();
+        println!();
+        println!("{}", "Next".bold().white());
+        println!();
+        println!(
+            "{}",
+            "stacksdapp deploy --network testnet"
+                .truecolor(52, 211, 153)
+                .bold()
+        );
+        println!();
+        println!("{}", "Done.".truecolor(156, 163, 175));
+        println!();
+    }
+
     Ok(())
 }
 
