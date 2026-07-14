@@ -20,3 +20,4 @@ serde_yaml = "0.9"
 bip39 = "2"
 bitcoin = "0.32"
 tempfile.workspace = true
+colored.workspace = true
