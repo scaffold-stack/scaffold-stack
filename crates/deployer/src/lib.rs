@@ -105,7 +105,7 @@ pub async fn wait_for_devnet_node() -> Result<()> {
     wait_for_node("http://localhost:3999").await
 }
 
-pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool) -> Result<()> {
+pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool, yes: bool) -> Result<()> {
     if !Path::new("contracts/Clarinet.toml").exists() {
         return Err(anyhow!(
             "No scaffold-stacks project found. Run from the directory created by stacksdapp new"
@@ -124,17 +124,25 @@ pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool) -> Res
     if dry_run {
         println!("[deploy] Dry run enabled: plan will not be applied.");
     }
+    if yes {
+        println!("[deploy] --yes: skipping interactive confirmation prompts.");
+    }
 
     if network == "devnet" {
         wait_for_node(&config.stacks_node).await?;
     }
 
-    deploy_via_clarinet(network, contract, dry_run).await
+    deploy_via_clarinet(network, contract, dry_run, yes).await
 }
 
 // ── Core deploy ───────────────────────────────────────────────────────────────
 
-async fn deploy_via_clarinet(network: &str, contract: Option<&str>, dry_run: bool) -> Result<()> {
+async fn deploy_via_clarinet(
+    network: &str,
+    contract: Option<&str>,
+    dry_run: bool,
+    yes: bool,
+) -> Result<()> {
     let fee_flag = "--low-cost";
 
     let contracts_dir = std::path::Path::new("contracts");
@@ -152,7 +160,7 @@ async fn deploy_via_clarinet(network: &str, contract: Option<&str>, dry_run: boo
         auto_version_conflicting_contracts(network, contract).await?;
     }
 
-    let clarinet_output = run_generate_and_apply(network, fee_flag, contract, dry_run).await?;
+    let clarinet_output = run_generate_and_apply(network, fee_flag, contract, dry_run, yes).await?;
 
     if dry_run {
         return Ok(());
@@ -160,7 +168,8 @@ async fn deploy_via_clarinet(network: &str, contract: Option<&str>, dry_run: boo
     if clarinet_output.contains("ContractAlreadyExists") {
         println!("[deploy] Unexpected conflict after versioning — re-resolving and retrying...");
         auto_version_conflicting_contracts(network, contract).await?;
-        let clarinet_output2 = run_generate_and_apply(network, fee_flag, contract, dry_run).await?;
+        let clarinet_output2 =
+            run_generate_and_apply(network, fee_flag, contract, dry_run, yes).await?;
         return write_deployments_json_from_output(network, &clarinet_output2, contract).await;
     }
 
@@ -223,6 +232,7 @@ async fn run_generate_and_apply(
     fee_flag: &str,
     contract: Option<&str>,
     dry_run: bool,
+    yes: bool,
 ) -> Result<String> {
     // Delete stale plan so clarinet never prompts "Overwrite? [Y/n]"
     let plan_path = format!("contracts/deployments/default.{network}-plan.yaml");
@@ -271,10 +281,10 @@ async fn run_generate_and_apply(
     if network == "devnet" {
         return run_apply_devnet_direct(network).await;
     }
-    if network == "mainnet" {
-        let deployer = get_deployer_from_plan(network).await?;
-        confirm_mainnet_deploy(&deployer, &contracts, total_micro_stx)?;
-    }
+
+    // testnet / mainnet: require opt-in before auto-answering Clarinet fee prompts
+    let deployer = get_deployer_from_plan(network).await?;
+    ensure_remote_deploy_consent(network, &deployer, &contracts, total_micro_stx, yes)?;
 
     println!("[deploy] Applying deployment plan to {}...", network);
     let mut child = Command::new("clarinet")
@@ -320,15 +330,15 @@ async fn run_generate_and_apply(
             ));
         }
 
-        // Handle interactive fee prompts
+        // Consent already obtained (--yes or interactive). Auto-answer Clarinet prompts.
         if line.contains("Overwrite?") {
             let answer = if contract.is_some() { b"n\n" } else { b"y\n" };
             let _ = stdin.write_all(answer).await;
             let _ = stdin.flush().await;
-        } else if line.contains("Confirm?") || line.contains("Continue [Y/n]?") {
-            let _ = stdin.write_all(b"y\n").await;
-            let _ = stdin.flush().await;
-        } else if line.contains("[Y/n]") {
+        } else if line.contains("Confirm?")
+            || line.contains("Continue [Y/n]?")
+            || line.contains("[Y/n]")
+        {
             let _ = stdin.write_all(b"y\n").await;
             let _ = stdin.flush().await;
         }
@@ -399,6 +409,8 @@ async fn run_apply_devnet_direct(network: &str) -> Result<String> {
             anyhow!("Missing contract path for {contract_name} in deployment plan.")
         })?;
         let fee = tx.cost.unwrap_or(0);
+        // Non-secret metadata only on the wire via stdin
+        // (visible in `ps`). The Node bridge reads one JSON object from stdin.
         let args = serde_json::json!({
             "contractName": contract_name,
             "codePath": contract_path,
@@ -408,13 +420,28 @@ async fn run_apply_devnet_direct(network: &str) -> Result<String> {
             "clarityVersion": tx.clarity_version,
         });
 
-        let output = Command::new("node")
+        let mut child = Command::new("node")
             .arg(&script_path)
-            .arg(args.to_string())
             .current_dir("contracts")
-            .output()
-            .await
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|_| anyhow!("node is required to deploy directly to devnet"))?;
+
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| anyhow!("Failed to open node stdin for devnet broadcast"))?;
+            stdin.write_all(args.to_string().as_bytes()).await?;
+            // Closing stdin signals EOF so the Node script can finish reading.
+        }
+
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(|e| anyhow!("Failed waiting for node broadcast process: {e}"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -483,7 +510,15 @@ fn flatten_contract_publishes(plan: &DeploymentPlanFile) -> Vec<DeploymentTransa
 
 fn write_devnet_broadcast_script() -> Result<std::path::PathBuf> {
     let mut file = NamedTempFile::new()?;
-    let script = r#"
+    use std::io::Write;
+    file.write_all(DEVNET_BROADCAST_SCRIPT.as_bytes())?;
+    let (_, path) = file.keep()?;
+    Ok(path)
+}
+
+/// Node bridge for direct devnet publishes. Payload (including senderKey) is read
+/// from stdin — never from argv — so keys do not appear in `ps`.
+const DEVNET_BROADCAST_SCRIPT: &str = r#"
 import fs from 'fs';
 import { createRequire } from 'module';
 
@@ -495,7 +530,12 @@ const {
   broadcastRawTransaction,
 } = require('@stacks/transactions');
 
-const input = JSON.parse(process.argv[2]);
+// Read deploy payload from stdin so the private key never appears in process argv.
+const chunks = [];
+for await (const chunk of process.stdin) {
+  chunks.push(chunk);
+}
+const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
 const codeBody = fs.readFileSync(input.codePath, 'utf8');
 
 const transaction = await makeContractDeploy({
@@ -520,11 +560,6 @@ if (!response?.txid) {
   process.exit(1);
 }
 "#;
-    use std::io::Write;
-    file.write_all(script.as_bytes())?;
-    let (_, path) = file.keep()?;
-    Ok(path)
-}
 
 async fn fetch_local_core_nonce(address: &str) -> Result<u64> {
     let client = reqwest::Client::builder()
@@ -1324,15 +1359,51 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-fn confirm_mainnet_deploy(
+/// Require opt-in before broadcasting on testnet/mainnet.
+/// `--yes` skips the interactive prompt (for CI / automation).
+fn ensure_remote_deploy_consent(
+    network: &str,
+    deployer: &str,
+    contracts: &[String],
+    total_micro_stx: u64,
+    yes: bool,
+) -> Result<()> {
+    use std::io::IsTerminal;
+
+    if yes {
+        if network == "mainnet" {
+            eprintln!(
+                "[deploy] WARNING: --yes skips mainnet confirmation. Broadcasting with real funds."
+            );
+        }
+        return Ok(());
+    }
+
+    if !std::io::stdin().is_terminal() {
+        return Err(anyhow!(
+            "Refusing to deploy to {network} without confirmation in a non-interactive terminal.\n\
+             Re-run with: stacksdapp deploy --network {network} --yes"
+        ));
+    }
+
+    confirm_remote_deploy(network, deployer, contracts, total_micro_stx)
+}
+
+fn confirm_remote_deploy(
+    network: &str,
     deployer: &str,
     contracts: &[String],
     total_micro_stx: u64,
 ) -> Result<()> {
     use std::io::{self, Write};
 
-    println!("\n⚠️  Mainnet deployment confirmation required");
-    println!("  Network: mainnet");
+    let is_mainnet = network == "mainnet";
+    if is_mainnet {
+        println!("\n⚠️  Mainnet deployment confirmation required");
+    } else {
+        println!("\n⚠️  {network} deployment confirmation required");
+    }
+    println!("  Network: {network}");
     println!("  Deployer: {deployer}");
     println!(
         "  Estimated fee: {:.6} STX",
@@ -1343,13 +1414,20 @@ fn confirm_mainnet_deploy(
         contracts.len(),
         contracts.join(", ")
     );
-    print!("\nType 'y' to continue with MAINNET broadcast: ");
+    if is_mainnet {
+        print!("\nType 'y' to continue with MAINNET broadcast: ");
+    } else {
+        print!("\nType 'y' to continue with {network} broadcast (or pass --yes to skip): ");
+    }
     io::stdout().flush()?;
 
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     if input.trim() != "y" {
-        return Err(anyhow!("Mainnet deployment aborted by user."));
+        return Err(anyhow!(
+            "{} deployment aborted by user.",
+            capitalize(network)
+        ));
     }
 
     Ok(())
@@ -1397,6 +1475,18 @@ mod tests {
             err.to_string()
                 .contains("Circular contract dependency detected"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn devnet_broadcast_script_reads_payload_from_stdin_not_argv() {
+        assert!(
+            !super::DEVNET_BROADCAST_SCRIPT.contains("process.argv"),
+            "sender key must not be passed via argv"
+        );
+        assert!(
+            super::DEVNET_BROADCAST_SCRIPT.contains("process.stdin"),
+            "deploy payload must be read from stdin"
         );
     }
 }
