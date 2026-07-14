@@ -6,6 +6,11 @@ dist
 .vscode
 frontend-template/.next
 frontend-template/node_modules
-pub.sh
 create_issues.sh
-
+scripts/verify-p0.sh
+scripts/verify-e2e.sh
+scripts/check-versions.sh
+scripts/verify-p1-display.sh
+scripts/verify-p1-exit-codes.sh
+scripts/verify-functional.sh
+pub.sh
