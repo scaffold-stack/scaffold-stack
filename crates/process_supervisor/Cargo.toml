@@ -1,6 +1,6 @@
 [package]
 name = "stacksdapp-process-supervisor"
-version = "0.1.6"
+version = "0.2.0"
 edition = "2021"
 description = "A process management library used to orchestrate background services and local devnet nodes for Stacks development."
 license     = "MIT"
@@ -13,6 +13,6 @@ tokio.workspace  = true
 serde_json.workspace = true
 which.workspace     = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-stacksdapp-codegen = {version = "0.1.6", path = "../codegen" }
+stacksdapp-codegen = {version = "0.2.0", path = "../codegen" }
 stacksdapp-watcher = {version = "0.1.2", path = "../watcher" }
-stacksdapp-deployer = {version = "0.1.4", path = "../deployer" }
+stacksdapp-deployer = {version = "0.2.0", path = "../deployer" }

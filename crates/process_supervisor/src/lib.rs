@@ -180,7 +180,7 @@ async fn dev_remote(network: &str) -> Result<()> {
 async fn run_auto_deploy() {
     match stacksdapp_deployer::wait_for_devnet_node().await {
         Ok(()) => {
-            if let Err(e) = stacksdapp_deployer::deploy("devnet", None, false).await {
+            if let Err(e) = stacksdapp_deployer::deploy("devnet", None, false, false).await {
                 eprintln!("[dev] Auto-deploy failed: {e:#}");
                 eprintln!(
                     "[dev] You can deploy manually in another terminal: stacksdapp deploy --network devnet"
