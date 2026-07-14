@@ -2,8 +2,8 @@ mod cli_style;
 
 use anyhow::{anyhow, Result};
 use cli_style::{
-    footer_repo_link, print_creating_line, print_new_project_banner, print_success_block,
-    section_alternative, section_recommended, step_done_string,
+    note_line, print_creating_line, print_new_project_banner, print_next_steps,
+    print_success_block, step_done_string,
 };
 use colored::Colorize;
 use include_dir::{include_dir, Dir};
@@ -364,17 +364,12 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
             .status()
             .await?;
 
-        pb.println(step_done_string("Initialised", "git (main)"));
-        pb.println(format!(
-            "  {}  {}",
-            "··".dimmed(),
-            "pre-commit hook: blocks likely mnemonics in contracts/settings/Testnet|Mainnet.toml"
-                .dimmed()
+        pb.println(step_done_string("Initialized", "git (main)"));
+        pb.println(note_line(
+            "pre-commit hook: blocks likely mnemonics in contracts/settings/Testnet/Mainnet.toml",
         ));
-        pb.println(format!(
-            "  {}  {}",
-            "··".dimmed(),
-            "after clone: npm run setup-hooks  or  git config core.hooksPath .githooks".dimmed()
+        pb.println(note_line(
+            "after clone: npm run setup-hooks or git config core.hooksPath .githooks",
         ));
     }
 
@@ -382,64 +377,7 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
 
     // ── Success output ────────────────────────────────────────────────────────
     print_success_block(name);
-    section_recommended();
-    println!(
-        "    {}  {}",
-        "1".cyan().bold(),
-        format!("cd {}", name).dimmed()
-    );
-    println!(
-        "    {}  {}",
-        "2".cyan().bold(),
-        format!(
-            "{}  {}",
-            "Get testnet STX".white(),
-            "https://explorer.hiro.so/sandbox/faucet?chain=testnet".dimmed()
-        )
-    );
-    println!(
-        "    {}  {}",
-        "3".cyan().bold(),
-        format!(
-            "{} {}",
-            "Edit".white(),
-            "contracts/settings/Testnet.toml".bold().white()
-        )
-    );
-    println!("          {}", "[accounts.deployer]".dimmed());
-    println!("          {}", "mnemonic = \"…\"".dimmed());
-    println!(
-        "    {}  {}",
-        "4".cyan().bold(),
-        "stacksdapp deploy --network testnet".bold().green()
-    );
-    println!(
-        "    {}  {}",
-        "5".cyan().bold(),
-        "stacksdapp dev --network testnet".bold().green()
-    );
-    println!();
-    section_alternative();
-    println!(
-        "    {}  {}  {}",
-        "1".cyan().bold(),
-        format!("cd {}", name).dimmed(),
-        format!("{} {}", "·".dimmed(), "start Docker Desktop".dimmed())
-    );
-    println!(
-        "    {}  {}  {}",
-        "2".cyan().bold(),
-        "stacksdapp dev".bold().green(),
-        format!("{} {}", "←".dimmed(), "local chain + Next.js".dimmed())
-    );
-    println!(
-        "    {}  {}  {}",
-        "3".cyan().bold(),
-        "stacksdapp deploy --network devnet".bold().green(),
-        format!("{} {}", "←".dimmed(), "second terminal".dimmed())
-    );
-    println!();
-    footer_repo_link();
+    print_next_steps(name);
 
     Ok(())
 }
