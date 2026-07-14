@@ -12,7 +12,9 @@ anyhow.workspace = true
 tokio.workspace  = true
 serde_json.workspace = true
 which.workspace     = true
+colored.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 stacksdapp-codegen = {version = "0.2.0", path = "../codegen" }
 stacksdapp-watcher = {version = "0.1.2", path = "../watcher" }
 stacksdapp-deployer = {version = "0.2.0", path = "../deployer" }
+stacksdapp-shell = { version = "0.2.0", path = "../shell" }
