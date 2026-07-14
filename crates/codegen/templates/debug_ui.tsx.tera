@@ -169,6 +169,15 @@ function isObjectLike(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Clarity uint/int decode to JS BigInt — JSON.stringify cannot serialize them by default. */
+function formatResult(value: unknown): string {
+  return JSON.stringify(
+    value,
+    (_key, v) => (typeof v === 'bigint' ? v.toString() : v),
+    2
+  );
+}
+
 function sampleValueForAbi(typeDef: AbiType): unknown {
   if (typeof typeDef === 'string') {
     const t = typeDef.toLowerCase();
@@ -441,7 +450,7 @@ function FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | up
           {!!data && (
             <div style={Object.assign({}, S.resBox, { borderColor: isReadOnly ? '#2E2D2E' : '#2E2D2E' })}>
               <p style={S.resLabel}>RESULT</p>
-              <pre style={S.resPre}>{JSON.stringify(data, null, 2)}</pre>
+              <pre style={S.resPre}>{formatResult(data)}</pre>
             </div>
           )}
           {!isReadOnly && !!txid && (
