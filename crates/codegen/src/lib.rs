@@ -72,6 +72,15 @@ impl Filter for UpperCamelFilter {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 pub async fn generate_all() -> Result<()> {
+    generate_all_impl(false).await
+}
+
+/// Same as [`generate_all`] but suppresses progress logs (for nested CLI steps).
+pub async fn generate_all_quiet() -> Result<()> {
+    generate_all_impl(true).await
+}
+
+async fn generate_all_impl(quiet: bool) -> Result<()> {
     let project_root = std::env::current_dir()?;
     let contracts_dir = project_root.join("contracts");
     if !contracts_dir.join("Clarinet.toml").exists()
@@ -82,9 +91,15 @@ pub async fn generate_all() -> Result<()> {
         );
     }
 
+    let log = |msg: String| {
+        if !quiet {
+            println!("{msg}");
+        }
+    };
+
     let frontend_dir = project_root.join("frontend");
     if !frontend_dir.join("node_modules").exists() {
-        println!("[generate] Installing frontend dependencies...");
+        log("[generate] Installing frontend dependencies...".into());
         let subcommand = if frontend_dir.join("package-lock.json").exists() {
             "ci"
         } else {
@@ -107,29 +122,26 @@ pub async fn generate_all() -> Result<()> {
         }
     }
 
-    println!("[generate] Parsing contract ABIs...");
+    log("[generate] Parsing contract ABIs...".into());
     let abis = stacksdapp_parser::parse_project(&contracts_dir).await?;
 
     if abis.is_empty() {
-        println!("[generate] No user contracts found in Clarinet.toml — nothing to generate.");
+        log("[generate] No user contracts found in Clarinet.toml — nothing to generate.".into());
         return Ok(());
     }
 
-    println!(
+    log(format!(
         "[generate] Found {} contract(s): {}",
         abis.len(),
         abis.iter()
             .map(|a| a.contract_name.as_str())
             .collect::<Vec<_>>()
             .join(", ")
-    );
+    ));
 
     let out_dir = project_root.join("frontend/src/generated");
     tokio::fs::create_dir_all(&out_dir).await?;
 
-    // Write empty deployments.json if it doesn't exist yet so that
-    // contracts.ts can always require() it without crashing at import time.
-    // The real content is written by `stacksdapp deploy`.
     let deployments_path = out_dir.join("deployments.json");
     if !deployments_path.exists() {
         tokio::fs::write(
@@ -137,20 +149,20 @@ pub async fn generate_all() -> Result<()> {
             r#"{ "network": "", "deployed_at": "", "contracts": {} }"#,
         )
         .await?;
-        println!("[generate] Created empty deployments.json (run stacksdapp deploy to populate)");
+        log("[generate] Created empty deployments.json (run stacksdapp deploy to populate)".into());
     }
 
-    let written = render(&abis, &out_dir)?;
+    let written = render_with_quiet(&abis, &out_dir, quiet)?;
 
     if written == 0 {
-        println!("[generate] All files already up to date.");
+        log("[generate] All files already up to date.".into());
     } else {
-        println!("[generate] Done — {written} file(s) written.");
+        log(format!("[generate] Done — {written} file(s) written."));
     }
 
     let network = std::env::var("NEXT_PUBLIC_NETWORK").unwrap_or_else(|_| "<network>".into());
     let stale = find_stale_deployments(&abis, &out_dir);
-    if !stale.is_empty() {
+    if !stale.is_empty() && !quiet {
         warn_redeploy_required(&stale, &network);
     }
 
@@ -159,6 +171,10 @@ pub async fn generate_all() -> Result<()> {
 
 /// Render all templates. Returns the number of files actually written.
 pub fn render(abis: &[ContractAbi], out_dir: &Path) -> Result<usize> {
+    render_with_quiet(abis, out_dir, false)
+}
+
+fn render_with_quiet(abis: &[ContractAbi], out_dir: &Path, quiet: bool) -> Result<usize> {
     let mut tera = Tera::default();
     tera.register_filter("camel", CamelFilter);
     tera.register_filter("upper_camel", UpperCamelFilter);
@@ -197,14 +213,17 @@ pub fn render(abis: &[ContractAbi], out_dir: &Path) -> Result<usize> {
     written += write_if_changed(
         out_dir.join("contracts.ts"),
         &tera.render("contracts.ts.tera", &ctx)?,
+        quiet,
     )?;
     written += write_if_changed(
         out_dir.join("hooks.ts"),
         &tera.render("hooks.ts.tera", &ctx)?,
+        quiet,
     )?;
     written += write_if_changed(
         out_dir.join("DebugContracts.tsx"),
         &tera.render("debug_ui.tsx.tera", &ctx)?,
+        quiet,
     )?;
 
     Ok(written)
@@ -303,7 +322,7 @@ fn deployment_id_matches(deployed_id: &str, contract_name: &str) -> bool {
 }
 
 /// Write file only if content changed. Returns 1 if written, 0 if skipped.
-fn write_if_changed(path: PathBuf, contents: &str) -> Result<usize> {
+fn write_if_changed(path: PathBuf, contents: &str, quiet: bool) -> Result<usize> {
     let new_bytes = contents.as_bytes();
     let new_hash = hash_bytes(new_bytes);
 
@@ -318,7 +337,9 @@ fn write_if_changed(path: PathBuf, contents: &str) -> Result<usize> {
     }
     let mut file = fs::File::create(&path)?;
     file.write_all(new_bytes)?;
-    println!("[generated] {}", path.display());
+    if !quiet {
+        println!("[generated] {}", path.display());
+    }
     Ok(1)
 }
 
