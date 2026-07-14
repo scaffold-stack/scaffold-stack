@@ -257,28 +257,49 @@ fn hash_bytes(bytes: &[u8]) -> Vec<u8> {
 fn find_stale_deployments(abis: &[ContractAbi], out_dir: &Path) -> Vec<String> {
     let deployments_path = out_dir.join("deployments.json");
     let Ok(raw) = std::fs::read_to_string(&deployments_path) else {
-        return vec![]; // no deployments yet — nothing to compare
+        return vec![]; // no deployments file — nothing to compare
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return vec![];
     };
+    stale_contract_names(abis, &json)
+}
 
-    let deployed = json["contracts"].as_object();
+/// Contracts that were previously deployed under a *different* on-chain name
+/// (e.g. version bump `counter` → `counter-v2`). Undeployed / empty deployments
+/// are not stale — they just have not been deployed yet.
+fn stale_contract_names(abis: &[ContractAbi], json: &serde_json::Value) -> Vec<String> {
+    let network = json["network"].as_str().unwrap_or("").trim();
+    let Some(deployed) = json["contracts"].as_object() else {
+        return vec![];
+    };
+    // Fresh scaffold / post-clean: not "out of sync".
+    if network.is_empty() || deployed.is_empty() {
+        return vec![];
+    }
 
     abis.iter()
-        .filter(|abi| {
-            match deployed.and_then(|d| d.get(&abi.contract_name)) {
-                None => true, // never deployed
-                Some(entry) => {
-                    let deployed_id = entry["contract_id"].as_str().unwrap_or("");
-                    // If the deployed name doesn't end with the current contract name,
-                    // the contract has been renamed (versioned) and needs redeployment
-                    !deployed_id.ends_with(&format!(".{}", abi.contract_name))
-                }
+        .filter_map(|abi| {
+            let entry = deployed.get(&abi.contract_name)?;
+            let deployed_id = entry["contract_id"].as_str().unwrap_or("").trim();
+            if deployed_id.is_empty() {
+                return None;
+            }
+            if deployment_id_matches(deployed_id, &abi.contract_name) {
+                None
+            } else {
+                Some(abi.contract_name.clone())
             }
         })
-        .map(|abi| abi.contract_name.clone())
         .collect()
+}
+
+/// `ST….counter` or bare `counter` matches local name `counter`.
+fn deployment_id_matches(deployed_id: &str, contract_name: &str) -> bool {
+    match deployed_id.rsplit_once('.') {
+        Some((_, name)) => name == contract_name,
+        None => deployed_id == contract_name,
+    }
 }
 
 /// Write file only if content changed. Returns 1 if written, 0 if skipped.
@@ -307,15 +328,105 @@ fn warn_redeploy_required(stale: &[String], network: &str) {
     eprintln!("\n{}", "━".repeat(60));
     eprintln!("  ⚠  REDEPLOYMENT REQUIRED");
     eprintln!("{}", "━".repeat(60));
-    eprintln!("  Contracts on-chain are out of sync with local source:");
+    eprintln!("  On-chain contract ids no longer match local names:");
     eprintln!("  {}", names);
     eprintln!();
-    eprintln!("  Clarity contracts are immutable. Your changes won't take");
-    eprintln!("  effect until you redeploy:");
+    eprintln!("  Clarity contracts are immutable. Redeploy so bindings");
+    eprintln!("  point at the current contract ids:");
     eprintln!();
     eprintln!("    stacksdapp deploy --network {network}");
     eprintln!("    where network is either devnet/testnet/mainnet");
     eprintln!();
-    eprintln!("  Until then, calls to new/changed functions will fail.");
+    eprintln!("  Until then, calls to renamed/versioned contracts will fail.");
     eprintln!("{}\n", "━".repeat(60));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stacksdapp_parser::ContractAbi;
+
+    fn abi(name: &str) -> ContractAbi {
+        ContractAbi {
+            contract_id: format!(".{}", name),
+            contract_name: name.to_string(),
+            functions: vec![],
+            variables: vec![],
+            maps: vec![],
+            fungible_tokens: vec![],
+            non_fungible_tokens: vec![],
+        }
+    }
+
+    #[test]
+    fn empty_deployments_are_not_stale() {
+        let json = serde_json::json!({
+            "network": "",
+            "deployed_at": "",
+            "contracts": {}
+        });
+        let stale = stale_contract_names(&[abi("counter")], &json);
+        assert!(stale.is_empty(), "fresh project must not warn: {stale:?}");
+    }
+
+    #[test]
+    fn matching_deployment_is_not_stale() {
+        let json = serde_json::json!({
+            "network": "devnet",
+            "deployed_at": "2026-01-01T00:00:00Z",
+            "contracts": {
+                "counter": {
+                    "contract_id": "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.counter",
+                    "tx_id": "0xabc",
+                    "block_height": 1
+                }
+            }
+        });
+        let stale = stale_contract_names(&[abi("counter")], &json);
+        assert!(stale.is_empty(), "in-sync deploy must not warn: {stale:?}");
+    }
+
+    #[test]
+    fn renamed_deployment_is_stale() {
+        let json = serde_json::json!({
+            "network": "devnet",
+            "deployed_at": "2026-01-01T00:00:00Z",
+            "contracts": {
+                "counter": {
+                    "contract_id": "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.counter-v2",
+                    "tx_id": "0xabc",
+                    "block_height": 1
+                }
+            }
+        });
+        let stale = stale_contract_names(&[abi("counter")], &json);
+        assert_eq!(stale, vec!["counter".to_string()]);
+    }
+
+    #[test]
+    fn undeployed_sibling_is_not_stale() {
+        // New local contract while others are deployed — not a rename mismatch.
+        let json = serde_json::json!({
+            "network": "devnet",
+            "contracts": {
+                "counter": {
+                    "contract_id": "ST1.counter",
+                    "tx_id": "0x1",
+                    "block_height": 1
+                }
+            }
+        });
+        let stale = stale_contract_names(&[abi("counter"), abi("hello-token")], &json);
+        assert!(
+            stale.is_empty(),
+            "missing entry is undeployed, not stale: {stale:?}"
+        );
+    }
+
+    #[test]
+    fn deployment_id_match_is_exact_suffix() {
+        assert!(deployment_id_matches("ST1.counter", "counter"));
+        assert!(!deployment_id_matches("ST1.my-counter", "counter"));
+        assert!(deployment_id_matches("counter", "counter"));
+    }
 }
