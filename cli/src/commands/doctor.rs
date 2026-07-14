@@ -1,7 +1,11 @@
 use anyhow::Result;
 use colored::Colorize;
+use serde_json::json;
+use stacksdapp_shell::{self as shell, status};
 use std::process::Stdio;
 use tokio::process::Command;
+
+use crate::error::CliError;
 
 struct Check {
     name: &'static str,
@@ -14,11 +18,29 @@ enum CheckResult {
     Fail(String),
 }
 
-pub async fn run() -> Result<()> {
-    println!(
-        "\n{}\n",
-        "stacksdapp doctor — checking prerequisites".bold()
-    );
+impl CheckResult {
+    fn status_str(&self) -> &'static str {
+        match self {
+            Self::Ok(_) => "ok",
+            Self::Warn(_) => "warn",
+            Self::Fail(_) => "fail",
+        }
+    }
+
+    fn detail(&self) -> &str {
+        match self {
+            Self::Ok(s) | Self::Warn(s) | Self::Fail(s) => s,
+        }
+    }
+}
+
+/// Run prerequisite checks.
+///
+/// Exit semantics (for CI / preflight):
+/// - Fail → always non-zero
+/// - Warn → zero by default; non-zero when `strict` is true
+pub async fn run(strict: bool) -> Result<()> {
+    shell::debug(1, "doctor: probing rustc, node, clarinet, docker, git");
 
     let checks = vec![
         check_rust().await,
@@ -29,56 +51,133 @@ pub async fn run() -> Result<()> {
         check_stacksdapp().await,
     ];
 
-    let mut all_ok = true;
+    let mut fail_count = 0usize;
+    let mut warn_count = 0usize;
 
     for check in &checks {
         match &check.result {
-            CheckResult::Ok(msg) => {
-                println!(
-                    "  {}  {} {}",
-                    "✔".green().bold(),
-                    check.name.white(),
-                    msg.dimmed()
-                );
-            }
-            CheckResult::Warn(msg) => {
-                println!(
-                    "  {}  {} {}",
-                    "⚠".yellow().bold(),
-                    check.name.white(),
-                    msg.yellow()
-                );
-                all_ok = false;
-            }
-            CheckResult::Fail(msg) => {
-                println!(
-                    "  {}  {} {}",
-                    "✗".red().bold(),
-                    check.name.white().bold(),
-                    msg.red()
-                );
-                all_ok = false;
-            }
+            CheckResult::Ok(_) => {}
+            CheckResult::Warn(_) => warn_count += 1,
+            CheckResult::Fail(_) => fail_count += 1,
         }
     }
 
-    println!();
+    let ok = fail_count == 0 && (!strict || warn_count == 0);
 
-    if all_ok {
-        println!(
-            "{}",
-            "  All checks passed. You're ready to build on Stacks!"
-                .green()
-                .bold()
-        );
+    let exit_code = if !ok { 3 } else { 0 };
+    if shell::is_json() {
+        let checks_json: Vec<_> = checks
+            .iter()
+            .map(|c| {
+                json!({
+                    "name": c.name,
+                    "status": c.result.status_str(),
+                    "detail": c.result.detail(),
+                })
+            })
+            .collect();
+        shell::emit_json(&json!({
+            "ok": ok,
+            "command": "doctor",
+            "strict": strict,
+            "fail_count": fail_count,
+            "warn_count": warn_count,
+            "code": if ok { "ok" } else { "prerequisite" },
+            "exit_code": exit_code,
+            "checks": checks_json,
+        }));
     } else {
-        println!(
-            "{}",
-            "  Some checks failed. Fix the issues above before running stacksdapp new.".yellow()
-        );
+        status(format!(
+            "\n{}\n",
+            "stacksdapp doctor — checking prerequisites".bold()
+        ));
+
+        for check in &checks {
+            match &check.result {
+                CheckResult::Ok(msg) => {
+                    status(format!(
+                        "  {}  {} {}",
+                        "✔".green().bold(),
+                        check.name.white(),
+                        msg.dimmed()
+                    ));
+                }
+                CheckResult::Warn(msg) => {
+                    status(format!(
+                        "  {}  {} {}",
+                        "⚠".yellow().bold(),
+                        check.name.white(),
+                        msg.yellow()
+                    ));
+                }
+                CheckResult::Fail(msg) => {
+                    status(format!(
+                        "  {}  {} {}",
+                        "✗".red().bold(),
+                        check.name.white().bold(),
+                        msg.red()
+                    ));
+                }
+            }
+        }
+
+        status("");
+
+        if fail_count == 0 && warn_count == 0 {
+            status(
+                "  All checks passed. You're ready to build on Stacks!"
+                    .green()
+                    .bold()
+                    .to_string(),
+            );
+            status("");
+            return Ok(());
+        }
+
+        if fail_count > 0 {
+            status(
+                "  Some checks failed. Fix the issues above before running stacksdapp new."
+                    .red()
+                    .bold()
+                    .to_string(),
+            );
+            status("");
+        } else {
+            status(
+                "  Some checks warned. Review the issues above before running stacksdapp new."
+                    .yellow()
+                    .to_string(),
+            );
+            if strict {
+                status(
+                    "  (--strict: treating warnings as failures)"
+                        .dimmed()
+                        .to_string(),
+                );
+            }
+            status("");
+        }
     }
 
-    println!();
+    if fail_count > 0 {
+        return Err(CliError::Prerequisite(format!(
+            "doctor failed: {fail_count} failing check(s){}",
+            if warn_count > 0 {
+                format!(", {warn_count} warning(s)")
+            } else {
+                String::new()
+            }
+        ))
+        .into());
+    }
+
+    if warn_count > 0 && strict {
+        return Err(CliError::Prerequisite(format!(
+            "doctor failed: {warn_count} warning(s) under --strict"
+        ))
+        .into());
+    }
+
     Ok(())
 }
 
