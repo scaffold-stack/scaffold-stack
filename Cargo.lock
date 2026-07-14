@@ -2131,6 +2131,7 @@ dependencies = [
  "bip39",
  "bitcoin",
  "chrono",
+ "colored",
  "hex",
  "reqwest",
  "serde",
@@ -2157,10 +2158,12 @@ name = "stacksdapp-process-supervisor"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "colored",
  "reqwest",
  "serde_json",
  "stacksdapp-codegen",
  "stacksdapp-deployer",
+ "stacksdapp-shell",
  "stacksdapp-watcher",
  "tokio",
  "which",
