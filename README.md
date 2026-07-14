@@ -74,7 +74,7 @@ stacksdapp deploy --network testnet --dry-run
 ```
 
 ```
-🚀 Deploying to testnet (https://api.testnet.hiro.so)
+Deploying to testnet (https://api.testnet.hiro.so)
 [deploy] Generating deployment plan...
 [deploy] Applying deployment plan to testnet...
   ✔ counter | txid 0x86fa3030... | address ST3JAE....counter
