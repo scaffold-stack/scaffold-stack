@@ -7,6 +7,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Keep in sync with README / stacksdapp doctor (Clarinet 3.21+).
+  CLARINET_VERSION: "3.21.1"
 
 jobs:
   lint:
@@ -58,6 +60,7 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -74,24 +77,39 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-integ-
 
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('crates/scaffold/frontend-template/package-lock.json', 'crates/scaffold/contracts-template/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
       - name: Install Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Install Clarinet
+      - name: Install Clarinet ${{ env.CLARINET_VERSION }}
         run: |
-          curl -sL https://github.com/hirosystems/clarinet/releases/download/v3.16.0/clarinet-linux-x64-glibc.tar.gz | tar xz
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/stx-labs/clarinet/releases/download/v${CLARINET_VERSION}/clarinet-linux-x64-glibc.tar.gz" \
+            | tar xz
           sudo mv clarinet /usr/local/bin/
           clarinet --version
+          clarinet --version | head -n1 | grep -E "clarinet 3\\.21"
 
       - name: Build CLI binary
         run: cargo build --package stacksdapp
 
+      - name: CLI smoke (new → check → generate → add → test)
+        run: bash scripts/ci-smoke.sh ./target/debug/stacksdapp
+
   build:
     name: Release Build
     runs-on: ubuntu-latest
-    needs: [lint, unit-tests]
+    needs: [lint, unit-tests, integration-tests]
     steps:
       - uses: actions/checkout@v4
 
