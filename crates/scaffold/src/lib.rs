@@ -277,6 +277,8 @@ exit 0
 "#;
 
 pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
+    validate_project_name(name)?;
+
     print_new_project_banner();
     print_creating_line(name);
 
@@ -572,6 +574,7 @@ pub async fn init_project() -> Result<()> {
     }
 
     ensure_contract_support_files(&contracts_root, &frontend_dir).await?;
+    ensure_stacksdapp_toml(root).await?;
     run_generate_after_setup().await?;
 
     write_git_hooks(Path::new(".")).await?;
@@ -596,6 +599,7 @@ pub async fn upgrade_project() -> Result<()> {
     }
 
     println!("[upgrade] Refreshing dependencies and regenerating bindings (non-destructive)...");
+    ensure_stacksdapp_toml(Path::new(".")).await?;
     ensure_contract_support_files(Path::new("contracts"), Path::new("frontend")).await?;
     run_npm_install(Path::new("frontend"), "frontend", "[upgrade]").await?;
     run_npm_install(Path::new("contracts"), "contracts", "[upgrade]").await?;
@@ -603,6 +607,24 @@ pub async fn upgrade_project() -> Result<()> {
     write_git_hooks(Path::new(".")).await?;
     let _ = try_set_git_hooks_path(Path::new(".")).await;
     println!("[upgrade] ✔ Upgrade complete.");
+    Ok(())
+}
+
+async fn ensure_stacksdapp_toml(root: &Path) -> Result<()> {
+    let path = root.join(stacksdapp_shell::CONFIG_FILE);
+    if path.exists() {
+        return Ok(());
+    }
+    let name = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty() && *s != ".")
+        .unwrap_or("stacksdapp-project");
+    tokio::fs::write(&path, stacksdapp_shell::default_config_toml(name)).await?;
+    println!(
+        "[scaffold] Wrote {} (project root marker for subdirectory commands)",
+        stacksdapp_shell::CONFIG_FILE
+    );
     Ok(())
 }
 
@@ -748,9 +770,19 @@ describe("counter", () => {
     )
     .await?;
 
-    tokio::fs::write(root.join("package.json"), format!(
+    tokio::fs::write(
+        root.join("package.json"),
+        format!(
         "{{\n  \"name\": \"{name}\",\n  \"private\": true,\n  \"scripts\": {{\n    \"dev\": \"stacksdapp dev\",\n    \"generate\": \"stacksdapp generate\",\n    \"deploy\": \"stacksdapp deploy\",\n    \"test\": \"stacksdapp test\",\n    \"check\": \"stacksdapp check\",\n    \"setup-hooks\": \"git config core.hooksPath .githooks\"\n  }}\n}}\n"
-    )).await?;
+    ),
+    )
+    .await?;
+
+    tokio::fs::write(
+        root.join(stacksdapp_shell::CONFIG_FILE),
+        stacksdapp_shell::default_config_toml(name),
+    )
+    .await?;
 
     tokio::fs::write(
         root.join(".gitignore"),
@@ -921,6 +953,8 @@ fn npm_install_message_head(message_prefix: &str) -> String {
 }
 
 pub async fn add_contract(name: &str, template: &str) -> Result<()> {
+    validate_contract_name(name)?;
+
     let contracts_dir = Path::new("contracts/contracts");
     if !contracts_dir.exists() {
         return Err(anyhow!(
@@ -1249,4 +1283,134 @@ async fn try_set_git_hooks_path(root: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Project directory / package name: single relative segment, no path traversal.
+fn validate_project_name(name: &str) -> Result<()> {
+    validate_safe_path_segment(name, "Project name")?;
+    if name.len() > 64 {
+        return Err(anyhow!(
+            "Project name must be at most 64 characters (got {})",
+            name.len()
+        ));
+    }
+    if !is_valid_identifier_name(name) {
+        return Err(anyhow!(
+            "Invalid project name '{name}'. Use a letter followed by letters, digits, hyphens, or underscores (e.g. my-dapp)."
+        ));
+    }
+    Ok(())
+}
+
+/// Clarinet / Clarity contract name: safe file stem + valid on-chain contract id charset.
+fn validate_contract_name(name: &str) -> Result<()> {
+    validate_safe_path_segment(name, "Contract name")?;
+    // Stacks contract names are limited to 40 characters on-chain.
+    if name.len() > 40 {
+        return Err(anyhow!(
+            "Contract name must be at most 40 characters (got {})",
+            name.len()
+        ));
+    }
+    if !is_valid_identifier_name(name) {
+        return Err(anyhow!(
+            "Invalid contract name '{name}'. Use a letter followed by letters, digits, hyphens, or underscores (e.g. my-token)."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_safe_path_segment(name: &str, label: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(anyhow!("{label} cannot be empty"));
+    }
+    if name != name.trim() {
+        return Err(anyhow!(
+            "{label} cannot have leading or trailing whitespace"
+        ));
+    }
+    if name.contains(['/', '\\', '\0']) {
+        return Err(anyhow!(
+            "{label} cannot contain path separators or null bytes (got '{name}')"
+        ));
+    }
+    if name == "." || name == ".." {
+        return Err(anyhow!("{label} cannot be '.' or '..'"));
+    }
+
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return Err(anyhow!("{label} cannot be an absolute path (got '{name}')"));
+    }
+    let mut components = path.components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(os)), None) => {
+            let segment = os
+                .to_str()
+                .ok_or_else(|| anyhow!("{label} contains invalid UTF-8"))?;
+            if segment != name {
+                return Err(anyhow!(
+                    "{label} must be a single directory name without path components (got '{name}')"
+                ));
+            }
+        }
+        _ => {
+            return Err(anyhow!(
+                "{label} must be a single directory name without path components (got '{name}')"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_valid_identifier_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_name_accepts_simple_names() {
+        assert!(validate_project_name("my-dapp").is_ok());
+        assert!(validate_project_name("MyApp_1").is_ok());
+    }
+
+    #[test]
+    fn project_name_rejects_traversal_and_paths() {
+        assert!(validate_project_name("../evil").is_err());
+        assert!(validate_project_name("foo/bar").is_err());
+        assert!(validate_project_name("foo\\bar").is_err());
+        assert!(validate_project_name("..").is_err());
+        assert!(validate_project_name("/tmp/x").is_err());
+        assert!(validate_project_name("").is_err());
+        assert!(validate_project_name(" bad").is_err());
+    }
+
+    #[test]
+    fn project_name_rejects_invalid_charset() {
+        assert!(validate_project_name("1dapp").is_err());
+        assert!(validate_project_name("my dapp").is_err());
+        assert!(validate_project_name("my.dapp").is_err());
+    }
+
+    #[test]
+    fn contract_name_accepts_clarity_ids() {
+        assert!(validate_contract_name("counter").is_ok());
+        assert!(validate_contract_name("sip010-token").is_ok());
+    }
+
+    #[test]
+    fn contract_name_rejects_traversal_and_overlong() {
+        assert!(validate_contract_name("../x").is_err());
+        assert!(validate_contract_name("a/b").is_err());
+        assert!(validate_contract_name(&"a".repeat(41)).is_err());
+        assert!(validate_contract_name("9bad").is_err());
+    }
 }

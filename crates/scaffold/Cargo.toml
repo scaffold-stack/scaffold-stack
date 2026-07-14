@@ -1,6 +1,6 @@
 [package]
 name = "stacksdapp-scaffold"
-version = "0.1.8"
+version = "0.2.0"
 edition = "2021"
 description = "The asset provider and scaffolding engine containing the Next.js frontend templates and project initialization logic."
 license     = "MIT"
@@ -31,7 +31,8 @@ anyhow.workspace     = true
 tokio.workspace      = true
 fs_extra.workspace   = true
 which.workspace      = true
-stacksdapp-codegen  = {version = "0.1.6", path = "../codegen" }
+stacksdapp-codegen  = {version = "0.2.0", path = "../codegen" }
 include_dir = "0.7"
 indicatif.workspace = true
 colored.workspace = true
+stacksdapp-shell = { version = "0.2.0", path = "../shell" }

@@ -14,6 +14,9 @@ const WORDMARK_STACKSDAPP: &[&str] = &[
 ];
 
 pub fn print_new_project_banner() {
+    if stacksdapp_shell::is_quiet() {
+        return;
+    }
     println!();
     for (i, line) in WORDMARK_STACKSDAPP.iter().enumerate() {
         match i {
@@ -56,6 +59,9 @@ pub fn print_new_project_banner() {
 }
 
 pub fn print_creating_line(name: &str) {
+    if stacksdapp_shell::is_quiet() {
+        return;
+    }
     println!(
         "    {} {}",
         "Creating".bold().white(),
@@ -78,6 +84,9 @@ pub fn dim_rule(len: usize) -> ColoredString {
 }
 
 pub fn print_success_block(name: &str) {
+    if stacksdapp_shell::is_quiet() {
+        return;
+    }
     println!(
         "    {}  {}",
         "✔ Done!".green().bold(),
@@ -88,6 +97,9 @@ pub fn print_success_block(name: &str) {
 }
 
 pub fn section_recommended() {
+    if stacksdapp_shell::is_quiet() {
+        return;
+    }
     println!(
         "    {}  {}",
         "Recommended".bold().yellow(),
@@ -101,6 +113,9 @@ pub fn section_recommended() {
 }
 
 pub fn section_alternative() {
+    if stacksdapp_shell::is_quiet() {
+        return;
+    }
     println!("    {}", "─".repeat(53).dimmed());
     println!();
     println!(
@@ -116,6 +131,9 @@ pub fn section_alternative() {
 }
 
 pub fn footer_repo_link() {
+    if stacksdapp_shell::is_quiet() {
+        return;
+    }
     println!("    {}", "─".repeat(53).dimmed());
     println!(
         "    {}",
