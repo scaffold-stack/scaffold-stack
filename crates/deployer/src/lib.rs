@@ -14,6 +14,9 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+mod ui;
+use ui::DeployUi;
+
 pub struct NetworkConfig {
     pub stacks_node: String,
 }
@@ -117,63 +120,84 @@ pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool, yes: b
     }
 
     let config = network_config(network)?;
-    println!("🚀 Deploying to {} ({})", network, config.stacks_node);
-    if let Some(name) = contract {
-        println!("[deploy] Contract filter enabled: {name}");
-    }
-    if dry_run {
-        println!("[deploy] Dry run enabled: plan will not be applied.");
-    }
-    if yes {
-        println!("[deploy] --yes: skipping interactive confirmation prompts.");
-    }
+    let ui = DeployUi::start(network, &config.stacks_node);
 
     if network == "devnet" {
         wait_for_node(&config.stacks_node).await?;
     }
 
-    deploy_via_clarinet(network, contract, dry_run, yes).await
+    deploy_via_clarinet(&ui, network, contract, dry_run, yes).await
 }
 
 // ── Core deploy ───────────────────────────────────────────────────────────────
 
 async fn deploy_via_clarinet(
+    ui: &DeployUi,
     network: &str,
     contract: Option<&str>,
     dry_run: bool,
     yes: bool,
 ) -> Result<()> {
     let fee_flag = "--low-cost";
-
     let contracts_dir = std::path::Path::new("contracts");
-    let ordered = resolve_deployment_order(contracts_dir).await?;
+
+    let step = ui.begin_step("Analyzing project");
+    let ordered = match resolve_deployment_order(contracts_dir).await {
+        Ok(o) => o,
+        Err(e) => {
+            step.fail();
+            return Err(e);
+        }
+    };
     if let Some(name) = contract {
-        ensure_contract_exists(&ordered, name)?;
+        if let Err(e) = ensure_contract_exists(&ordered, name) {
+            step.fail();
+            return Err(e);
+        }
     }
-    reorder_clarinet_toml(contracts_dir, &ordered).await?;
+    step.finish();
+
+    let step = ui.begin_step("Resolving contract dependencies");
+    if let Err(e) = reorder_clarinet_toml(contracts_dir, &ordered).await {
+        step.fail();
+        return Err(e);
+    }
+    step.finish();
 
     if network == "testnet" || network == "mainnet" {
-        println!(
-            "[deploy] Checking for contract name conflicts on {}...",
-            network
-        );
-        auto_version_conflicting_contracts(network, contract).await?;
+        let step = ui.begin_step("Checking existing contracts...");
+        let renames = match auto_version_conflicting_contracts(network, contract).await {
+            Ok(r) => r,
+            Err(e) => {
+                step.fail();
+                return Err(e);
+            }
+        };
+        step.finish();
+        for (old, new) in &renames {
+            ui.step_detail(&format!("{old} already exists"));
+            ui.step_detail(&format!("renamed → {new}"));
+        }
+        if renames.is_empty() {
+            ui.step_detail("no conflicts");
+        }
     }
 
-    let clarinet_output = run_generate_and_apply(network, fee_flag, contract, dry_run, yes).await?;
+    let clarinet_output =
+        run_generate_and_apply(ui, network, fee_flag, contract, dry_run, yes).await?;
 
     if dry_run {
         return Ok(());
     }
     if clarinet_output.contains("ContractAlreadyExists") {
-        println!("[deploy] Unexpected conflict after versioning — re-resolving and retrying...");
-        auto_version_conflicting_contracts(network, contract).await?;
+        ui.step_detail("Conflict after versioning — retrying...");
+        let _ = auto_version_conflicting_contracts(network, contract).await?;
         let clarinet_output2 =
-            run_generate_and_apply(network, fee_flag, contract, dry_run, yes).await?;
-        return write_deployments_json_from_output(network, &clarinet_output2, contract).await;
+            run_generate_and_apply(ui, network, fee_flag, contract, dry_run, yes).await?;
+        return write_deployments_json_from_output(ui, network, &clarinet_output2, contract).await;
     }
 
-    write_deployments_json_from_output(network, &clarinet_output, contract).await
+    write_deployments_json_from_output(ui, network, &clarinet_output, contract).await
 }
 
 async fn reorder_clarinet_toml(
@@ -222,12 +246,67 @@ async fn reorder_clarinet_toml(
     }
 
     fs::write(&path, output).await?;
-    println!("[deploy] Clarinet.toml reordered to respect dependency graph.");
     Ok(())
+}
+
+/// Quiet clarinet helper — captures stderr for errors, hides upgrade spam.
+async fn run_clarinet_quiet(args: &[&str]) -> Result<()> {
+    let output = Command::new("clarinet")
+        .args(args)
+        .current_dir("contracts")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "clarinet is required. Install: brew install clarinet OR cargo install clarinet"
+            )
+        })?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        // Filter clarinet upgrade nags from the error surface
+        let filtered: String = err
+            .lines()
+            .filter(|l| !l.contains("A new release of clarinet"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "clarinet {} failed.\n{}",
+            args.join(" "),
+            filtered.trim()
+        ));
+    }
+    Ok(())
+}
+
+async fn run_generate_quiet() -> Result<()> {
+    // Prefer in-tree binary if present; fall back to PATH.
+    let bin = std::env::current_exe().unwrap_or_else(|_| "stacksdapp".into());
+    let status = Command::new(&bin)
+        .args(["-q", "generate"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        _ => {
+            // Fallback: PATH stacksdapp
+            let _ = Command::new("stacksdapp")
+                .args(["-q", "generate"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await;
+            Ok(())
+        }
+    }
 }
 
 /// Run `clarinet deployments generate` then `apply`, returning stdout.
 async fn run_generate_and_apply(
+    ui: &DeployUi,
     network: &str,
     fee_flag: &str,
     contract: Option<&str>,
@@ -240,53 +319,67 @@ async fn run_generate_and_apply(
         fs::remove_file(&plan_path).await?;
     }
 
-    println!("[deploy] Generating deployment plan...");
-    let gen = Command::new("clarinet")
-        .args(["deployments", "generate", &format!("--{network}"), fee_flag])
-        .current_dir("contracts")
-        .status()
-        .await
-        .map_err(|_| {
-            anyhow!(
-                "clarinet is required. Install: brew install clarinet OR cargo install clarinet"
-            )
-        })?;
-
-    if !gen.success() {
+    let step = ui.begin_step("Generating deployment artifacts");
+    let net_flag = format!("--{network}");
+    if let Err(e) = run_clarinet_quiet(&["deployments", "generate", &net_flag, fee_flag]).await {
+        step.fail();
         return Err(anyhow!(
             "Failed to generate deployment plan.\n\
              • Run `clarinet check` to validate your contracts.\n\
-             • Ensure settings/{}.toml has a valid mnemonic.",
+             • Ensure settings/{}.toml has a valid mnemonic.\n{e}",
             capitalize(network)
         ));
     }
-
     if let Some(contract_name) = contract {
-        filter_plan_to_contract(network, contract_name).await?;
-        println!("[deploy] Filtered deployment plan to contract: {contract_name}");
+        if let Err(e) = filter_plan_to_contract(network, contract_name).await {
+            step.fail();
+            return Err(e);
+        }
     }
+    step.finish();
 
-    let total_micro_stx = check_plan_fee(network)?;
-    let contracts = deployment_contract_names_from_plan(network).await?;
-    println!("[deploy] Plan contracts: {}", contracts.join(", "));
+    let step = ui.begin_step("Exporting TypeScript bindings");
+    let _ = run_generate_quiet().await;
+    step.finish();
+
+    let step = ui.begin_step("Building deployment plan");
+    let total_micro_stx = match check_plan_fee(network) {
+        Ok(v) => v,
+        Err(e) => {
+            step.fail();
+            return Err(e);
+        }
+    };
+    let contracts = match deployment_contract_names_from_plan(network).await {
+        Ok(c) => c,
+        Err(e) => {
+            step.fail();
+            return Err(e);
+        }
+    };
+    step.finish();
 
     if dry_run {
-        println!(
-            "[deploy] Dry run complete. No transactions were broadcast.\n\
-             [deploy] Re-run without --dry-run to apply this plan."
-        );
+        ui.dry_run_done(&contracts, total_micro_stx);
         return Ok(String::new());
     }
 
     if network == "devnet" {
-        return run_apply_devnet_direct(network).await;
+        return run_apply_devnet_direct(ui, network).await;
     }
 
-    // testnet / mainnet: require opt-in before auto-answering Clarinet fee prompts
     let deployer = get_deployer_from_plan(network).await?;
-    ensure_remote_deploy_consent(network, &deployer, &contracts, total_micro_stx, yes)?;
+    ui.print_summary(&deployer, &contracts, total_micro_stx);
 
-    println!("[deploy] Applying deployment plan to {}...", network);
+    if !ui.confirm_continue(yes)? {
+        return Err(anyhow!(
+            "{} deployment aborted by user.",
+            capitalize(network)
+        ));
+    }
+
+    ui.broadcasting_start();
+
     let mut child = Command::new("clarinet")
         .args([
             "deployments",
@@ -297,7 +390,7 @@ async fn run_generate_and_apply(
         .current_dir("contracts")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::null())
         .spawn()?;
 
     let mut stdin = child
@@ -309,28 +402,27 @@ async fn run_generate_and_apply(
         .take()
         .ok_or_else(|| anyhow!("Failed to open stdout"))?;
 
-    let expected_count = deployment_contract_names_from_plan(network).await?.len();
-
-    let mut confirmed_count = 0;
-    let mut broadcast_count = 0;
-
+    let expected_count = contracts.len().max(1);
+    let mut confirmed_count = 0usize;
+    let mut broadcast_count = 0usize;
     let mut reader = tokio::io::BufReader::new(stdout).lines();
     let mut captured_stdout = String::new();
+    let mut last_txid_by_name: HashMap<String, String> = HashMap::new();
+
+    ui.render_bar(0, expected_count);
 
     while let Ok(Some(line)) = reader.next_line().await {
-        println!("{}", line);
         captured_stdout.push_str(&line);
         captured_stdout.push('\n');
 
         if line.contains("REDEPLOYMENT REQUIRED") || line.contains("out of sync") {
-            println!("[deploy] Error: Devnet is out of sync. You may need to restart Clarinet or increment contract version.");
             let _ = child.kill().await;
             return Err(anyhow!(
                 "Devnet redeployment required. Check your contract versions."
             ));
         }
 
-        // Consent already obtained (--yes or interactive). Auto-answer Clarinet prompts.
+        // Auto-answer Clarinet prompts silently (consent already obtained).
         if line.contains("Overwrite?") {
             let answer = if contract.is_some() { b"n\n" } else { b"y\n" };
             let _ = stdin.write_all(answer).await;
@@ -342,39 +434,46 @@ async fn run_generate_and_apply(
             let _ = stdin.write_all(b"y\n").await;
             let _ = stdin.flush().await;
         }
+
         if line.contains("Broadcasted") && line.contains("ContractPublish(") {
             broadcast_count += 1;
-            println!(
-                "[deploy] Broadcast progress: {}/{}",
-                broadcast_count, expected_count
-            );
+            if let Some((name, txid)) = parse_broadcast_line(&line) {
+                last_txid_by_name.insert(name, txid);
+            }
+            ui.render_bar(broadcast_count, expected_count);
         }
 
         if line.contains("Confirmed Publish") || line.contains("Published") {
             confirmed_count += 1;
-            println!(
-                "[deploy] Confirmation progress: {}/{}",
-                confirmed_count, expected_count
-            );
         }
 
-        if confirmed_count >= expected_count {
-            println!("[deploy] All contracts confirmed. Finalizing JSON...");
-            let _ = child.kill().await; // Clarinet can linger after local confirmations
-            break;
-        }
-
-        if broadcast_count >= expected_count {
-            println!("[deploy] All contracts broadcasted. Finalizing JSON...");
-            let _ = child.kill().await; // Don't block on extra Clarinet output after broadcast
+        if confirmed_count >= expected_count || broadcast_count >= expected_count {
+            let _ = child.kill().await;
             break;
         }
     }
+
+    // Finalize bar once if we somehow exited without hitting 100%.
+    if broadcast_count > 0 && broadcast_count < expected_count {
+        ui.render_bar(expected_count, expected_count);
+    } else if broadcast_count >= expected_count {
+        // Already finalized inside render_bar when done == total.
+    } else {
+        ui.render_bar(expected_count, expected_count);
+    }
+
+    // Stable order matching the deployment plan.
+    for name in &contracts {
+        if let Some(txid) = last_txid_by_name.get(name) {
+            ui.contract_broadcast_ok(name, txid);
+        }
+    }
+
     Ok(captured_stdout)
 }
 
-async fn run_apply_devnet_direct(network: &str) -> Result<String> {
-    println!("[deploy] Applying deployment plan to devnet...");
+async fn run_apply_devnet_direct(ui: &DeployUi, network: &str) -> Result<String> {
+    ui.step_ok("Preparing direct devnet broadcast");
     let plan = read_deployment_plan(network).await?;
     let transactions = flatten_contract_publishes(&plan);
     if transactions.is_empty() {
@@ -398,9 +497,11 @@ async fn run_apply_devnet_direct(network: &str) -> Result<String> {
     let script_path = write_devnet_broadcast_script()?;
     let mut captured_stdout = String::new();
 
-    println!("[deploy] Broadcasting transactions to http://localhost:20443");
+    ui.broadcasting_start();
+    let expected = transactions.len().max(1);
+    ui.render_bar(0, expected);
 
-    for tx in transactions {
+    for (i, tx) in transactions.into_iter().enumerate() {
         let contract_name = tx
             .contract_name
             .clone()
@@ -471,18 +572,14 @@ async fn run_apply_devnet_direct(network: &str) -> Result<String> {
                 )
             })?;
 
-        println!(
-            "🟦  Publish {}.{}  Transaction broadcast {}",
-            expected_sender,
-            tx.contract_name.as_deref().unwrap_or(""),
-            txid
-        );
         captured_stdout.push_str(&format!(
             "Broadcasted ContractPublish(StandardPrincipalData({}), ContractName(\"{}\"), \"{}\")\n",
             expected_sender,
             tx.contract_name.as_deref().unwrap_or(""),
             txid,
         ));
+        ui.render_bar(i + 1, expected);
+        ui.contract_broadcast_ok(tx.contract_name.as_deref().unwrap_or(""), txid);
         nonce += 1;
     }
 
@@ -624,14 +721,13 @@ pub async fn resolve_deployment_order(
         let deps = parse_local_deps(&source, &known);
 
         if !deps.is_empty() {
-            println!("[deploy] {name} depends on: {}", deps.join(", "));
+            // Dependency details are intentionally quiet — shown at summary level.
         }
 
         dep_graph.insert(name.clone(), deps);
     }
 
     let order = topological_sort(&dep_graph)?;
-    println!("[deploy] Deployment order: {}", order.join(" → "));
 
     Ok(order)
 }
@@ -653,17 +749,14 @@ fn check_plan_fee(network: &str) -> Result<u64> {
             }
         })
         .sum();
-    if total_micro_stx > 0 {
-        println!(
-            "[deploy] Estimated fee: {:.6} STX",
-            total_micro_stx as f64 / 1_000_000.0
-        );
-    }
 
     Ok(total_micro_stx)
 }
 
-async fn auto_version_conflicting_contracts(network: &str, contract: Option<&str>) -> Result<()> {
+async fn auto_version_conflicting_contracts(
+    network: &str,
+    contract: Option<&str>,
+) -> Result<Vec<(String, String)>> {
     let config = network_config(network)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -674,19 +767,10 @@ async fn auto_version_conflicting_contracts(network: &str, contract: Option<&str
         let _ = fs::remove_file(&plan_path).await;
     }
 
-    let _ = Command::new("clarinet")
-        .args([
-            "deployments",
-            "generate",
-            &format!("--{}", network),
-            "--low-cost",
-        ])
-        .current_dir("contracts")
-        .status()
-        .await;
+    let net_flag = format!("--{network}");
+    run_clarinet_quiet(&["deployments", "generate", &net_flag, "--low-cost"]).await?;
 
     let deployer = get_deployer_from_plan(network).await?;
-    println!("[deploy] Using derived deployer address: {}", deployer);
 
     let base_dir = Path::new("contracts");
     let clarinet_path = base_dir.join("Clarinet.toml");
@@ -696,7 +780,7 @@ async fn auto_version_conflicting_contracts(network: &str, contract: Option<&str
     let clarinet_struct: ClarinetToml = toml::from_str(&clarinet_raw)?;
     let contracts = clarinet_struct.contracts.unwrap_or_default();
 
-    let mut any_changes = false;
+    let mut renames: Vec<(String, String)> = Vec::new();
 
     for (current_name, entry) in &contracts {
         if contract.is_some() && contract != Some(current_name.as_str()) {
@@ -712,18 +796,12 @@ async fn auto_version_conflicting_contracts(network: &str, contract: Option<&str
             continue;
         }
 
-        println!(
-            "[deploy] Conflict detected: '{}' already exists on-chain. Renaming to '{}'",
-            current_name, correct_name
-        );
-
         let old_file_path = base_dir.join(&entry.path);
         let new_rel_path = format!("contracts/{}.clar", correct_name);
         let new_file_path = base_dir.join(&new_rel_path);
 
         if old_file_path.exists() {
             fs::rename(&old_file_path, &new_file_path).await?;
-            println!("[deploy] Renamed file: {} -> {}", entry.path, new_rel_path);
         }
 
         let old_header = format!("[contracts.{}]", current_name);
@@ -751,18 +829,14 @@ async fn auto_version_conflicting_contracts(network: &str, contract: Option<&str
                 if source.contains(&dot_old_name) {
                     let updated_source = source.replace(&dot_old_name, &dot_new_name);
                     fs::write(target_file, updated_source).await?;
-                    println!(
-                        "[deploy] Updated internal reference in {}",
-                        target_file.display()
-                    );
                 }
             }
         }
 
-        any_changes = true;
+        renames.push((current_name.clone(), correct_name));
     }
 
-    if any_changes {
+    if !renames.is_empty() {
         fs::write(&clarinet_path, &clarinet_content).await?;
 
         for plan_name in [
@@ -775,12 +849,11 @@ async fn auto_version_conflicting_contracts(network: &str, contract: Option<&str
             let _ = fs::remove_file(plan_path).await;
         }
 
-        println!("[deploy] Clarinet.toml updated with new versions.");
-        // Regenerate bindings so the frontend/tests use the new names
-        let _ = Command::new("stacksdapp").arg("generate").status().await;
+        // Regenerate bindings so the frontend/tests use the new names (quiet).
+        let _ = run_generate_quiet().await;
     }
 
-    Ok(())
+    Ok(renames)
 }
 
 /// Helper to parse the address Clarinet derived in the plan file
@@ -921,7 +994,6 @@ async fn wait_for_node(url: &str) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()?;
-    println!("[deploy] Waiting for Stacks node at {url}...");
     for attempt in 1..=60 {
         if client
             .get(&format!("{url}/v2/info"))
@@ -930,11 +1002,10 @@ async fn wait_for_node(url: &str) -> Result<()> {
             .map(|r| r.status().is_success())
             .unwrap_or(false)
         {
-            println!("[deploy] ✔ Node is ready");
             return Ok(());
         }
         if attempt % 10 == 0 {
-            println!("[deploy] Still waiting... ({attempt}s)");
+            // Quiet wait — only fail after timeout.
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
@@ -944,7 +1015,23 @@ async fn wait_for_node(url: &str) -> Result<()> {
     ))
 }
 
+fn parse_broadcast_line(line: &str) -> Option<(String, String)> {
+    let cn_marker = "ContractName(\"";
+    let name = {
+        let pos = line.find(cn_marker)?;
+        let rest = &line[pos + cn_marker.len()..];
+        let end = rest.find('"')?;
+        rest[..end].to_string()
+    };
+    let txid = line
+        .split('"')
+        .find(|part| part.len() == 64 && part.chars().all(|c| c.is_ascii_hexdigit()))?
+        .to_string();
+    Some((name, txid))
+}
+
 async fn write_deployments_json_from_output(
+    ui: &DeployUi,
     network: &str,
     output: &str,
     contract: Option<&str>,
@@ -953,7 +1040,6 @@ async fn write_deployments_json_from_output(
     let mut actual_deployer = None;
     for line in output.lines() {
         if line.contains("Broadcasted") {
-            // Extract Deployer Address: Look for StandardPrincipalData(ADDRESS)
             if let Some(start) = line.find("StandardPrincipalData(") {
                 let rest = &line[start + "StandardPrincipalData(".len()..];
                 if let Some(end) = rest.find(')') {
@@ -961,22 +1047,8 @@ async fn write_deployments_json_from_output(
                 }
             }
 
-            // Extract Contract Name: Look for ContractName("NAME")
-            let cn_marker = "ContractName(\"";
-            if let Some(pos) = line.find(cn_marker) {
-                let rest = &line[pos + cn_marker.len()..];
-                if let Some(end) = rest.find('"') {
-                    let contract_name = rest[..end].to_string();
-
-                    // Extract TXID: It's the 64-char hex string inside quotes at the end
-                    // Format: ...), "TXID") Publish ...
-                    let parts: Vec<&str> = line.split('"').collect();
-                    for part in parts {
-                        if part.len() == 64 && part.chars().all(|c| c.is_ascii_hexdigit()) {
-                            txid_map.insert(contract_name.clone(), part.to_string());
-                        }
-                    }
-                }
+            if let Some((contract_name, txid)) = parse_broadcast_line(line) {
+                txid_map.insert(contract_name, txid);
             }
         }
     }
@@ -1000,6 +1072,7 @@ async fn write_deployments_json_from_output(
     }
 
     if network == "devnet" {
+        ui.waiting_confirmation();
         wait_for_devnet_contracts(&deployer_address, &contract_names).await?;
     }
 
@@ -1010,16 +1083,21 @@ async fn write_deployments_json_from_output(
     };
     let timestamp = chrono::Utc::now().to_rfc3339();
 
-    for name in contract_names {
+    let mut success_entries: Vec<(String, String, String)> = Vec::new();
+
+    for name in &contract_names {
         let contract_id = format!("{deployer_address}.{name}");
         let txid = txid_map
-            .get(&name)
-            .map(|t| format!("0x{t}"))
+            .get(name)
+            .map(|t| {
+                if t.starts_with("0x") {
+                    t.clone()
+                } else {
+                    format!("0x{t}")
+                }
+            })
             .unwrap_or_default();
-        println!(
-            "  ✔ {name} | txid {} | address {contract_id}",
-            if txid.is_empty() { "(pending)" } else { &txid }
-        );
+        success_entries.push((name.clone(), contract_id.clone(), txid.clone()));
         contracts_map.insert(
             name.clone(),
             DeploymentInfo {
@@ -1041,7 +1119,11 @@ async fn write_deployments_json_from_output(
         fs::create_dir_all(p).await?;
     }
     fs::write(out_path, &json).await?;
-    println!("\n[deploy] Written to {}", out_path.display());
+
+    // Ensure bindings are fresh after rename (quiet).
+    let _ = run_generate_quiet().await;
+
+    ui.success(&success_entries);
     Ok(())
 }
 
@@ -1165,7 +1247,7 @@ async fn wait_for_devnet_contracts(deployer: &str, contract_names: &[String]) ->
     let node = "http://localhost:20443";
     let initial_info = fetch_local_core_info().await.ok();
 
-    println!("[deploy] Verifying contract publish on local devnet core node...");
+    // Quietly wait for local core to expose published contracts.
     for attempt in 1..=30 {
         let mut pending = Vec::new();
 
@@ -1184,17 +1266,10 @@ async fn wait_for_devnet_contracts(deployer: &str, contract_names: &[String]) ->
         }
 
         if pending.is_empty() {
-            println!("[deploy] ✔ Local devnet core node reports all contracts deployed");
             return Ok(());
         }
 
-        if attempt == 1 || attempt % 5 == 0 {
-            println!(
-                "[deploy] Waiting for devnet core to expose: {}",
-                pending.join(", ")
-            );
-        }
-
+        let _ = attempt;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
@@ -1360,7 +1435,8 @@ fn capitalize(s: &str) -> String {
 }
 
 /// Require opt-in before broadcasting on testnet/mainnet.
-/// `--yes` skips the interactive prompt (for CI / automation).
+/// Prefer [`DeployUi::confirm_continue`] for interactive flow.
+#[allow(dead_code)]
 fn ensure_remote_deploy_consent(
     network: &str,
     deployer: &str,
@@ -1389,6 +1465,7 @@ fn ensure_remote_deploy_consent(
     confirm_remote_deploy(network, deployer, contracts, total_micro_stx)
 }
 
+#[allow(dead_code)]
 fn confirm_remote_deploy(
     network: &str,
     deployer: &str,
