@@ -152,10 +152,7 @@ async fn wait_for_devnet_core_ready() -> Result<()> {
 }
 
 async fn fetch_core_tip_height(client: &reqwest::Client) -> Result<Option<u64>> {
-    let response = client
-        .get("http://localhost:20443/v2/info")
-        .send()
-        .await?;
+    let response = client.get("http://localhost:20443/v2/info").send().await?;
     if !response.status().is_success() {
         return Ok(None);
     }
@@ -1084,9 +1081,8 @@ async fn contract_source_exists(deployer: &str, contract_name: &str) -> Result<b
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()?;
-    let url = format!(
-        "http://localhost:20443/v2/contracts/source/{deployer}/{contract_name}?proof=0"
-    );
+    let url =
+        format!("http://localhost:20443/v2/contracts/source/{deployer}/{contract_name}?proof=0");
     Ok(client
         .get(&url)
         .send()
@@ -2085,9 +2081,15 @@ mod tests {
 
     #[test]
     fn min_burn_height_gates_clarity5_and_epoch_34() {
-        assert_eq!(super::min_burn_height_for_publish(Some("3.4"), Some(5)), 150);
+        assert_eq!(
+            super::min_burn_height_for_publish(Some("3.4"), Some(5)),
+            150
+        );
         assert_eq!(super::min_burn_height_for_publish(None, Some(5)), 150);
-        assert_eq!(super::min_burn_height_for_publish(Some("3.0"), Some(3)), 142);
+        assert_eq!(
+            super::min_burn_height_for_publish(Some("3.0"), Some(3)),
+            142
+        );
         assert_eq!(super::min_burn_height_for_publish(None, Some(2)), 0);
     }
 

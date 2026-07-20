@@ -113,20 +113,14 @@ fn print_ready_panel(network: &str, local_url: &str, tip_height: Option<u64>) {
     }
     println!();
     if network == "devnet" {
-        stacksdapp_shell::kv(
-            "Deploy",
-            "stacksdapp deploy --network devnet",
-        );
+        stacksdapp_shell::kv("Deploy", "stacksdapp deploy --network devnet");
         println!(
             "{}",
             "  Tip must keep advancing before deploy; stalled tips need: stacksdapp clean && stacksdapp dev"
                 .truecolor(156, 163, 175)
         );
     } else {
-        stacksdapp_shell::kv(
-            "Deploy",
-            &format!("stacksdapp deploy --network {network}"),
-        );
+        stacksdapp_shell::kv("Deploy", &format!("stacksdapp deploy --network {network}"));
     }
     println!();
     stacksdapp_shell::rule();
@@ -182,7 +176,11 @@ async fn dev_devnet(auto_deploy: bool, keep_state: bool) -> Result<()> {
 
     let mut clarinet = spawn_clarinet_devnet()?;
     let fatal = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
-    attach_filtered_output(&mut clarinet, OutputStyle::Clarinet, std::sync::Arc::clone(&fatal));
+    attach_filtered_output(
+        &mut clarinet,
+        OutputStyle::Clarinet,
+        std::sync::Arc::clone(&fatal),
+    );
 
     // Clarinet 3.21.x writes pox_5_* keys into Stacks.toml that stacks-core 3.4
     // (Clarinet's default image) rejects, so stacks-node dies instantly. Patch the
@@ -803,17 +801,13 @@ fn attach_filtered_output(
     // Clarinet 3.2+ may prompt: "Do you want to continue? (y/N)" when the default
     // snapshot is incompatible with built-in PoX stacking defaults. Without an answer,
     // Docker never starts and we hang forever waiting for :20443.
-    let stdin = child.stdin.take().map(|s| {
-        std::sync::Arc::new(tokio::sync::Mutex::new(Some(s)))
-    });
+    let stdin = child
+        .stdin
+        .take()
+        .map(|s| std::sync::Arc::new(tokio::sync::Mutex::new(Some(s))));
 
     if let Some(stdout) = child.stdout.take() {
-        spawn_filtered_stream(
-            stdout,
-            style,
-            std::sync::Arc::clone(&fatal),
-            stdin.clone(),
-        );
+        spawn_filtered_stream(stdout, style, std::sync::Arc::clone(&fatal), stdin.clone());
     }
     if let Some(stderr) = child.stderr.take() {
         spawn_filtered_stream(stderr, style, fatal, stdin);
