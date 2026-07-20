@@ -7,40 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Version history is reconstructed from git tags, `cli/Cargo.toml` version bumps, and commit messages.
 
-> **Note:** Only **`v0.1.9`** is git-tagged today. Intermediate versions (`0.1.0`–`0.1.8`) were published to crates.io
+> **Note:** Only **`v0.1.9`** is git-tagged today. Intermediate versions (`0.1.0`–`0.1.8`) were published to crates.io without tags in this repository.
 
 ---
 
-## [0.2.0] — 2026-07-20 [Unreleased]
-
-### Fixed
-- Production audit remediation: deploy dry-run snapshot/restore, fail-closed txid parsing, init/add rollback, quiet/json output in deploy UI and watcher, partial deploy state recovery (devnet + remote Clarinet apply).
-- `defaults.network` validation from `stacksdapp.toml`; invalid values rejected at CLI dispatch.
-- Human error output uses `{e:#}` instead of Debug formatting.
-- `--json` success payloads for `new`, `init`, `add`, `deploy`, `dev`, and `upgrade`.
-- `reorder_clarinet_toml` restores `Clarinet.toml` on deploy pipeline failure.
-- Release scripts (`check-versions.sh`, `pub.sh`) and `LICENSE` tracked in git.
-- Workspace crate versions aligned to `0.2.0`.
+## [0.2.0] - Unreleased
 
 ### Added
 
-- CI: `cargo clippy`, `verify-e2e.sh`, production hardening and frontend build/typecheck jobs.
-- Parser unit tests, scaffold proptest fuzz on name validation, init rollback tests.
-
-## [0.2.0] — 2026-07-14 [Unreleased]
-
-### Added
-
-- Stable CLI exit codes via typed `CliError` (`thiserror`):
-  - `2` project not found / invalid `--root`
-  - `3` prerequisite / `doctor` failure
-  - `4` user aborted (confirmations)
-  - `5` validation (names, args)
-  - `6` type-check failed
-  - `7` tests failed
-  - `8` deploy failed
-  - `10` generate / codegen failed
-- New crate **`stacksdapp-shell`**: shared `-v` / `-q` / `--color` / `--json` output and project-root discovery.
+- Stable CLI exit codes via typed `CliError` (`thiserror`): `2` project not found, `3` prerequisite/doctor, `4` user aborted, `5` validation, `6` type-check, `7` tests, `8` deploy, `10` generate.
+- New crate **`stacksdapp-shell`**: shared `-v` / `-q` / `--color` / `--json` output, project-root discovery, and spinner-safe `println_human_safe`.
 - Global flags: `-v` / `-vv…`, `-q`, `--color auto|always|never`, `--json`, `--root` (`STACKSDAPP_ROOT`).
 - Project root walk-up via `stacksdapp.toml` or `contracts/Clarinet.toml`.
 - `stacksdapp completions <shell>` (alias `com`) for bash, zsh, fish, powershell, elvish.
@@ -48,14 +24,24 @@ Version history is reconstructed from git tags, `cli/Cargo.toml` version bumps, 
 - `clean --force` — skip confirmation prompt.
 - `deploy -y` / `--yes` — non-interactive deploy and Clarinet fee prompts.
 - GitHub Actions **Release** workflow (multi-target binaries + GitHub Release on `v*` tags).
-- `scripts/check-versions.sh`, `CONTRIBUTING.md`, and local verify scripts under `scripts/`.
-- CI Clarinet pin **3.21.1** and real smoke integration job (`scripts/ci-smoke.sh`).
+- CI: Clarinet pin **3.21.1**, `cargo clippy`, `verify-e2e.sh`, audit-fix regression checks, frontend build/typecheck, and smoke integration (`scripts/ci-smoke.sh`).
+- `scripts/check-versions.sh`, `CONTRIBUTING.md`, MIT `LICENSE`, and local verify scripts under `scripts/`.
+- `--json` success payloads for `new`, `init`, `add`, `deploy`, `dev`, and `upgrade`.
+- Parser unit tests, scaffold proptest fuzz on name validation, and init rollback tests.
+- Devnet readiness panel: local URL, tip height, and deploy hint after `stacksdapp dev`.
+- Devnet deploy waits for Clarinet epoch burn height before broadcasting Clarity 5 contracts (epoch 3.4 / burn ≥ 150).
+- Devnet deploy success points to the running local app (`http://localhost:3000` or `:3001`) instead of restarting dev.
 
 ### Changed
 
 - `pub.sh` resolves repo root from script path, publishes `stacksdapp-shell`, requires clean git worktree by default (`--allow-dirty` opt-in).
 - README command table: `init`, `doctor`, `upgrade`, `completions`, global flags, exit codes.
 - JSON error payloads include `code` and `exit_code`; doctor JSON includes `exit_code`.
+- Default scaffold `Devnet.toml`: snapshot-friendly (no PoX stacking orders, explorers off, `bitcoin_controller_block_time = 15_000` for stable Nakamoto block production).
+- `stacksdapp dev` starts Clarinet with `--no-dashboard` and `--from-genesis` to avoid snapshot stalls and Clarinet 3.21 / stacks-core 3.4 config skew.
+- Devnet deploy uses `@stacks/transactions` v7 `broadcastTransaction` against stacks core (`:20443`) instead of removed `broadcastRawTransaction`.
+- Devnet node readiness and deploy confirmation poll stacks core (`:20443`), not stacks-api alone.
+- Workspace crate versions aligned to `0.2.0`.
 
 ### Fixed
 
@@ -64,6 +50,14 @@ Version history is reconstructed from git tags, `cli/Cargo.toml` version bumps, 
 - Devnet Node broadcast no longer passes private keys on argv (stdin payload).
 - False `REDEPLOYMENT REQUIRED` when `deployments.json` is empty or `network=""`.
 - JSON mode avoids double-printing error objects.
+- Production audit remediation: deploy dry-run snapshot/restore, fail-closed txid parsing, init/add rollback, quiet/json output in deploy UI and watcher, partial deploy state recovery (devnet + remote Clarinet apply).
+- Testnet deploy no longer hangs after broadcast — exit Clarinet once all contracts are in the mempool when confirmation is not required.
+- `defaults.network` validation from `stacksdapp.toml`; invalid values rejected at CLI dispatch.
+- Human error output uses `{e:#}` instead of Debug formatting.
+- `reorder_clarinet_toml` restores `Clarinet.toml` on deploy pipeline failure.
+- **Devnet boot:** auto-answer Clarinet snapshot “continue? (y/N)” prompt; strip incompatible `pox_5_*` keys from generated `Stacks.toml`; fail fast when stacks-node container exits; stop stale Clarinet Docker on `dev` and `clean`.
+- **Devnet UX:** spinner no longer corrupted by Clarinet/codegen logs (`STACKSDAPP_QUIET`, stdout lock); wait for sustained tip advancement before “ready”.
+- **Devnet deploy:** epoch-gated publishes no longer accepted to mempool then left unmined; skip re-broadcast when contract already on core; reject broadcast API error responses; omit misleading Hiro explorer link on devnet success.
 
 ---
 

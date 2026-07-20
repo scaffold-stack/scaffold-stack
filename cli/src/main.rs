@@ -633,6 +633,8 @@ async fn run_clean(force: bool) -> Result<()> {
     }
 
     if targets.is_empty() {
+        // Still stop leftover containers — common when only Docker state remains.
+        stacksdapp_process_supervisor::stop_stale_devnet_docker();
         status("[clean] Nothing to remove.".green().to_string());
         if shell::is_json() {
             shell::emit_json(&json!({
@@ -672,6 +674,9 @@ async fn run_clean(force: bool) -> Result<()> {
             .cyan()
             .to_string(),
     );
+
+    // Free Clarinet Docker ports (5432/20445/…) — file cleanup alone is not enough.
+    stacksdapp_process_supervisor::stop_stale_devnet_docker();
 
     let mut removed = Vec::new();
     for (path, kind) in &targets {

@@ -62,6 +62,10 @@ struct DeploymentPlan {
 #[derive(Debug, Deserialize, Serialize)]
 struct DeploymentBatch {
     transactions: Vec<DeploymentTransaction>,
+    /// Clarinet epoch gate for this batch (e.g. "3.4"). Publishes before this
+    /// burn height are accepted to mempool then never mined.
+    #[serde(default)]
+    epoch: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -76,6 +80,12 @@ struct DeploymentTransaction {
     path: Option<String>,
     #[serde(rename = "clarity-version")]
     clarity_version: Option<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedPublish {
+    tx: DeploymentTransaction,
+    epoch: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,7 +122,42 @@ struct PlannedRename {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub async fn wait_for_devnet_node() -> Result<()> {
-    wait_for_node("http://localhost:3999").await
+    // Prefer stacks core (:20443). The indexer API (:3999) can look healthy while
+    // core is still booting or stalled — which breaks broadcast/deploy.
+    wait_for_devnet_core_ready().await
+}
+
+async fn wait_for_devnet_core_ready() -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
+    let mut first_tip: Option<u64> = None;
+    for attempt in 1..=90 {
+        if let Ok(Some(height)) = fetch_core_tip_height(&client).await {
+            match first_tip {
+                None => first_tip = Some(height),
+                Some(first) if height > first => return Ok(()),
+                // Tip already advanced before we started watching — core is live.
+                Some(_) if attempt >= 3 => return Ok(()),
+                _ => {}
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    Err(anyhow!(
+        "Local Stacks core at http://localhost:20443 did not become ready after 180s.\n\
+         Make sure `stacksdapp dev` is running, Docker is started, and the tip is advancing.\n\
+         If ports conflict or the tip stalls: stacksdapp clean --force && stacksdapp dev"
+    ))
+}
+
+async fn fetch_core_tip_height(client: &reqwest::Client) -> Result<Option<u64>> {
+    let response = client.get("http://localhost:20443/v2/info").send().await?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    let json: serde_json::Value = response.json().await?;
+    Ok(json.get("stacks_tip_height").and_then(|v| v.as_u64()))
 }
 
 pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool, yes: bool) -> Result<()> {
@@ -130,7 +175,7 @@ pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool, yes: b
     let ui = DeployUi::start(network, &config.stacks_node);
 
     if network == "devnet" {
-        wait_for_node(&config.stacks_node).await?;
+        wait_for_devnet_node().await?;
     }
 
     deploy_via_clarinet(&ui, network, contract, dry_run, yes).await
@@ -776,27 +821,55 @@ async fn run_apply_devnet_direct(ui: &DeployUi, network: &str) -> Result<String>
 
     let expected_sender = transactions
         .first()
-        .and_then(|tx| tx.expected_sender.clone())
+        .and_then(|item| item.tx.expected_sender.clone())
         .ok_or_else(|| anyhow!("No expected sender found in the devnet deployment plan."))?;
-    let mut nonce = fetch_local_core_nonce(&expected_sender).await?;
     let script_path = write_devnet_broadcast_script()?;
     let mut captured_stdout = String::new();
+
+    // Clarity 5 / epoch 3.4 publishes must wait until burn height unlocks that epoch.
+    // Broadcasting earlier returns a txid, then the tx sits unmined forever (nonce stays put).
+    let required_burn = transactions
+        .iter()
+        .map(|item| min_burn_height_for_publish(item.epoch.as_deref(), item.tx.clarity_version))
+        .max()
+        .unwrap_or(0);
+    if required_burn > 0 {
+        wait_for_burn_height(required_burn).await?;
+    }
 
     ui.broadcasting_start();
     let expected = transactions.len().max(1);
     ui.render_bar(0, expected);
 
-    for (i, tx) in transactions.into_iter().enumerate() {
+    let mut broadcast_count = 0usize;
+    for item in transactions.into_iter() {
+        let tx = item.tx;
         let contract_name = tx
             .contract_name
             .clone()
             .ok_or_else(|| anyhow!("Missing contract name in deployment plan."))?;
+
+        if contract_source_exists(&expected_sender, &contract_name).await? {
+            stacksdapp_shell::println_human_safe(format!(
+                "[deploy] {contract_name} already on core — skipping broadcast."
+            ));
+            // Still record a synthetic success marker so deployments.json is written.
+            captured_stdout.push_str(&format!(
+                "Broadcasted ContractPublish(StandardPrincipalData({}), ContractName(\"{contract_name}\"), \"already-deployed\")\n",
+                expected_sender,
+            ));
+            broadcast_count += 1;
+            ui.render_bar(broadcast_count, expected);
+            ui.contract_broadcast_ok(&contract_name, "already-deployed");
+            continue;
+        }
+
         let contract_path = tx.path.clone().ok_or_else(|| {
             anyhow!("Missing contract path for {contract_name} in deployment plan.")
         })?;
-        let fee = tx.cost.unwrap_or(0);
-        // Non-secret metadata only on the wire via stdin
-        // (visible in `ps`). The Node bridge reads one JSON object from stdin.
+        let fee = tx.cost.unwrap_or(10_000).max(1);
+        // Always read nonce from core so skips / prior confirms stay consistent.
+        let nonce = fetch_local_core_nonce(&expected_sender).await?;
         let args = serde_json::json!({
             "contractName": contract_name,
             "codePath": contract_path,
@@ -821,7 +894,6 @@ async fn run_apply_devnet_direct(ui: &DeployUi, network: &str) -> Result<String>
                 .take()
                 .ok_or_else(|| anyhow!("Failed to open node stdin for devnet broadcast"))?;
             stdin.write_all(args.to_string().as_bytes()).await?;
-            // Closing stdin signals EOF so the Node script can finish reading.
         }
 
         let output = child
@@ -832,12 +904,11 @@ async fn run_apply_devnet_direct(ui: &DeployUi, network: &str) -> Result<String>
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            if i > 0 {
+            if broadcast_count > 0 {
                 write_partial_deployments_from_output(ui, network, &captured_stdout, None).await?;
                 return Err(anyhow!(
-                    "Partial devnet deployment: {}/{expected} contracts broadcast and recorded in deployments.json.\n\
+                    "Partial devnet deployment: {broadcast_count}/{expected} contracts broadcast and recorded in deployments.json.\n\
                      Failed on {contract_name}.\nstdout:\n{}\nstderr:\n{}",
-                    i,
                     stdout.trim(),
                     stderr.trim()
                 ));
@@ -853,7 +924,7 @@ async fn run_apply_devnet_direct(ui: &DeployUi, network: &str) -> Result<String>
         let result: serde_json::Value = match serde_json::from_str(stdout.trim()) {
             Ok(value) => value,
             Err(e) => {
-                if i > 0 {
+                if broadcast_count > 0 {
                     write_partial_deployments_from_output(ui, network, &captured_stdout, None)
                         .await?;
                 }
@@ -863,10 +934,19 @@ async fn run_apply_devnet_direct(ui: &DeployUi, network: &str) -> Result<String>
                 ));
             }
         };
+        if result.get("error").is_some() || result.get("reason").is_some() {
+            if broadcast_count > 0 {
+                write_partial_deployments_from_output(ui, network, &captured_stdout, None).await?;
+            }
+            return Err(anyhow!(
+                "Devnet broadcast rejected for {contract_name}: {}",
+                stdout.trim()
+            ));
+        }
         let txid = match result.get("txid").and_then(|value| value.as_str()) {
             Some(txid) => txid,
             None => {
-                if i > 0 {
+                if broadcast_count > 0 {
                     write_partial_deployments_from_output(ui, network, &captured_stdout, None)
                         .await?;
                 }
@@ -883,9 +963,9 @@ async fn run_apply_devnet_direct(ui: &DeployUi, network: &str) -> Result<String>
             tx.contract_name.as_deref().unwrap_or(""),
             txid,
         ));
-        ui.render_bar(i + 1, expected);
+        broadcast_count += 1;
+        ui.render_bar(broadcast_count, expected);
         ui.contract_broadcast_ok(tx.contract_name.as_deref().unwrap_or(""), txid);
-        nonce += 1;
     }
 
     Ok(captured_stdout)
@@ -909,14 +989,106 @@ async fn read_deployment_plan(network: &str) -> Result<DeploymentPlanFile> {
         .map_err(|e| anyhow!("Failed to parse deployment plan at {plan_path}: {e}"))
 }
 
-fn flatten_contract_publishes(plan: &DeploymentPlanFile) -> Vec<DeploymentTransaction> {
+fn flatten_contract_publishes(plan: &DeploymentPlanFile) -> Vec<PlannedPublish> {
     plan.plan
         .batches
         .iter()
-        .flat_map(|batch| batch.transactions.iter())
-        .filter(|tx| tx.transaction_type == "contract-publish")
-        .cloned()
+        .flat_map(|batch| {
+            batch
+                .transactions
+                .iter()
+                .filter(|tx| tx.transaction_type == "contract-publish")
+                .map(|tx| PlannedPublish {
+                    tx: tx.clone(),
+                    epoch: batch.epoch.clone(),
+                })
+        })
         .collect()
+}
+
+/// Clarinet's default Devnet epoch activation burn heights (Stacks.toml).
+fn clarinet_default_epoch_start(epoch: &str) -> Option<u64> {
+    match epoch.trim() {
+        "2.0" | "2.05" => Some(100),
+        "2.1" => Some(101),
+        "2.2" => Some(102),
+        "2.3" => Some(103),
+        "2.4" => Some(104),
+        "2.5" => Some(108),
+        "3.0" => Some(142),
+        "3.1" => Some(144),
+        "3.2" => Some(146),
+        "3.3" => Some(148),
+        "3.4" => Some(150),
+        "4.0" => Some(152),
+        _ => None,
+    }
+}
+
+fn min_burn_height_for_publish(epoch: Option<&str>, clarity_version: Option<u8>) -> u64 {
+    if let Some(epoch) = epoch {
+        if let Some(height) = clarinet_default_epoch_start(epoch) {
+            return height;
+        }
+    }
+    match clarity_version {
+        // Clarity 5 activates with epoch 3.4 on Clarinet's default Devnet schedule.
+        Some(v) if v >= 5 => 150,
+        Some(v) if v >= 4 => 142,
+        _ => 0,
+    }
+}
+
+async fn wait_for_burn_height(min_burn: u64) -> Result<()> {
+    let mut last_log = std::time::Instant::now() - std::time::Duration::from_secs(30);
+    for _ in 0..120 {
+        match fetch_local_core_info().await {
+            Ok(info) if info.burn_block_height >= min_burn => {
+                stacksdapp_shell::println_human_safe(format!(
+                    "[deploy] Burn height {} reached (needed ≥ {min_burn} for plan epoch) — broadcasting.",
+                    info.burn_block_height
+                ));
+                return Ok(());
+            }
+            Ok(info) => {
+                if last_log.elapsed() >= std::time::Duration::from_secs(8) {
+                    stacksdapp_shell::println_human_safe(format!(
+                        "[deploy] Waiting for epoch burn height {min_burn} (currently {})...",
+                        info.burn_block_height
+                    ));
+                    last_log = std::time::Instant::now();
+                }
+            }
+            Err(_) => {
+                if last_log.elapsed() >= std::time::Duration::from_secs(8) {
+                    stacksdapp_shell::println_human_safe(
+                        "[deploy] Waiting for local stacks-node before epoch check...",
+                    );
+                    last_log = std::time::Instant::now();
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    Err(anyhow!(
+        "Timed out waiting for burn height ≥ {min_burn}.\n\
+         Clarity 5 / epoch 3.4 contracts cannot mine before that height on Clarinet Devnet.\n\
+         Keep `stacksdapp dev` running and retry deploy once burn height catches up."
+    ))
+}
+
+async fn contract_source_exists(deployer: &str, contract_name: &str) -> Result<bool> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
+    let url =
+        format!("http://localhost:20443/v2/contracts/source/{deployer}/{contract_name}?proof=0");
+    Ok(client
+        .get(&url)
+        .send()
+        .await
+        .map(|response| response.status().is_success())
+        .unwrap_or(false))
 }
 
 fn write_devnet_broadcast_script() -> Result<std::path::PathBuf> {
@@ -929,17 +1101,36 @@ fn write_devnet_broadcast_script() -> Result<std::path::PathBuf> {
 
 /// Node bridge for direct devnet publishes. Payload (including senderKey) is read
 /// from stdin — never from argv — so keys do not appear in `ps`.
+///
+/// Uses `broadcastTransaction` (@stacks/transactions v6+/v7) — `broadcastRawTransaction`
+/// was removed and must not be used. Testnet/mainnet still go through Clarinet apply.
 const DEVNET_BROADCAST_SCRIPT: &str = r#"
 import fs from 'fs';
+import path from 'path';
 import { createRequire } from 'module';
 
-const require = createRequire(`${process.cwd()}/package.json`);
+function loadStacksTransactions() {
+  const roots = [process.cwd(), path.join(process.cwd(), '..', 'frontend')];
+  const errors = [];
+  for (const root of roots) {
+    try {
+      const require = createRequire(path.join(root, 'package.json'));
+      return require('@stacks/transactions');
+    } catch (err) {
+      errors.push(`${root}: ${err?.message || err}`);
+    }
+  }
+  throw new Error(
+    `Unable to load @stacks/transactions. Tried contracts/ and frontend/. ${errors.join(' | ')}`
+  );
+}
+
 const {
   makeContractDeploy,
   AnchorMode,
   PostConditionMode,
-  broadcastRawTransaction,
-} = require('@stacks/transactions');
+  broadcastTransaction,
+} = loadStacksTransactions();
 
 // Read deploy payload from stdin so the private key never appears in process argv.
 const chunks = [];
@@ -955,21 +1146,24 @@ const transaction = await makeContractDeploy({
   senderKey: input.senderKey,
   fee: BigInt(input.fee),
   nonce: BigInt(input.nonce),
-  network: 'testnet',
+  network: 'devnet',
   anchorMode: AnchorMode.OnChainOnly,
   postConditionMode: PostConditionMode.Deny,
   ...(typeof input.clarityVersion === 'number' ? { clarityVersion: input.clarityVersion } : {}),
 });
 
-const response = await broadcastRawTransaction(
-  transaction.serialize(),
-  'http://localhost:20443/v2/transactions',
-);
+// Prefer core RPC (:20443) so deploy works even if stacks-api is lagging on new_block.
+const response = await broadcastTransaction({
+  transaction,
+  client: { baseUrl: 'http://localhost:20443' },
+});
 
-console.log(JSON.stringify(response));
-if (!response?.txid) {
+// @stacks/transactions returns error JSON (no throw) on non-2xx — treat as failure.
+if (response?.error || response?.reason || !response?.txid) {
+  console.log(JSON.stringify(response));
   process.exit(1);
 }
+console.log(JSON.stringify(response));
 "#;
 
 async fn fetch_local_core_nonce(address: &str) -> Result<u64> {
@@ -1361,31 +1555,6 @@ fn replace_contract_reference(source: &str, old_name: &str, new_name: &str) -> S
     out
 }
 
-async fn wait_for_node(url: &str) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()?;
-    for attempt in 1..=60 {
-        if client
-            .get(format!("{url}/v2/info"))
-            .send()
-            .await
-            .map(|r| r.status().is_success())
-            .unwrap_or(false)
-        {
-            return Ok(());
-        }
-        if attempt % 10 == 0 {
-            // Quiet wait — only fail after timeout.
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
-    Err(anyhow!(
-        "Stacks node at {url} did not become ready after 60s.\n\
-         Make sure `stacksdapp dev` is running and Docker is started."
-    ))
-}
-
 fn parse_broadcast_line(line: &str) -> Option<(String, String)> {
     let cn_marker = "ContractName(\"";
     let name = {
@@ -1394,11 +1563,17 @@ fn parse_broadcast_line(line: &str) -> Option<(String, String)> {
         let end = rest.find('"')?;
         rest[..end].to_string()
     };
-    let txid = line
+    if let Some(txid) = line
         .split('"')
-        .find(|part| part.len() == 64 && part.chars().all(|c| c.is_ascii_hexdigit()))?
-        .to_string();
-    Some((name, txid))
+        .find(|part| part.len() == 64 && part.chars().all(|c| c.is_ascii_hexdigit()))
+    {
+        return Some((name, txid.to_string()));
+    }
+    // Direct-deploy skip when the contract is already live on local core.
+    if line.contains("\"already-deployed\"") {
+        return Some((name, "already-deployed".to_string()));
+    }
+    None
 }
 
 async fn write_deployments_json_from_output(
@@ -1463,6 +1638,7 @@ async fn write_deployments_json_from_output(
             .lines()
             .any(|line| line.contains("Broadcasted") && line.contains(&broadcast_marker));
         let txid = match txid_map.get(name) {
+            Some(t) if t == "already-deployed" => String::new(),
             Some(t) => {
                 if t.starts_with("0x") {
                     t.clone()
@@ -1606,7 +1782,7 @@ async fn deployment_contract_names_from_plan(network: &str) -> Result<Vec<String
     let plan = read_deployment_plan(network).await?;
     let names = flatten_contract_publishes(&plan)
         .into_iter()
-        .filter_map(|tx| tx.contract_name)
+        .filter_map(|item| item.tx.contract_name)
         .collect::<Vec<_>>();
     if names.is_empty() {
         return Err(anyhow!(
@@ -1628,7 +1804,8 @@ async fn wait_for_devnet_contracts(deployer: &str, contract_names: &[String]) ->
     let initial_info = fetch_local_core_info().await.ok();
 
     // Quietly wait for local core to expose published contracts.
-    for attempt in 1..=30 {
+    // 15s block times need more than 30s; epoch-gated publishes may confirm a bit later.
+    for attempt in 1..=90 {
         let mut pending = Vec::new();
 
         for contract_name in contract_names {
@@ -1666,7 +1843,9 @@ async fn wait_for_devnet_contracts(deployer: &str, contract_names: &[String]) ->
                 end.burn_block_height, end.stacks_tip_height
             )
         }
-        _ => "Local devnet tip did move during the wait, so the publish appears to be stuck independently of tip progression.".to_string(),
+        _ => "Local devnet tip did move during the wait, so the publish appears to be stuck independently of tip progression.\n\
+              Common cause: Clarity 5 contracts were broadcast before burn height 150 (epoch 3.4) — they sit unmined. Re-run deploy after the latest stacksdapp fix (it waits for that epoch)."
+            .to_string(),
     };
 
     Err(anyhow!(
@@ -1890,6 +2069,51 @@ mod tests {
             super::DEVNET_BROADCAST_SCRIPT.contains("process.stdin"),
             "deploy payload must be read from stdin"
         );
+        assert!(
+            super::DEVNET_BROADCAST_SCRIPT.contains("broadcastTransaction"),
+            "must use @stacks/transactions broadcastTransaction (v7+)"
+        );
+        assert!(
+            !super::DEVNET_BROADCAST_SCRIPT.contains("broadcastRawTransaction"),
+            "broadcastRawTransaction was removed from @stacks/transactions v7"
+        );
+    }
+
+    #[test]
+    fn min_burn_height_gates_clarity5_and_epoch_34() {
+        assert_eq!(
+            super::min_burn_height_for_publish(Some("3.4"), Some(5)),
+            150
+        );
+        assert_eq!(super::min_burn_height_for_publish(None, Some(5)), 150);
+        assert_eq!(
+            super::min_burn_height_for_publish(Some("3.0"), Some(3)),
+            142
+        );
+        assert_eq!(super::min_burn_height_for_publish(None, Some(2)), 0);
+    }
+
+    #[test]
+    fn flatten_publishes_keeps_batch_epoch() {
+        let plan = super::DeploymentPlanFile {
+            plan: super::DeploymentPlan {
+                batches: vec![super::DeploymentBatch {
+                    epoch: Some("3.4".into()),
+                    transactions: vec![super::DeploymentTransaction {
+                        transaction_type: "contract-publish".into(),
+                        contract_name: Some("counter".into()),
+                        expected_sender: Some("ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM".into()),
+                        cost: Some(4850),
+                        path: Some("contracts/counter.clar".into()),
+                        clarity_version: Some(5),
+                    }],
+                }],
+            },
+        };
+        let pubs = super::flatten_contract_publishes(&plan);
+        assert_eq!(pubs.len(), 1);
+        assert_eq!(pubs[0].epoch.as_deref(), Some("3.4"));
+        assert_eq!(pubs[0].tx.contract_name.as_deref(), Some("counter"));
     }
 
     #[test]

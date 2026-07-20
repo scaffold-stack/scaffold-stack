@@ -2,6 +2,7 @@
 
 use colored::Colorize;
 use std::io::{self, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -346,43 +347,59 @@ impl DeployUi {
 
         println!("{}", "Next".bold().white());
         println!();
-        println!(
-            "{}",
-            format!("stacksdapp dev --network {}", self.network)
-                .truecolor(52, 211, 153)
-                .bold()
-        );
-        println!();
-
-        let chain = match self.network.as_str() {
-            "mainnet" => "mainnet",
-            "devnet" => "devnet",
-            _ => "testnet",
-        };
-        let explorer_urls: Vec<String> = entries
-            .iter()
-            .filter(|(_, _, txid)| !txid.is_empty())
-            .map(|(_, _, txid)| {
-                format!(
-                    "https://explorer.hiro.so/txid/{}?chain={chain}",
-                    txid.trim_start_matches("0x")
-                )
-            })
-            .collect();
-
-        if !explorer_urls.is_empty() {
-            println!("{}", "Explorer".bold().white());
-            println!();
-            for url in explorer_urls {
-                println!("{}", url.truecolor(167, 139, 250));
-            }
-            println!();
+        if self.network == "devnet" {
+            let local_url = detect_local_frontend_url();
             println!(
                 "{}",
-                "Note: the explorer link may take 10–15 seconds to show the transaction while it indexes."
+                format!("Open {local_url} in your browser")
+                    .truecolor(52, 211, 153)
+                    .bold()
+            );
+            println!(
+                "{}",
+                "(Devnet is already running from `stacksdapp dev` — use the Debug Contracts panel to interact.)"
                     .truecolor(156, 163, 175)
             );
-            println!();
+        } else {
+            println!(
+                "{}",
+                format!("stacksdapp dev --network {}", self.network)
+                    .truecolor(52, 211, 153)
+                    .bold()
+            );
+        }
+        println!();
+
+        if self.network != "devnet" {
+            let chain = match self.network.as_str() {
+                "mainnet" => "mainnet",
+                _ => "testnet",
+            };
+            let explorer_urls: Vec<String> = entries
+                .iter()
+                .filter(|(_, _, txid)| !txid.is_empty() && *txid != "already-deployed")
+                .map(|(_, _, txid)| {
+                    format!(
+                        "https://explorer.hiro.so/txid/{}?chain={chain}",
+                        txid.trim_start_matches("0x")
+                    )
+                })
+                .collect();
+
+            if !explorer_urls.is_empty() {
+                println!("{}", "Explorer".bold().white());
+                println!();
+                for url in explorer_urls {
+                    println!("{}", url.truecolor(167, 139, 250));
+                }
+                println!();
+                println!(
+                    "{}",
+                    "Note: the explorer link may take 10–15 seconds to show the transaction while it indexes."
+                        .truecolor(156, 163, 175)
+                );
+                println!();
+            }
         }
 
         let secs = self.start.elapsed().as_secs_f64();
@@ -433,6 +450,19 @@ pub fn short_txid(txid: &str) -> String {
         return txid.to_string();
     }
     format!("{}...{}", &t[..8], &t[t.len().saturating_sub(7)..])
+}
+
+/// Best-effort detect where `stacksdapp dev` is serving the Next.js app.
+fn detect_local_frontend_url() -> String {
+    for port in [3000u16, 3001] {
+        let Ok(addr) = format!("127.0.0.1:{port}").parse::<SocketAddr>() else {
+            continue;
+        };
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+            return format!("http://localhost:{port}");
+        }
+    }
+    "http://localhost:3000".to_string()
 }
 
 #[cfg(test)]
