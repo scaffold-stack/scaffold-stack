@@ -9,7 +9,9 @@ pub use project::{
     default_config_toml, enter_scaffold_root, find_init_root, find_scaffold_root, load_config,
     project_root, resolve_scaffold_root, validate_network, StacksdappConfig, CONFIG_FILE,
 };
-pub use steps::{begin_step, grey, kv, lavender, mint, print_banner, rule, step_ok, LiveStep};
+pub use steps::{
+    begin_step, grey, kv, lavender, mint, print_banner, println_human_safe, rule, step_ok, LiveStep,
+};
 
 use colored::control;
 use serde::Serialize;
