@@ -46,7 +46,7 @@ try {
     nonce: BigInt(nonce),
     network: getNetwork(network),
     anchorMode: AnchorMode.Any,
-    postConditionMode: PostConditionMode.Allow,
+    postConditionMode: PostConditionMode.Deny,
     fee: BigInt(10_000), // 0.01 STX — sensible default; node will reject if too low
   });
 
