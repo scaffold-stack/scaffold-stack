@@ -143,7 +143,7 @@ pub fn print_next_steps(name: &str) {
         return;
     }
 
-    println!("{} {}", "💡", lavender("RECOMMENDED NEXT STEPS").bold());
+    println!("💡 {}", lavender("RECOMMENDED NEXT STEPS").bold());
     println!();
 
     let left_h = "Option 1: Deploy to Testnet (Recommended)";
@@ -153,8 +153,7 @@ pub fn print_next_steps(name: &str) {
     print!("{}", spaces(COL_LEFT.saturating_sub(left_h.len())));
     print!(" {} ", soft_grey("│"));
     println!(
-        "{} {}",
-        "💻",
+        "💻 {}",
         soft_blue("Option 2: Local Devnet (Alternative)").bold()
     );
     println!();
