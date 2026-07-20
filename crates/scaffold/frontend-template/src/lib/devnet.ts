@@ -154,7 +154,7 @@ export async function callDevnetContract({
     functionName,
     functionArgs,
     postConditions,
-    postConditionMode: PostConditionMode.Allow,
+    postConditionMode: PostConditionMode.Deny,
     senderKey: burner.privateKey,
     network: 'devnet',
     validateWithAbi: true,

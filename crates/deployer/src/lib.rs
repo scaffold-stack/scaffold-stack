@@ -3,6 +3,7 @@ use bip39::Mnemonic;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::Network as BitcoinNetwork;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -102,6 +103,12 @@ struct DeploymentFile {
     contracts: HashMap<String, DeploymentInfo>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedRename {
+    from: String,
+    to: String,
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub async fn wait_for_devnet_node() -> Result<()> {
@@ -131,6 +138,69 @@ pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool, yes: b
 
 // ── Core deploy ───────────────────────────────────────────────────────────────
 
+struct DeployWriteSnapshot {
+    clarinet_toml: Option<Vec<u8>>,
+    deployment_files: HashMap<std::path::PathBuf, Vec<u8>>,
+}
+
+async fn snapshot_deploy_writes(contracts_dir: &Path) -> Result<DeployWriteSnapshot> {
+    let clarinet_path = contracts_dir.join("Clarinet.toml");
+    let clarinet_toml = if clarinet_path.is_file() {
+        Some(fs::read(&clarinet_path).await?)
+    } else {
+        None
+    };
+
+    let mut deployment_files = HashMap::new();
+    let deployments_dir = contracts_dir.join("deployments");
+    if deployments_dir.is_dir() {
+        let mut entries = fs::read_dir(&deployments_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_type().await?.is_file() {
+                let path = entry.path();
+                deployment_files.insert(path.clone(), fs::read(&path).await?);
+            }
+        }
+    }
+
+    Ok(DeployWriteSnapshot {
+        clarinet_toml,
+        deployment_files,
+    })
+}
+
+async fn restore_deploy_writes(contracts_dir: &Path, snapshot: &DeployWriteSnapshot) -> Result<()> {
+    let clarinet_path = contracts_dir.join("Clarinet.toml");
+    match &snapshot.clarinet_toml {
+        Some(bytes) => fs::write(&clarinet_path, bytes).await?,
+        None if clarinet_path.is_file() => {
+            fs::remove_file(&clarinet_path).await?;
+        }
+        _ => {}
+    }
+
+    let deployments_dir = contracts_dir.join("deployments");
+    if deployments_dir.is_dir() {
+        let mut entries = fs::read_dir(&deployments_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_type().await?.is_file()
+                && !snapshot.deployment_files.contains_key(&entry.path())
+            {
+                fs::remove_file(entry.path()).await?;
+            }
+        }
+    }
+
+    for (path, bytes) in &snapshot.deployment_files {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(path, bytes).await?;
+    }
+
+    Ok(())
+}
+
 async fn deploy_via_clarinet(
     ui: &DeployUi,
     network: &str,
@@ -138,7 +208,6 @@ async fn deploy_via_clarinet(
     dry_run: bool,
     yes: bool,
 ) -> Result<()> {
-    let fee_flag = "--low-cost";
     let contracts_dir = std::path::Path::new("contracts");
 
     let step = ui.begin_step("Analyzing project");
@@ -157,16 +226,68 @@ async fn deploy_via_clarinet(
     }
     step.finish();
 
+    if dry_run {
+        let snapshot = snapshot_deploy_writes(contracts_dir).await?;
+        let result =
+            run_deploy_pipeline(ui, network, contract, dry_run, yes, contracts_dir, &ordered).await;
+        restore_deploy_writes(contracts_dir, &snapshot).await?;
+        return result;
+    }
+
+    run_deploy_pipeline(ui, network, contract, dry_run, yes, contracts_dir, &ordered).await
+}
+
+async fn run_deploy_pipeline(
+    ui: &DeployUi,
+    network: &str,
+    contract: Option<&str>,
+    dry_run: bool,
+    yes: bool,
+    contracts_dir: &Path,
+    ordered: &[String],
+) -> Result<()> {
+    let clarinet_path = contracts_dir.join("Clarinet.toml");
+    let clarinet_backup = if !dry_run {
+        Some(fs::read(&clarinet_path).await?)
+    } else {
+        None
+    };
+
+    let result =
+        run_deploy_pipeline_inner(ui, network, contract, dry_run, yes, contracts_dir, ordered)
+            .await;
+
+    if result.is_err() {
+        if let Some(bytes) = clarinet_backup {
+            let _ = fs::write(&clarinet_path, bytes).await;
+        }
+    }
+    result
+}
+
+async fn run_deploy_pipeline_inner(
+    ui: &DeployUi,
+    network: &str,
+    contract: Option<&str>,
+    dry_run: bool,
+    yes: bool,
+    contracts_dir: &Path,
+    ordered: &[String],
+) -> Result<()> {
+    let fee_flag = "--low-cost";
+
     let step = ui.begin_step("Resolving contract dependencies");
-    if let Err(e) = reorder_clarinet_toml(contracts_dir, &ordered).await {
+    if let Err(e) = reorder_clarinet_toml(contracts_dir, ordered).await {
         step.fail();
         return Err(e);
     }
     step.finish();
 
+    let mut effective_contract = contract.map(str::to_string);
+
     if network == "testnet" || network == "mainnet" {
         let step = ui.begin_step("Checking existing contracts...");
-        let renames = match auto_version_conflicting_contracts(network, contract).await {
+        let renames = match plan_conflicting_contract_renames(network, contract).await {
             Ok(r) => r,
             Err(e) => {
                 step.fail();
@@ -174,27 +295,102 @@ async fn deploy_via_clarinet(
             }
         };
         step.finish();
-        for (old, new) in &renames {
-            ui.step_detail(&format!("{old} already exists"));
-            ui.step_detail(&format!("renamed → {new}"));
+        for rename in &renames {
+            ui.step_detail(&format!("{} already exists", rename.from));
+            ui.step_detail(&format!("renamed → {}", rename.to));
         }
         if renames.is_empty() {
             ui.step_detail("no conflicts");
         }
+
+        let (total_micro_stx, contracts) =
+            build_deployment_preview(network, fee_flag, contract).await?;
+
+        if dry_run {
+            ui.dry_run_done(&contracts, total_micro_stx);
+            if !renames.is_empty() {
+                ui.step_detail(
+                    "dry run note: conflicting contract names would be versioned on apply",
+                );
+            }
+            return Ok(());
+        }
+
+        let deployer = get_deployer_from_plan(network).await?;
+        ui.print_summary(&deployer, &contracts, total_micro_stx);
+        if !ui.confirm_continue(yes)? {
+            return Err(anyhow!(
+                "{} deployment aborted by user.",
+                capitalize(network)
+            ));
+        }
+
+        if !renames.is_empty() {
+            let step = ui.begin_step("Applying versioned contract names");
+            if let Err(e) = apply_contract_renames(&renames).await {
+                step.fail();
+                return Err(e);
+            }
+            step.finish();
+            effective_contract = effective_contract
+                .as_deref()
+                .map(|name| map_contract_name_after_renames(name, &renames));
+        }
+
+        let clarinet_output = run_generate_and_apply(
+            ui,
+            network,
+            fee_flag,
+            effective_contract.as_deref(),
+            false,
+            true,
+            true,
+        )
+        .await?;
+
+        if clarinet_output.contains("ContractAlreadyExists") {
+            ui.step_detail("Conflict after versioning — retrying...");
+            let retry_renames =
+                plan_conflicting_contract_renames(network, effective_contract.as_deref()).await?;
+            if !retry_renames.is_empty() {
+                apply_contract_renames(&retry_renames).await?;
+                effective_contract = effective_contract
+                    .as_deref()
+                    .map(|name| map_contract_name_after_renames(name, &retry_renames));
+            }
+            let clarinet_output2 = run_generate_and_apply(
+                ui,
+                network,
+                fee_flag,
+                effective_contract.as_deref(),
+                false,
+                true,
+                true,
+            )
+            .await?;
+            return write_deployments_json_from_output(
+                ui,
+                network,
+                &clarinet_output2,
+                effective_contract.as_deref(),
+            )
+            .await;
+        }
+
+        return write_deployments_json_from_output(
+            ui,
+            network,
+            &clarinet_output,
+            effective_contract.as_deref(),
+        )
+        .await;
     }
 
     let clarinet_output =
-        run_generate_and_apply(ui, network, fee_flag, contract, dry_run, yes).await?;
+        run_generate_and_apply(ui, network, fee_flag, contract, dry_run, yes, false).await?;
 
     if dry_run {
         return Ok(());
-    }
-    if clarinet_output.contains("ContractAlreadyExists") {
-        ui.step_detail("Conflict after versioning — retrying...");
-        let _ = auto_version_conflicting_contracts(network, contract).await?;
-        let clarinet_output2 =
-            run_generate_and_apply(ui, network, fee_flag, contract, dry_run, yes).await?;
-        return write_deployments_json_from_output(ui, network, &clarinet_output2, contract).await;
     }
 
     write_deployments_json_from_output(ui, network, &clarinet_output, contract).await
@@ -207,42 +403,89 @@ async fn reorder_clarinet_toml(
     let path = contracts_dir.join("Clarinet.toml");
     let raw = fs::read_to_string(&path).await?;
 
-    let first_contract = raw.find("\n[contracts.").unwrap_or(raw.len());
-    let header = raw[..first_contract].to_string();
-
-    // Extract each [contracts.<name>] block as a string
+    let mut header = String::new();
     let mut blocks: HashMap<String, String> = HashMap::new();
+    let mut suffix = String::new();
     let mut current_name: Option<String> = None;
     let mut current_block = String::new();
+    let mut seen_contracts = false;
+    let mut in_suffix = false;
 
-    for line in raw[first_contract..].lines() {
-        if let Some(name) = line
-            .trim()
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        let next_contract = trimmed
             .strip_prefix("[contracts.")
-            .and_then(|s| s.strip_suffix(']'))
-        {
+            .and_then(|s| s.strip_suffix(']'));
+
+        if let Some(name) = next_contract {
+            seen_contracts = true;
+            in_suffix = false;
             if let Some(prev) = current_name.take() {
                 blocks.insert(prev, current_block.trim().to_string());
             }
             current_name = Some(name.to_string());
             current_block = format!("{line}\n");
-        } else if current_name.is_some() {
+            continue;
+        }
+
+        if current_name.is_some() && trimmed.starts_with('[') && !trimmed.starts_with("[contracts.")
+        {
+            if let Some(prev) = current_name.take() {
+                blocks.insert(prev, current_block.trim().to_string());
+            }
+            in_suffix = true;
+        }
+
+        if current_name.is_some() {
             current_block.push_str(line);
             current_block.push('\n');
+        } else if in_suffix {
+            suffix.push_str(line);
+            suffix.push('\n');
+        } else {
+            header.push_str(line);
+            header.push('\n');
         }
     }
     if let Some(prev) = current_name {
         blocks.insert(prev, current_block.trim().to_string());
     }
+    if !seen_contracts {
+        return Ok(());
+    }
 
-    // Reassemble in dependency order
-    let mut output = header;
+    let mut output = header.trim_end_matches('\n').to_string();
+    let mut emitted: HashSet<&str> = HashSet::new();
     for name in order {
         if let Some(block) = blocks.get(name) {
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            output.push('\n');
+            output.push_str(block);
+            output.push('\n');
+            emitted.insert(name.as_str());
+        }
+    }
+    let mut remaining: Vec<&String> = blocks
+        .keys()
+        .filter(|name| !emitted.contains(name.as_str()))
+        .collect();
+    remaining.sort();
+    for name in remaining {
+        if let Some(block) = blocks.get(name) {
+            if !output.is_empty() {
+                output.push('\n');
+            }
             output.push('\n');
             output.push_str(block);
             output.push('\n');
         }
+    }
+    if !suffix.trim().is_empty() {
+        output.push('\n');
+        output.push_str(suffix.trim_end_matches('\n'));
+        output.push('\n');
     }
 
     fs::write(&path, output).await?;
@@ -291,17 +534,46 @@ async fn run_generate_quiet() -> Result<()> {
         .await;
     match status {
         Ok(s) if s.success() => Ok(()),
-        _ => {
-            // Fallback: PATH stacksdapp
-            let _ = Command::new("stacksdapp")
+        Ok(s) => {
+            let fallback = Command::new("stacksdapp")
                 .args(["-q", "generate"])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
                 .await;
-            Ok(())
+            match fallback {
+                Ok(fallback_status) if fallback_status.success() => Ok(()),
+                Ok(fallback_status) => Err(anyhow!(
+                    "Failed to regenerate TypeScript bindings: in-tree binary exited with {s}, PATH fallback exited with {fallback_status}."
+                )),
+                Err(err) => Err(anyhow!(
+                    "Failed to regenerate TypeScript bindings: in-tree binary exited with {s}, PATH fallback could not start: {err}"
+                )),
+            }
         }
+        Err(err) => Err(anyhow!("Failed to run stacksdapp generate: {err}")),
     }
+}
+
+async fn build_deployment_preview(
+    network: &str,
+    fee_flag: &str,
+    contract: Option<&str>,
+) -> Result<(u64, Vec<String>)> {
+    let plan_path = format!("contracts/deployments/default.{network}-plan.yaml");
+    if Path::new(&plan_path).exists() {
+        fs::remove_file(&plan_path).await?;
+    }
+
+    let net_flag = format!("--{network}");
+    run_clarinet_quiet(&["deployments", "generate", &net_flag, fee_flag]).await?;
+    if let Some(contract_name) = contract {
+        filter_plan_to_contract(network, contract_name).await?;
+    }
+
+    let total_micro_stx = check_plan_fee(network)?;
+    let contracts = deployment_contract_names_from_plan(network).await?;
+    Ok((total_micro_stx, contracts))
 }
 
 /// Run `clarinet deployments generate` then `apply`, returning stdout.
@@ -312,16 +584,10 @@ async fn run_generate_and_apply(
     contract: Option<&str>,
     dry_run: bool,
     yes: bool,
+    skip_remote_confirmation: bool,
 ) -> Result<String> {
-    // Delete stale plan so clarinet never prompts "Overwrite? [Y/n]"
-    let plan_path = format!("contracts/deployments/default.{network}-plan.yaml");
-    if Path::new(&plan_path).exists() {
-        fs::remove_file(&plan_path).await?;
-    }
-
     let step = ui.begin_step("Generating deployment artifacts");
-    let net_flag = format!("--{network}");
-    if let Err(e) = run_clarinet_quiet(&["deployments", "generate", &net_flag, fee_flag]).await {
+    if let Err(e) = build_deployment_preview(network, fee_flag, contract).await {
         step.fail();
         return Err(anyhow!(
             "Failed to generate deployment plan.\n\
@@ -330,17 +596,16 @@ async fn run_generate_and_apply(
             capitalize(network)
         ));
     }
-    if let Some(contract_name) = contract {
-        if let Err(e) = filter_plan_to_contract(network, contract_name).await {
+    step.finish();
+
+    if !dry_run {
+        let step = ui.begin_step("Exporting TypeScript bindings");
+        if let Err(e) = run_generate_quiet().await {
             step.fail();
             return Err(e);
         }
+        step.finish();
     }
-    step.finish();
-
-    let step = ui.begin_step("Exporting TypeScript bindings");
-    let _ = run_generate_quiet().await;
-    step.finish();
 
     let step = ui.begin_step("Building deployment plan");
     let total_micro_stx = match check_plan_fee(network) {
@@ -369,13 +634,15 @@ async fn run_generate_and_apply(
     }
 
     let deployer = get_deployer_from_plan(network).await?;
-    ui.print_summary(&deployer, &contracts, total_micro_stx);
+    if !skip_remote_confirmation {
+        ui.print_summary(&deployer, &contracts, total_micro_stx);
 
-    if !ui.confirm_continue(yes)? {
-        return Err(anyhow!(
-            "{} deployment aborted by user.",
-            capitalize(network)
-        ));
+        if !ui.confirm_continue(yes)? {
+            return Err(anyhow!(
+                "{} deployment aborted by user.",
+                capitalize(network)
+            ));
+        }
     }
 
     ui.broadcasting_start();
@@ -447,10 +714,28 @@ async fn run_generate_and_apply(
             confirmed_count += 1;
         }
 
+        // Clarinet keeps polling Hiro for on-chain confirmation after broadcast; do not
+        // wait for that — finalize as soon as all txs are in the mempool (or confirmed).
         if confirmed_count >= expected_count || broadcast_count >= expected_count {
             let _ = child.kill().await;
             break;
         }
+    }
+
+    let status = child.wait().await?;
+    if !status.success() && broadcast_count == 0 {
+        return Err(anyhow!(
+            "clarinet deployments apply failed with status {status}.\nOutput:\n{}",
+            captured_stdout.trim()
+        ));
+    }
+    if !status.success() && broadcast_count > 0 && broadcast_count < expected_count {
+        write_partial_deployments_from_output(ui, network, &captured_stdout, contract).await?;
+        return Err(anyhow!(
+            "Partial {network} deployment: {broadcast_count}/{expected_count} contracts broadcast and recorded in deployments.json.\n\
+             clarinet deployments apply failed with status {status}.\nOutput:\n{}",
+            captured_stdout.trim()
+        ));
     }
 
     // Finalize bar once if we somehow exited without hitting 100%.
@@ -547,30 +832,50 @@ async fn run_apply_devnet_direct(ui: &DeployUi, network: &str) -> Result<String>
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
+            if i > 0 {
+                write_partial_deployments_from_output(ui, network, &captured_stdout, None).await?;
+                return Err(anyhow!(
+                    "Partial devnet deployment: {}/{expected} contracts broadcast and recorded in deployments.json.\n\
+                     Failed on {contract_name}.\nstdout:\n{}\nstderr:\n{}",
+                    i,
+                    stdout.trim(),
+                    stderr.trim()
+                ));
+            }
             return Err(anyhow!(
-                "Direct devnet deployment failed for {}.\nstdout:\n{}\nstderr:\n{}",
-                tx.contract_name.as_deref().unwrap_or("unknown contract"),
+                "Direct devnet deployment failed for {contract_name}.\nstdout:\n{}\nstderr:\n{}",
                 stdout.trim(),
                 stderr.trim(),
             ));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let result: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|e| {
-            anyhow!(
-                "Failed to parse devnet broadcast response: {e}\nRaw output: {}",
-                stdout.trim()
-            )
-        })?;
-        let txid = result
-            .get("txid")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| {
-                anyhow!(
+        let result: serde_json::Value = match serde_json::from_str(stdout.trim()) {
+            Ok(value) => value,
+            Err(e) => {
+                if i > 0 {
+                    write_partial_deployments_from_output(ui, network, &captured_stdout, None)
+                        .await?;
+                }
+                return Err(anyhow!(
+                    "Failed to parse devnet broadcast response: {e}\nRaw output: {}",
+                    stdout.trim()
+                ));
+            }
+        };
+        let txid = match result.get("txid").and_then(|value| value.as_str()) {
+            Some(txid) => txid,
+            None => {
+                if i > 0 {
+                    write_partial_deployments_from_output(ui, network, &captured_stdout, None)
+                        .await?;
+                }
+                return Err(anyhow!(
                     "Devnet broadcast response did not include a txid: {}",
                     stdout.trim()
-                )
-            })?;
+                ));
+            }
+        };
 
         captured_stdout.push_str(&format!(
             "Broadcasted ContractPublish(StandardPrincipalData({}), ContractName(\"{}\"), \"{}\")\n",
@@ -584,6 +889,15 @@ async fn run_apply_devnet_direct(ui: &DeployUi, network: &str) -> Result<String>
     }
 
     Ok(captured_stdout)
+}
+
+async fn write_partial_deployments_from_output(
+    ui: &DeployUi,
+    network: &str,
+    captured_stdout: &str,
+    contract: Option<&str>,
+) -> Result<()> {
+    write_deployments_json_from_output(ui, network, captured_stdout, contract).await
 }
 
 async fn read_deployment_plan(network: &str) -> Result<DeploymentPlanFile> {
@@ -643,7 +957,7 @@ const transaction = await makeContractDeploy({
   nonce: BigInt(input.nonce),
   network: 'testnet',
   anchorMode: AnchorMode.OnChainOnly,
-  postConditionMode: PostConditionMode.Allow,
+  postConditionMode: PostConditionMode.Deny,
   ...(typeof input.clarityVersion === 'number' ? { clarityVersion: input.clarityVersion } : {}),
 });
 
@@ -717,7 +1031,12 @@ pub async fn resolve_deployment_order(
 
     for (name, entry) in &contract_map {
         let clar_path = contracts_dir.join(&entry.path);
-        let source = fs::read_to_string(&clar_path).await.unwrap_or_default();
+        let source = fs::read_to_string(&clar_path).await.map_err(|e| {
+            anyhow!(
+                "Contract source for '{name}' not found at {}: {e}",
+                clar_path.display()
+            )
+        })?;
         let deps = parse_local_deps(&source, &known);
 
         if !deps.is_empty() {
@@ -735,7 +1054,11 @@ pub async fn resolve_deployment_order(
 // ── Auto-versioning ───────────────────────────────────────────────────────────
 fn check_plan_fee(network: &str) -> Result<u64> {
     let plan_path = format!("contracts/deployments/default.{network}-plan.yaml");
-    let plan_raw = std::fs::read_to_string(&plan_path).unwrap_or_default();
+    let plan_raw = std::fs::read_to_string(&plan_path).map_err(|e| {
+        anyhow!(
+            "Deployment plan not found at {plan_path}: {e}. Run clarinet deployments generate first."
+        )
+    })?;
 
     // Parse total cost from the YAML — look for "cost: <number>" lines and sum them
     let total_micro_stx: u64 = plan_raw
@@ -753,36 +1076,26 @@ fn check_plan_fee(network: &str) -> Result<u64> {
     Ok(total_micro_stx)
 }
 
-async fn auto_version_conflicting_contracts(
+async fn plan_conflicting_contract_renames(
     network: &str,
     contract: Option<&str>,
-) -> Result<Vec<(String, String)>> {
+) -> Result<Vec<PlannedRename>> {
     let config = network_config(network)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
-
-    let plan_path = format!("contracts/deployments/default.{network}-plan.yaml");
-    if Path::new(&plan_path).exists() {
-        let _ = fs::remove_file(&plan_path).await;
-    }
-
-    let net_flag = format!("--{network}");
-    run_clarinet_quiet(&["deployments", "generate", &net_flag, "--low-cost"]).await?;
-
+    let _ = build_deployment_preview(network, "--low-cost", contract).await?;
     let deployer = get_deployer_from_plan(network).await?;
 
     let base_dir = Path::new("contracts");
     let clarinet_path = base_dir.join("Clarinet.toml");
     let clarinet_raw = fs::read_to_string(&clarinet_path).await?;
-    let mut clarinet_content = clarinet_raw.clone();
-
     let clarinet_struct: ClarinetToml = toml::from_str(&clarinet_raw)?;
     let contracts = clarinet_struct.contracts.unwrap_or_default();
 
-    let mut renames: Vec<(String, String)> = Vec::new();
+    let mut renames: Vec<PlannedRename> = Vec::new();
 
-    for (current_name, entry) in &contracts {
+    for current_name in contracts.keys() {
         if contract.is_some() && contract != Some(current_name.as_str()) {
             continue;
         }
@@ -795,65 +1108,80 @@ async fn auto_version_conflicting_contracts(
         if current_name == &correct_name {
             continue;
         }
+        renames.push(PlannedRename {
+            from: current_name.clone(),
+            to: correct_name,
+        });
+    }
 
+    Ok(renames)
+}
+
+async fn apply_contract_renames(renames: &[PlannedRename]) -> Result<()> {
+    if renames.is_empty() {
+        return Ok(());
+    }
+
+    let base_dir = Path::new("contracts");
+    let clarinet_path = base_dir.join("Clarinet.toml");
+    let clarinet_raw = fs::read_to_string(&clarinet_path).await?;
+    let clarinet_struct: ClarinetToml = toml::from_str(&clarinet_raw)?;
+    let mut contracts = clarinet_struct.contracts.unwrap_or_default();
+    let mut clarinet_content = clarinet_raw;
+
+    for rename in renames {
+        let entry = contracts.remove(&rename.from).ok_or_else(|| {
+            anyhow!(
+                "Contract '{}' disappeared before rename could be applied.",
+                rename.from
+            )
+        })?;
         let old_file_path = base_dir.join(&entry.path);
-        let new_rel_path = format!("contracts/{}.clar", correct_name);
+        let new_rel_path = format!("contracts/{}.clar", rename.to);
         let new_file_path = base_dir.join(&new_rel_path);
 
         if old_file_path.exists() {
             fs::rename(&old_file_path, &new_file_path).await?;
         }
 
-        let old_header = format!("[contracts.{}]", current_name);
-        let new_header = format!("[contracts.{}]", correct_name);
+        let old_header = format!("[contracts.{}]", rename.from);
+        let new_header = format!("[contracts.{}]", rename.to);
         clarinet_content = clarinet_content.replace(&old_header, &new_header);
 
         let old_path_line = format!("path = \"{}\"", entry.path);
         let new_path_line = format!("path = \"{}\"", new_rel_path);
         clarinet_content = clarinet_content.replace(&old_path_line, &new_path_line);
 
-        let dot_old_name = format!(".{}", current_name);
-        let dot_new_name = format!(".{}", correct_name);
-
-        for (_, other_entry) in &contracts {
-            let p = base_dir.join(&other_entry.path);
-
-            let target_file = if p == old_file_path {
-                &new_file_path
-            } else {
-                &p
-            };
-
-            if target_file.exists() {
-                let source = fs::read_to_string(target_file).await?;
-                if source.contains(&dot_old_name) {
-                    let updated_source = source.replace(&dot_old_name, &dot_new_name);
-                    fs::write(target_file, updated_source).await?;
-                }
-            }
-        }
-
-        renames.push((current_name.clone(), correct_name));
+        contracts.insert(rename.to.clone(), ContractEntry { path: new_rel_path });
     }
 
-    if !renames.is_empty() {
-        fs::write(&clarinet_path, &clarinet_content).await?;
-
-        for plan_name in [
-            "default.devnet-plan.yaml",
-            "default.simnet-plan.yaml",
-            "default.testnet-plan.yaml",
-            "default.mainnet-plan.yaml",
-        ] {
-            let plan_path = base_dir.join("deployments").join(plan_name);
-            let _ = fs::remove_file(plan_path).await;
+    for entry in contracts.values() {
+        let path = base_dir.join(&entry.path);
+        if !path.exists() {
+            continue;
         }
-
-        // Regenerate bindings so the frontend/tests use the new names (quiet).
-        let _ = run_generate_quiet().await;
+        let original = fs::read_to_string(&path).await?;
+        let updated = renames.iter().fold(original.clone(), |acc, rename| {
+            replace_contract_reference(&acc, &rename.from, &rename.to)
+        });
+        if updated != original {
+            fs::write(&path, updated).await?;
+        }
     }
 
-    Ok(renames)
+    fs::write(&clarinet_path, &clarinet_content).await?;
+
+    for plan_name in [
+        "default.devnet-plan.yaml",
+        "default.simnet-plan.yaml",
+        "default.testnet-plan.yaml",
+        "default.mainnet-plan.yaml",
+    ] {
+        let plan_path = base_dir.join("deployments").join(plan_name);
+        let _ = fs::remove_file(plan_path).await;
+    }
+
+    Ok(())
 }
 
 /// Helper to parse the address Clarinet derived in the plan file
@@ -885,14 +1213,9 @@ async fn find_next_free_name(
 ) -> Result<String> {
     // Check unversioned first (e.g. "counter")
     let url = format!("{node}/v2/contracts/source/{deployer}/{base_name}");
-    let base_free = !client
-        .get(&url)
-        .send()
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false);
+    let base_taken = contract_exists(client, &url).await?;
 
-    if base_free {
+    if !base_taken {
         return Ok(base_name.to_string());
     }
 
@@ -900,13 +1223,8 @@ async fn find_next_free_name(
     let mut version = 2u32;
     loop {
         let candidate = format!("{base_name}-v{version}");
-        let url = format!("{node}/v2/contracts/interface/{deployer}/{candidate}");
-        let taken = client
-            .get(&url)
-            .send()
-            .await
-            .map(|r| r.status().is_success())
-            .unwrap_or(false);
+        let url = format!("{node}/v2/contracts/source/{deployer}/{candidate}");
+        let taken = contract_exists(client, &url).await?;
         if !taken {
             return Ok(candidate);
         }
@@ -916,6 +1234,25 @@ async fn find_next_free_name(
                 "Could not find a free version for '{base_name}' (tried up to v99).                  Consider using a fresh deployer address."
             ));
         }
+    }
+}
+
+async fn contract_exists(client: &reqwest::Client, url: &str) -> Result<bool> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Failed to query remote contract state at {url}: {e}"))?;
+    interpret_contract_lookup(response.status(), url)
+}
+
+fn interpret_contract_lookup(status: StatusCode, url: &str) -> Result<bool> {
+    match status {
+        StatusCode::OK => Ok(true),
+        StatusCode::NOT_FOUND => Ok(false),
+        other => Err(anyhow!(
+            "Remote contract lookup at {url} returned unexpected status {other}. Refusing to guess whether the name is free."
+        )),
     }
 }
 
@@ -962,7 +1299,7 @@ fn parse_mnemonic(toml_raw: &str) -> Option<String> {
             in_deployer = false;
         }
         if in_deployer && trimmed.starts_with("mnemonic") {
-            if let Some(val) = trimmed.splitn(2, '=').nth(1) {
+            if let Some((_, val)) = trimmed.split_once('=') {
                 return Some(val.trim().trim_matches('"').to_string());
             }
         }
@@ -982,12 +1319,46 @@ fn parse_deployer_derivation(toml_raw: &str) -> Option<String> {
             in_deployer = false;
         }
         if in_deployer && trimmed.starts_with("derivation") {
-            if let Some(val) = trimmed.splitn(2, '=').nth(1) {
+            if let Some((_, val)) = trimmed.split_once('=') {
                 return Some(val.trim().trim_matches('"').to_string());
             }
         }
     }
     None
+}
+
+fn map_contract_name_after_renames(name: &str, renames: &[PlannedRename]) -> String {
+    renames
+        .iter()
+        .find(|rename| rename.from == name)
+        .map(|rename| rename.to.clone())
+        .unwrap_or_else(|| name.to_string())
+}
+
+fn replace_contract_reference(source: &str, old_name: &str, new_name: &str) -> String {
+    let needle = format!(".{old_name}");
+    let mut out = String::with_capacity(source.len());
+    let mut idx = 0usize;
+
+    while let Some(rel) = source[idx..].find(&needle) {
+        let start = idx + rel;
+        let after = start + needle.len();
+        let next = source[after..].chars().next();
+        let is_boundary =
+            next.is_none_or(|ch| !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'));
+        if is_boundary {
+            out.push_str(&source[idx..start]);
+            out.push('.');
+            out.push_str(new_name);
+            idx = after;
+        } else {
+            out.push_str(&source[idx..after]);
+            idx = after;
+        }
+    }
+
+    out.push_str(&source[idx..]);
+    out
 }
 
 async fn wait_for_node(url: &str) -> Result<()> {
@@ -996,7 +1367,7 @@ async fn wait_for_node(url: &str) -> Result<()> {
         .build()?;
     for attempt in 1..=60 {
         if client
-            .get(&format!("{url}/v2/info"))
+            .get(format!("{url}/v2/info"))
             .send()
             .await
             .map(|r| r.status().is_success())
@@ -1087,16 +1458,25 @@ async fn write_deployments_json_from_output(
 
     for name in &contract_names {
         let contract_id = format!("{deployer_address}.{name}");
-        let txid = txid_map
-            .get(name)
-            .map(|t| {
+        let broadcast_marker = format!("ContractName(\"{name}\")");
+        let was_broadcast = output
+            .lines()
+            .any(|line| line.contains("Broadcasted") && line.contains(&broadcast_marker));
+        let txid = match txid_map.get(name) {
+            Some(t) => {
                 if t.starts_with("0x") {
                     t.clone()
                 } else {
                     format!("0x{t}")
                 }
-            })
-            .unwrap_or_default();
+            }
+            None if was_broadcast => {
+                return Err(anyhow!(
+                    "Deployment broadcast for '{name}' succeeded but txid could not be parsed from clarinet output."
+                ));
+            }
+            None => String::new(),
+        };
         success_entries.push((name.clone(), contract_id.clone(), txid.clone()));
         contracts_map.insert(
             name.clone(),
@@ -1121,7 +1501,7 @@ async fn write_deployments_json_from_output(
     fs::write(out_path, &json).await?;
 
     // Ensure bindings are fresh after rename (quiet).
-    let _ = run_generate_quiet().await;
+    run_generate_quiet().await?;
 
     ui.success(&success_entries);
     Ok(())
@@ -1340,23 +1720,38 @@ fn parse_local_deps(source: &str, known_contracts: &HashSet<String>) -> Vec<Stri
     let mut deps = Vec::new();
 
     for line in source.lines() {
-        let trimmed = line.trim();
+        let without_comments = line.split(";;").next().unwrap_or("").trim();
+        if without_comments.is_empty() {
+            continue;
+        }
 
-        // Match: (contract-call? .token-name fn-name ...)
-        //        (use-trait trait-name .token-name.trait-name)
-        for pattern in &["contract-call? .", "use-trait "] {
-            if let Some(pos) = trimmed.find(pattern) {
-                let after = &trimmed[pos + pattern.len()..];
-                // Extract the identifier up to the next whitespace or dot
-                let name: String = after
+        let mut call_scan = without_comments;
+        while let Some(pos) = call_scan.find("contract-call? .") {
+            let after = &call_scan[pos + "contract-call? .".len()..];
+            let name: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if !name.is_empty() && known_contracts.contains(&name) {
+                deps.push(name);
+            }
+            call_scan = after;
+        }
+
+        let mut trait_scan = without_comments;
+        while let Some(pos) = trait_scan.find("use-trait ") {
+            let after = &trait_scan[pos + "use-trait ".len()..];
+            if let Some(dot_pos) = after.find('.') {
+                let contract_ref = &after[dot_pos + 1..];
+                let name: String = contract_ref
                     .chars()
-                    .take_while(|c| !c.is_whitespace() && *c != '.')
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
                     .collect();
-
                 if !name.is_empty() && known_contracts.contains(&name) {
                     deps.push(name);
                 }
             }
+            trait_scan = after;
         }
     }
 
@@ -1434,86 +1829,16 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-/// Require opt-in before broadcasting on testnet/mainnet.
-/// Prefer [`DeployUi::confirm_continue`] for interactive flow.
-#[allow(dead_code)]
-fn ensure_remote_deploy_consent(
-    network: &str,
-    deployer: &str,
-    contracts: &[String],
-    total_micro_stx: u64,
-    yes: bool,
-) -> Result<()> {
-    use std::io::IsTerminal;
-
-    if yes {
-        if network == "mainnet" {
-            eprintln!(
-                "[deploy] WARNING: --yes skips mainnet confirmation. Broadcasting with real funds."
-            );
-        }
-        return Ok(());
-    }
-
-    if !std::io::stdin().is_terminal() {
-        return Err(anyhow!(
-            "Refusing to deploy to {network} without confirmation in a non-interactive terminal.\n\
-             Re-run with: stacksdapp deploy --network {network} --yes"
-        ));
-    }
-
-    confirm_remote_deploy(network, deployer, contracts, total_micro_stx)
-}
-
-#[allow(dead_code)]
-fn confirm_remote_deploy(
-    network: &str,
-    deployer: &str,
-    contracts: &[String],
-    total_micro_stx: u64,
-) -> Result<()> {
-    use std::io::{self, Write};
-
-    let is_mainnet = network == "mainnet";
-    if is_mainnet {
-        println!("\n⚠️  Mainnet deployment confirmation required");
-    } else {
-        println!("\n⚠️  {network} deployment confirmation required");
-    }
-    println!("  Network: {network}");
-    println!("  Deployer: {deployer}");
-    println!(
-        "  Estimated fee: {:.6} STX",
-        total_micro_stx as f64 / 1_000_000.0
-    );
-    println!(
-        "  Contracts ({}): {}",
-        contracts.len(),
-        contracts.join(", ")
-    );
-    if is_mainnet {
-        print!("\nType 'y' to continue with MAINNET broadcast: ");
-    } else {
-        print!("\nType 'y' to continue with {network} broadcast (or pass --yes to skip): ");
-    }
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    if input.trim() != "y" {
-        return Err(anyhow!(
-            "{} deployment aborted by user.",
-            capitalize(network)
-        ));
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{strip_version_suffix, topological_sort};
-    use std::collections::HashMap;
+    use super::{
+        interpret_contract_lookup, map_contract_name_after_renames, parse_broadcast_line,
+        parse_local_deps, reorder_clarinet_toml, replace_contract_reference, restore_deploy_writes,
+        snapshot_deploy_writes, strip_version_suffix, topological_sort, PlannedRename,
+    };
+    use reqwest::StatusCode;
+    use std::collections::{HashMap, HashSet};
+    use std::fs;
 
     #[test]
     fn test_strip_version_suffix() {
@@ -1565,5 +1890,182 @@ mod tests {
             super::DEVNET_BROADCAST_SCRIPT.contains("process.stdin"),
             "deploy payload must be read from stdin"
         );
+    }
+
+    #[test]
+    fn test_parse_local_deps_detects_contract_calls_and_traits() {
+        let known = HashSet::from([
+            "token".to_string(),
+            "trait-source".to_string(),
+            "counter".to_string(),
+        ]);
+        let deps = parse_local_deps(
+            r#"
+            (contract-call? .token transfer u1 tx-sender tx-sender none)
+            (use-trait ft-trait .trait-source.sip-010-trait)
+            ;; (contract-call? .ignored nope)
+            (begin (contract-call? .counter get-count))
+            "#,
+            &known,
+        );
+        assert_eq!(
+            deps,
+            vec![
+                "counter".to_string(),
+                "token".to_string(),
+                "trait-source".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_replace_contract_reference_preserves_prefixes() {
+        let source = "(contract-call? .counter-helper ping)\n(contract-call? .counter get)\n(use-trait ft .counter.sip)";
+        let updated = replace_contract_reference(source, "counter", "counter-v2");
+        assert!(updated.contains(".counter-helper"));
+        assert!(updated.contains(".counter-v2 get"));
+        assert!(updated.contains(".counter-v2.sip"));
+    }
+
+    #[test]
+    fn test_map_contract_name_after_renames() {
+        let renames = vec![PlannedRename {
+            from: "counter".into(),
+            to: "counter-v2".into(),
+        }];
+        assert_eq!(
+            map_contract_name_after_renames("counter", &renames),
+            "counter-v2"
+        );
+        assert_eq!(map_contract_name_after_renames("other", &renames), "other");
+    }
+
+    #[tokio::test]
+    async fn test_reorder_clarinet_toml_preserves_suffix_sections() {
+        let tmp = tempfile::tempdir().unwrap();
+        let contracts_dir = tmp.path().join("contracts");
+        fs::create_dir_all(&contracts_dir).unwrap();
+        fs::write(
+            contracts_dir.join("Clarinet.toml"),
+            r#"[project]
+name = "demo"
+
+[contracts.b]
+path = "contracts/b.clar"
+
+[contracts.a]
+path = "contracts/a.clar"
+
+[repl.analysis]
+passes = ["check_checker"]
+"#,
+        )
+        .unwrap();
+
+        reorder_clarinet_toml(&contracts_dir, &["a".into(), "b".into()])
+            .await
+            .unwrap();
+
+        let updated = fs::read_to_string(contracts_dir.join("Clarinet.toml")).unwrap();
+        let idx_a = updated.find("[contracts.a]").unwrap();
+        let idx_b = updated.find("[contracts.b]").unwrap();
+        let idx_suffix = updated.find("[repl.analysis]").unwrap();
+        assert!(idx_a < idx_b);
+        assert!(idx_b < idx_suffix);
+        assert!(updated.contains("passes = [\"check_checker\"]"));
+    }
+
+    #[test]
+    fn test_interpret_contract_lookup_fails_closed() {
+        assert!(interpret_contract_lookup(StatusCode::OK, "http://example").unwrap());
+        assert!(!interpret_contract_lookup(StatusCode::NOT_FOUND, "http://example").unwrap());
+        assert!(
+            interpret_contract_lookup(StatusCode::INTERNAL_SERVER_ERROR, "http://example").is_err()
+        );
+    }
+
+    #[test]
+    fn test_parse_broadcast_line_extracts_txid() {
+        let txid = "abc123def4567890abc123def4567890abc123def4567890abc123def4567890";
+        let line = format!(
+            r#"Broadcasted ContractPublish(StandardPrincipalData(ST1PQ), ContractName("counter"), "{txid}")"#
+        );
+        let (name, parsed_txid) = parse_broadcast_line(&line).expect("should parse");
+        assert_eq!(name, "counter");
+        assert_eq!(parsed_txid, txid);
+    }
+
+    #[test]
+    fn test_parse_broadcast_line_rejects_missing_txid() {
+        assert!(parse_broadcast_line(r#"Broadcasted ContractName("counter")"#).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_reorder_clarinet_toml_keeps_contracts_missing_from_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let contracts_dir = tmp.path().join("contracts");
+        fs::create_dir_all(&contracts_dir).unwrap();
+        fs::write(
+            contracts_dir.join("Clarinet.toml"),
+            r#"[project]
+name = "demo"
+
+[contracts.a]
+path = "contracts/a.clar"
+
+[contracts.b]
+path = "contracts/b.clar"
+
+[contracts.c]
+path = "contracts/c.clar"
+"#,
+        )
+        .unwrap();
+
+        reorder_clarinet_toml(&contracts_dir, &["a".into()])
+            .await
+            .unwrap();
+
+        let updated = fs::read_to_string(contracts_dir.join("Clarinet.toml")).unwrap();
+        assert!(updated.contains("[contracts.a]"));
+        assert!(updated.contains("[contracts.b]"));
+        assert!(updated.contains("[contracts.c]"));
+    }
+
+    #[tokio::test]
+    async fn deploy_write_snapshot_roundtrip_restores_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let contracts_dir = tmp.path().join("contracts");
+        let deployments_dir = contracts_dir.join("deployments");
+        fs::create_dir_all(&deployments_dir).unwrap();
+        fs::write(contracts_dir.join("Clarinet.toml"), "original = true\n").unwrap();
+        fs::write(
+            deployments_dir.join("default.devnet-plan.yaml"),
+            "cost: 100\n",
+        )
+        .unwrap();
+
+        let snapshot = snapshot_deploy_writes(&contracts_dir).await.unwrap();
+        fs::write(contracts_dir.join("Clarinet.toml"), "mutated = true\n").unwrap();
+        fs::write(deployments_dir.join("new-plan.yaml"), "cost: 1\n").unwrap();
+
+        restore_deploy_writes(&contracts_dir, &snapshot)
+            .await
+            .unwrap();
+
+        let clarinet = fs::read_to_string(contracts_dir.join("Clarinet.toml")).unwrap();
+        assert!(clarinet.contains("original = true"));
+        assert!(!deployments_dir.join("new-plan.yaml").exists());
+        let plan = fs::read_to_string(deployments_dir.join("default.devnet-plan.yaml")).unwrap();
+        assert!(plan.contains("cost: 100"));
+    }
+
+    #[test]
+    fn partial_devnet_error_message_documents_recorded_state() {
+        let err = format!(
+            "Partial devnet deployment: {}/{} contracts broadcast and recorded in deployments.json.",
+            1, 2
+        );
+        assert!(err.contains("recorded in deployments.json"));
     }
 }

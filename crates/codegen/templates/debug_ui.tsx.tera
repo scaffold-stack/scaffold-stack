@@ -306,7 +306,7 @@ export default function DebugContracts() {
   const [activeTab, setActiveTab] = useState<'write' | 'read'>('write');
   const [hoveredTab, setHoveredTab] = useState<'write' | 'read' | null>(null);
   // Initialize with the first contract name to drop it down on load
-  const [openContract, setOpenContract] = useState<string | null>("{{ contracts[0].contract_name }}");
+  const [openContract, setOpenContract] = useState<string | null>({% if contracts | length > 0 %}"{{ contracts[0].contract_name }}"{% else %}null{% endif %});
   const [openFunction, setOpenFunction] = useState<string | null>(null);
 
   return (

@@ -40,9 +40,15 @@ pub async fn watch_contracts(contracts_dir: &Path) -> Result<()> {
                 }
 
                 if let Err(e) = stacksdapp_codegen::generate_all_quiet().await {
-                    eprintln!("[{}] ✗ Contract bindings failed: {e}", timestamp_now());
+                    stacksdapp_shell::error(format!(
+                        "[{}] ✗ Contract bindings failed: {e}",
+                        timestamp_now()
+                    ));
                 } else {
-                    println!("[{}] ✓ Contract bindings updated", timestamp_now());
+                    stacksdapp_shell::status(format!(
+                        "[{}] ✓ Contract bindings updated",
+                        timestamp_now()
+                    ));
                 }
             }
         }
@@ -60,4 +66,21 @@ fn timestamp_now() -> String {
     let mins = (secs / 60) % 60;
     let s = secs % 60;
     format!("{hours:02}:{mins:02}:{s:02}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::timestamp_now;
+    use stacksdapp_shell::{init, status, ColorMode, Format, Shell};
+
+    #[test]
+    fn watcher_status_respects_quiet_mode() {
+        init(Shell {
+            verbosity: 0,
+            quiet: true,
+            format: Format::Human,
+            color: ColorMode::Never,
+        });
+        status(format!("[{}] ✓ Contract bindings updated", timestamp_now()));
+    }
 }

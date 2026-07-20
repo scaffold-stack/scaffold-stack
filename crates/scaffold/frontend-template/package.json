@@ -4,6 +4,7 @@
   "scripts": {
     "dev": "node ./node_modules/next/dist/bin/next dev",
     "build": "node ./node_modules/next/dist/bin/next build",
+    "typecheck": "tsc --noEmit",
     "start": "node ./node_modules/next/dist/bin/next start",
     "test": "node ./node_modules/vitest/vitest.mjs run --passWithNoTests"
   },

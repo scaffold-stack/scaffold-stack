@@ -125,20 +125,6 @@ async fn generate_all_impl(quiet: bool) -> Result<()> {
     log("[generate] Parsing contract ABIs...".into());
     let abis = stacksdapp_parser::parse_project(&contracts_dir).await?;
 
-    if abis.is_empty() {
-        log("[generate] No user contracts found in Clarinet.toml — nothing to generate.".into());
-        return Ok(());
-    }
-
-    log(format!(
-        "[generate] Found {} contract(s): {}",
-        abis.len(),
-        abis.iter()
-            .map(|a| a.contract_name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    ));
-
     let out_dir = project_root.join("frontend/src/generated");
     tokio::fs::create_dir_all(&out_dir).await?;
 
@@ -152,6 +138,24 @@ async fn generate_all_impl(quiet: bool) -> Result<()> {
         log("[generate] Created empty deployments.json (run stacksdapp deploy to populate)".into());
     }
 
+    if abis.is_empty() {
+        let written = render_with_quiet(&abis, &out_dir, quiet)?;
+        if written == 0 {
+            log("[generate] No user contracts found in Clarinet.toml — generated stubs already up to date.".into());
+        } else {
+            log("[generate] No user contracts found in Clarinet.toml — wrote empty generated stubs.".into());
+        }
+        return Ok(());
+    }
+
+    log(format!(
+        "[generate] Found {} contract(s): {}",
+        abis.len(),
+        abis.iter()
+            .map(|a| a.contract_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
     let written = render_with_quiet(&abis, &out_dir, quiet)?;
 
     if written == 0 {
@@ -449,5 +453,15 @@ mod tests {
         assert!(deployment_id_matches("ST1.counter", "counter"));
         assert!(!deployment_id_matches("ST1.my-counter", "counter"));
         assert!(deployment_id_matches("counter", "counter"));
+    }
+
+    #[test]
+    fn render_writes_empty_generated_stubs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let written = render(&[], tmp.path()).unwrap();
+        assert_eq!(written, 3);
+        assert!(tmp.path().join("contracts.ts").is_file());
+        assert!(tmp.path().join("hooks.ts").is_file());
+        assert!(tmp.path().join("DebugContracts.tsx").is_file());
     }
 }

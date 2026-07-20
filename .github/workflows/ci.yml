@@ -19,7 +19,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -34,6 +34,9 @@ jobs:
 
       - name: Cargo fmt
         run: cargo fmt --all --check
+
+      - name: Cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   unit-tests:
     name: Unit Tests
@@ -54,8 +57,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-test-
 
-      - name: Run unit tests
-        run: cargo test --all --lib
+      - name: Run tests
+        run: cargo test --all
 
   integration-tests:
     name: Integration Tests
@@ -105,6 +108,18 @@ jobs:
 
       - name: CLI smoke (new → check → generate → add → test)
         run: bash scripts/ci-smoke.sh ./target/debug/stacksdapp
+
+      - name: Audit-fix regression checks
+        run: bash scripts/verify-audit-fixes.sh ./target/debug/stacksdapp
+
+      - name: Production hardening checks
+        run: bash scripts/verify-production-hardening.sh ./target/debug/stacksdapp
+
+      - name: Frontend build and typecheck
+        run: bash scripts/ci-frontend.sh ./target/debug/stacksdapp
+
+      - name: Full e2e verification
+        run: bash scripts/verify-e2e.sh ./target/debug/stacksdapp
 
   build:
     name: Release Build

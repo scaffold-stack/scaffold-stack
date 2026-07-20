@@ -9,6 +9,16 @@ use std::time::{Duration, Instant};
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+fn human_output_enabled() -> bool {
+    !stacksdapp_shell::is_quiet()
+}
+
+fn println_human(line: impl std::fmt::Display) {
+    if human_output_enabled() {
+        println!("{line}");
+    }
+}
+
 pub struct DeployUi {
     start: Instant,
     network: String,
@@ -42,6 +52,9 @@ impl LiveStep {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
+        }
+        if !human_output_enabled() {
+            return;
         }
         // Clear spinner line, then print final status.
         print!("\r\x1b[2K");
@@ -83,15 +96,17 @@ impl DeployUi {
             _ => "Deploying to Stacks Testnet 🚀",
         };
 
-        println!();
-        println!("{}", "━".repeat(46).truecolor(75, 85, 99));
-        println!("{:^46}", title.bold().white());
-        println!("{}", "━".repeat(46).truecolor(75, 85, 99));
-        println!();
-        kv("Network", network);
-        kv("RPC", rpc);
-        kv("Project", &project);
-        println!();
+        if human_output_enabled() {
+            println!();
+            println!("{}", "━".repeat(46).truecolor(75, 85, 99));
+            println!("{:^46}", title.bold().white());
+            println!("{}", "━".repeat(46).truecolor(75, 85, 99));
+            println!();
+            kv("Network", network);
+            kv("RPC", rpc);
+            kv("Project", &project);
+            println!();
+        }
 
         Self {
             start: Instant::now(),
@@ -104,6 +119,15 @@ impl DeployUi {
 
     /// Start a live spinner on the current line; call [`LiveStep::finish`] when done.
     pub fn begin_step(&self, label: &str) -> LiveStep {
+        if stacksdapp_shell::is_quiet() {
+            return LiveStep {
+                label: label.to_string(),
+                stop: Arc::new(AtomicBool::new(true)),
+                handle: None,
+                finished: true,
+            };
+        }
+
         let stop = Arc::new(AtomicBool::new(false));
         let stop_c = Arc::clone(&stop);
         let label_c = label.to_string();
@@ -139,10 +163,16 @@ impl DeployUi {
     }
 
     pub fn step_ok(&self, label: &str) {
+        if !human_output_enabled() {
+            return;
+        }
         println!("{} {}", "✓".truecolor(52, 211, 153).bold(), label.white());
     }
 
     pub fn step_detail(&self, text: &str) {
+        if !human_output_enabled() {
+            return;
+        }
         println!(
             "  {} {}",
             "↳".truecolor(156, 163, 175),
@@ -151,6 +181,9 @@ impl DeployUi {
     }
 
     pub fn print_summary(&self, deployer: &str, contracts: &[String], fee_micro: u64) {
+        if !human_output_enabled() {
+            return;
+        }
         println!();
         println!("{}", "─".repeat(46).truecolor(75, 85, 99));
         println!();
@@ -205,6 +238,9 @@ impl DeployUi {
     }
 
     pub fn broadcasting_start(&self) {
+        if !human_output_enabled() {
+            return;
+        }
         self.bar_finalized.store(false, Ordering::SeqCst);
         println!();
         println!("{}", "Broadcasting...".bold().white());
@@ -213,6 +249,12 @@ impl DeployUi {
 
     /// Update the single in-place progress bar. Finalizes (newline) only once at 100%.
     pub fn render_bar(&self, done: usize, total: usize) {
+        if !human_output_enabled() {
+            if done >= total {
+                self.bar_finalized.store(true, Ordering::SeqCst);
+            }
+            return;
+        }
         if self.bar_finalized.load(Ordering::SeqCst) {
             return;
         }
@@ -231,6 +273,9 @@ impl DeployUi {
     }
 
     pub fn contract_broadcast_ok(&self, name: &str, txid: &str) {
+        if !human_output_enabled() {
+            return;
+        }
         println!("{} {}", "✓".truecolor(52, 211, 153).bold(), name.white());
         println!(
             "  {:<8} {}",
@@ -241,17 +286,19 @@ impl DeployUi {
     }
 
     pub fn waiting_confirmation(&self) {
-        println!(
-            "{}",
-            "Waiting for node confirmation...".truecolor(156, 163, 175)
-        );
-        println!();
+        println_human("Waiting for node confirmation...");
+        if human_output_enabled() {
+            println!();
+        }
     }
 
     pub fn success(
         &self,
         entries: &[(String, String, String)], // name, full_contract_id, full_txid
     ) {
+        if !human_output_enabled() {
+            return;
+        }
         println!(
             "{} {}",
             "✓".truecolor(52, 211, 153).bold(),
@@ -330,6 +377,12 @@ impl DeployUi {
                 println!("{}", url.truecolor(167, 139, 250));
             }
             println!();
+            println!(
+                "{}",
+                "Note: the explorer link may take 10–15 seconds to show the transaction while it indexes."
+                    .truecolor(156, 163, 175)
+            );
+            println!();
         }
 
         let secs = self.start.elapsed().as_secs_f64();
@@ -339,6 +392,9 @@ impl DeployUi {
     }
 
     pub fn dry_run_done(&self, contracts: &[String], fee_micro: u64) {
+        if !human_output_enabled() {
+            return;
+        }
         println!();
         println!("{}", "Dry run complete — nothing broadcast.".bold().white());
         if fee_micro > 0 {
@@ -354,6 +410,9 @@ impl DeployUi {
 }
 
 fn kv(key: &str, value: &str) {
+    if !human_output_enabled() {
+        return;
+    }
     println!("{:<12} {}", soft_grey(key), value.white());
 }
 
@@ -374,4 +433,27 @@ pub fn short_txid(txid: &str) -> String {
         return txid.to_string();
     }
     format!("{}...{}", &t[..8], &t[t.len().saturating_sub(7)..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{human_output_enabled, DeployUi};
+    use stacksdapp_shell::{init, ColorMode, Format, Shell};
+
+    #[test]
+    fn deploy_ui_respects_quiet_mode() {
+        init(Shell {
+            verbosity: 0,
+            quiet: true,
+            format: Format::Human,
+            color: ColorMode::Never,
+        });
+        assert!(!human_output_enabled());
+        let ui = DeployUi::start("devnet", "http://localhost:3999");
+        ui.step_detail("hidden");
+        ui.print_summary("ST1PQ", &["counter".into()], 1000);
+        ui.dry_run_done(&["counter".into()], 1000);
+        ui.success(&[("counter".into(), "ST1PQ.counter".into(), "0xabc".into())]);
+        ui.begin_step("quiet step").finish();
+    }
 }

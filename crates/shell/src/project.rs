@@ -116,6 +116,16 @@ pub fn project_root() -> Option<&'static Path> {
     PROJECT_ROOT.get().map(|p| p.as_path())
 }
 
+/// Default network for deploy/dev when not passed on the CLI.
+pub fn validate_network(network: &str) -> Result<(), String> {
+    match network {
+        "devnet" | "testnet" | "mainnet" => Ok(()),
+        other => Err(format!(
+            "Invalid network '{other}'. Expected one of: devnet | testnet | mainnet"
+        )),
+    }
+}
+
 /// Load `stacksdapp.toml` from `root` if present (missing file → default config).
 pub fn load_config(root: &Path) -> Result<StacksdappConfig, String> {
     let path = root.join(CONFIG_FILE);
@@ -203,5 +213,18 @@ mod tests {
         fs::write(tmp.path().join("Clarinet.toml"), "[project]\nname=\"c\"\n").unwrap();
         let found = find_init_root(&sub).unwrap();
         assert_eq!(found, tmp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn validate_network_accepts_known_values() {
+        assert!(validate_network("devnet").is_ok());
+        assert!(validate_network("testnet").is_ok());
+        assert!(validate_network("mainnet").is_ok());
+    }
+
+    #[test]
+    fn validate_network_rejects_unknown_values() {
+        assert!(validate_network("staging").is_err());
+        assert!(validate_network("").is_err());
     }
 }

@@ -72,11 +72,14 @@ enum Commands {
     /// Use --auto-deploy with devnet to deploy contracts once the local chain is ready.
     Dev {
         /// Network to target: devnet | testnet | mainnet
-        #[arg(long, default_value = "devnet")]
-        network: String,
+        #[arg(long, value_parser = ["devnet", "testnet", "mainnet"])]
+        network: Option<String>,
         /// After devnet is ready, deploy contracts automatically (devnet only)
         #[arg(long)]
         auto_deploy: bool,
+        /// Preserve local devnet state/cache between runs (devnet only)
+        #[arg(long)]
+        keep_state: bool,
     },
     /// Parse contracts and regenerate TypeScript bindings
     Generate {
@@ -91,13 +94,13 @@ enum Commands {
         /// Contract name (Clarity id: letter, then letters/digits/-/_; max 40)
         name: String,
         /// Template to use
-        #[arg(long, default_value = "blank")]
+        #[arg(long, default_value = "blank", value_parser = ["blank", "sip010", "sip009"])]
         template: String,
     },
-    /// Deploy contracts to a network
+    /// Deploy contracts to a network (defaults.network from stacksdapp.toml when omitted)
     Deploy {
-        #[arg(long, default_value = "devnet")]
-        network: String,
+        #[arg(long, value_parser = ["devnet", "testnet", "mainnet"])]
+        network: Option<String>,
         /// Deploy a single contract by name (must exist in contracts/Clarinet.toml)
         #[arg(long)]
         contract: Option<String>,
@@ -164,7 +167,7 @@ async fn main() -> ExitCode {
                     }));
                 }
             } else {
-                eprintln!("Error: {e:?}");
+                eprintln!("Error: {e:#}");
                 shell::debug(1, format!("exit_code={code} ({kind})"));
             }
             ExitCode::from(code as u8)
@@ -191,48 +194,120 @@ async fn dispatch(cli: Cli) -> Result<()> {
     enter_project_context(&cli)?;
 
     match cli.command {
-        Commands::New { name, no_git } => stacksdapp_scaffold::new_project(&name, !no_git)
-            .await
-            .map_err(map_scaffold_err),
+        Commands::New { name, no_git } => {
+            stacksdapp_scaffold::new_project(&name, !no_git)
+                .await
+                .map_err(map_scaffold_err)?;
+            emit_command_ok("new", json!({ "name": name, "git": !no_git }));
+            Ok(())
+        }
         Commands::Dev {
             network,
             auto_deploy,
-        } => stacksdapp_process_supervisor::dev(&network, auto_deploy).await,
+            keep_state,
+        } => {
+            let network = resolve_default_network(network.as_deref())?;
+            emit_command_ok(
+                "dev",
+                json!({
+                    "network": network,
+                    "auto_deploy": auto_deploy,
+                    "keep_state": keep_state,
+                    "status": "starting",
+                }),
+            );
+            stacksdapp_process_supervisor::dev(&network, auto_deploy, keep_state).await
+        }
         Commands::Generate { watch } => run_generate(watch).await,
-        Commands::Init => stacksdapp_scaffold::init_project()
-            .await
-            .map_err(map_scaffold_err),
-        Commands::Add { name, template } => stacksdapp_scaffold::add_contract(&name, &template)
-            .await
-            .map_err(map_scaffold_err),
+        Commands::Init => {
+            stacksdapp_scaffold::init_project()
+                .await
+                .map_err(map_scaffold_err)?;
+            emit_command_ok("init", json!({}));
+            Ok(())
+        }
+        Commands::Add { name, template } => {
+            stacksdapp_scaffold::add_contract(&name, &template)
+                .await
+                .map_err(map_scaffold_err)?;
+            emit_command_ok("add", json!({ "name": name, "template": template }));
+            Ok(())
+        }
         Commands::Deploy {
             network,
             contract,
             dry_run,
             yes,
-        } => stacksdapp_deployer::deploy(&network, contract.as_deref(), dry_run, yes)
-            .await
-            .map_err(|e| {
-                let msg = format!("{e:#}");
-                let lower = msg.to_ascii_lowercase();
-                if lower.contains("refusing to deploy")
-                    || lower.contains("aborted")
-                    || lower.contains("confirmation cancelled")
-                {
-                    anyhow::Error::new(CliError::Aborted(msg))
-                } else {
-                    anyhow::Error::new(CliError::Deploy(msg))
-                }
-            }),
+        } => {
+            let network = resolve_default_network(network.as_deref())?;
+            stacksdapp_deployer::deploy(&network, contract.as_deref(), dry_run, yes)
+                .await
+                .map_err(|e| {
+                    let msg = format!("{e:#}");
+                    let lower = msg.to_ascii_lowercase();
+                    if lower.contains("refusing to deploy")
+                        || lower.contains("aborted")
+                        || lower.contains("confirmation cancelled")
+                    {
+                        anyhow::Error::new(CliError::Aborted(msg))
+                    } else {
+                        anyhow::Error::new(CliError::Deploy(msg))
+                    }
+                })?;
+            emit_command_ok(
+                "deploy",
+                json!({
+                    "network": network,
+                    "contract": contract,
+                    "dry_run": dry_run,
+                    "yes": yes,
+                }),
+            );
+            Ok(())
+        }
         Commands::Test => run_test().await,
         Commands::Check => run_check().await,
         Commands::Clean { force } => run_clean(force).await,
         Commands::Doctor { strict } => doctor::run(strict).await,
-        Commands::Upgrade => stacksdapp_scaffold::upgrade_project()
-            .await
-            .map_err(map_scaffold_err),
+        Commands::Upgrade => {
+            stacksdapp_scaffold::upgrade_project()
+                .await
+                .map_err(map_scaffold_err)?;
+            emit_command_ok("upgrade", json!({}));
+            Ok(())
+        }
         Commands::Completions { shell } => print_completions(shell),
     }
+}
+
+fn emit_command_ok(command: &str, details: serde_json::Value) {
+    if !shell::is_json() {
+        return;
+    }
+    let mut payload = json!({ "ok": true, "command": command });
+    if let (Some(base), Some(extra)) = (payload.as_object_mut(), details.as_object()) {
+        for (key, value) in extra {
+            base.insert(key.clone(), value.clone());
+        }
+    }
+    shell::emit_json(&payload);
+}
+
+fn resolve_default_network(cli_value: Option<&str>) -> Result<String> {
+    if let Some(value) = cli_value {
+        return Ok(value.to_string());
+    }
+    let root = std::env::current_dir().ok();
+    let config = root
+        .as_deref()
+        .and_then(|cwd| shell::load_config(cwd).ok())
+        .unwrap_or_default();
+    let network = config
+        .defaults
+        .and_then(|defaults| defaults.network)
+        .unwrap_or_else(|| "devnet".to_string());
+    shell::validate_network(&network).map_err(|e| anyhow::anyhow!(e))?;
+    Ok(network)
 }
 
 fn map_scaffold_err(e: anyhow::Error) -> anyhow::Error {
@@ -318,15 +393,16 @@ fn enter_project_context(cli: &Cli) -> Result<()> {
         // All other commands require a scaffold project root.
         _ => {
             let root = shell::enter_scaffold_root(cli.root.as_deref()).map_err(|msg| {
-                anyhow::Error::new(if msg.to_ascii_lowercase().contains("invalid --root") {
-                    CliError::Project(msg)
-                } else if msg.contains("No stacksdapp project")
-                    || msg.contains("is not a stacksdapp project")
-                {
-                    CliError::Project(msg)
-                } else {
-                    CliError::Other(msg)
-                })
+                anyhow::Error::new(
+                    if msg.to_ascii_lowercase().contains("invalid --root")
+                        || msg.contains("No stacksdapp project")
+                        || msg.contains("is not a stacksdapp project")
+                    {
+                        CliError::Project(msg)
+                    } else {
+                        CliError::Other(msg)
+                    },
+                )
             })?;
             shell::debug(1, format!("project root {}", root.display()));
             if let Ok(cfg) = shell::load_config(&root) {
@@ -361,7 +437,10 @@ async fn run_generate(watch: bool) -> Result<()> {
 }
 
 async fn run_test() -> Result<()> {
-    if !tokio::fs::metadata("contracts/Clarinet.toml").await.is_ok() {
+    if tokio::fs::metadata("contracts/Clarinet.toml")
+        .await
+        .is_err()
+    {
         return Err(CliError::Project(
             "No scaffold-stacks project found. Run from the directory created by stacksdapp new"
                 .into(),
@@ -628,4 +707,56 @@ async fn run_clean(force: bool) -> Result<()> {
         }));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{emit_command_ok, resolve_default_network};
+    use serde_json::json;
+    use std::fs;
+    use std::sync::Mutex;
+
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn cli_flag_overrides_config_default_network() {
+        assert_eq!(resolve_default_network(Some("mainnet")).unwrap(), "mainnet");
+    }
+
+    #[test]
+    fn config_default_network_is_used_when_flag_missing() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("stacksdapp.toml"),
+            "[defaults]\nnetwork = \"testnet\"\n",
+        )
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let resolved = resolve_default_network(None).unwrap();
+        std::env::set_current_dir(&cwd).unwrap();
+        assert_eq!(resolved, "testnet");
+    }
+
+    #[test]
+    fn invalid_config_default_network_is_rejected() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("stacksdapp.toml"),
+            "[defaults]\nnetwork = \"staging\"\n",
+        )
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let resolved = resolve_default_network(None);
+        std::env::set_current_dir(&cwd).unwrap();
+        assert!(resolved.is_err());
+    }
+
+    #[test]
+    fn emit_command_ok_is_noop_without_json_mode() {
+        emit_command_ok("new", json!({ "name": "demo", "git": true }));
+    }
 }
