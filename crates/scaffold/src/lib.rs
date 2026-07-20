@@ -114,6 +114,15 @@ mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory c
 balance = 100_000_000_000_000
 sbtc_balance = 1_000_000_000
 derivation = "m/44'/5757'/0'/0/0"
+
+[devnet]
+# Clarinet 3.2+ snapshot fast-boot: keep this section free of [[devnet.pox_stacking_orders]]
+# and avoid custom images / early-epoch overrides (those force slow genesis mining).
+disable_bitcoin_explorer = true
+disable_stacks_explorer = true
+disable_stacks_api = false
+# 15s keeps Nakamoto + signer able to keep up; 1s races burn height and stalls tips.
+bitcoin_controller_block_time = 15_000
 "#;
 
 const DEFAULT_FULL_DEVNET_SETTINGS_BODY: &str = r#"[network]
@@ -181,32 +190,13 @@ sbtc_balance = 1_000_000_000
 derivation = "m/44'/5757'/0'/0/0"
 
 [devnet]
-disable_stacks_explorer = false
+# Clarinet 3.2+ snapshot fast-boot: no PoX stacking orders (those force slow genesis).
+# Explorers off by default — enable locally if you need http://localhost:8000 / :8001.
+disable_bitcoin_explorer = true
+disable_stacks_explorer = true
 disable_stacks_api = false
-
-[[devnet.pox_stacking_orders]]
-start_at_cycle = 1
-duration = 10
-auto_extend = true
-wallet = "wallet_1"
-slots = 2
-btc_address = "mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC"
-
-[[devnet.pox_stacking_orders]]
-start_at_cycle = 1
-duration = 10
-auto_extend = true
-wallet = "wallet_2"
-slots = 2
-btc_address = "muYdXKmX9bByAueDe6KFfHd5Ff1gdN9ErG"
-
-[[devnet.pox_stacking_orders]]
-start_at_cycle = 1
-duration = 10
-auto_extend = true
-wallet = "wallet_3"
-slots = 2
-btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"
+# 15s keeps Nakamoto + signer able to keep up; 1s races burn height and stalls tips.
+bitcoin_controller_block_time = 15_000
 "#;
 
 fn devnet_settings_with_warning(body: &str) -> String {
