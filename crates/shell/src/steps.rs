@@ -93,7 +93,7 @@ pub fn begin_step(label: &str) -> LiveStep {
             label: label.to_string(),
             stop: Arc::new(AtomicBool::new(true)),
             handle: None,
-            finished: false,
+            finished: true,
         };
     }
 
@@ -147,4 +147,23 @@ pub fn grey(s: &str) -> colored::ColoredString {
 
 pub fn lavender(s: &str) -> colored::ColoredString {
     s.truecolor(167, 139, 250)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::begin_step;
+    use crate::{init, Format, Shell};
+
+    #[test]
+    fn quiet_begin_step_does_not_print_completion() {
+        init(Shell {
+            verbosity: 0,
+            quiet: true,
+            format: Format::Human,
+            color: crate::ColorMode::Never,
+        });
+
+        let step = begin_step("Environment configured");
+        step.finish();
+    }
 }
