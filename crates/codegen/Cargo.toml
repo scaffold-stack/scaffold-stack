@@ -19,5 +19,6 @@ serde.workspace      = true
 serde_json.workspace = true
 tera.workspace       = true
 tokio.workspace      = true
-stacksdapp-parser    = {version = "0.1.2", path = "../parser" }
+stacksdapp-parser    = {version = "0.2.0", path = "../parser" }
 sha2 = "0.10"
+tempfile.workspace = true
