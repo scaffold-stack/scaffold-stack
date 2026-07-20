@@ -1,5 +1,4 @@
-//! Foundry-style display controls shared across the stacksdapp CLI and libraries.
-//!
+//! Shared shell utilities for the stacksdapp CLI and libraries.
 //! Init once from `main` via [`init`]. Commands and crates then use [`status`],
 //! [`warn`], [`error`], [`debug`], and [`emit_json`].
 
@@ -8,7 +7,7 @@ pub mod steps;
 
 pub use project::{
     default_config_toml, enter_scaffold_root, find_init_root, find_scaffold_root, load_config,
-    project_root, resolve_scaffold_root, StacksdappConfig, CONFIG_FILE,
+    project_root, resolve_scaffold_root, validate_network, StacksdappConfig, CONFIG_FILE,
 };
 pub use steps::{begin_step, grey, kv, lavender, mint, print_banner, rule, step_ok, LiveStep};
 
