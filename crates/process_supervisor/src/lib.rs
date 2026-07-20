@@ -52,15 +52,20 @@ async fn prefetch_requirements() -> Result<()> {
     Ok(())
 }
 
-pub async fn dev(network: &str, auto_deploy: bool) -> Result<()> {
+pub async fn dev(network: &str, auto_deploy: bool, keep_state: bool) -> Result<()> {
     ensure_project_root()?;
 
     match network {
-        "devnet" => dev_devnet(auto_deploy).await,
+        "devnet" => dev_devnet(auto_deploy, keep_state).await,
         "testnet" | "mainnet" => {
             if auto_deploy {
                 stacksdapp_shell::warn(format!(
                     "[dev] --auto-deploy applies to devnet only; ignoring for {network}."
+                ));
+            }
+            if keep_state {
+                stacksdapp_shell::warn(format!(
+                    "[dev] --keep-state applies to devnet only; ignoring for {network}."
                 ));
             }
             dev_remote(network).await
@@ -110,7 +115,7 @@ fn print_ready_panel(local_url: &str) {
     stacksdapp_shell::rule();
 }
 
-async fn dev_devnet(auto_deploy: bool) -> Result<()> {
+async fn dev_devnet(auto_deploy: bool, keep_state: bool) -> Result<()> {
     stacksdapp_shell::print_banner("Development Mode 🌱");
 
     let step = stacksdapp_shell::begin_step("Environment configured");
@@ -118,9 +123,11 @@ async fn dev_devnet(auto_deploy: bool) -> Result<()> {
         step.fail();
         return Err(e);
     }
-    if let Err(e) = reset_local_devnet_state().await {
-        step.fail();
-        return Err(e);
+    if !keep_state {
+        if let Err(e) = reset_local_devnet_state().await {
+            step.fail();
+            return Err(e);
+        }
     }
     if let Err(e) = write_network_env("devnet").await {
         step.fail();
@@ -619,12 +626,46 @@ fn timestamp_now() -> String {
 
 async fn write_network_env(network: &str) -> Result<()> {
     let env_path = Path::new("frontend/.env.local");
-    let content = format!(
-        "# Auto-written by stacksdapp dev --network {network}\n\
-         NEXT_PUBLIC_NETWORK={network}\n"
+    let existing = fs::read_to_string(env_path).await.unwrap_or_default();
+    let content = upsert_env_assignment(
+        &existing,
+        "NEXT_PUBLIC_NETWORK",
+        network,
+        &format!("# Auto-written by stacksdapp dev --network {network}"),
     );
     fs::write(env_path, content).await?;
     Ok(())
+}
+
+fn upsert_env_assignment(existing: &str, key: &str, value: &str, header: &str) -> String {
+    let mut kept = Vec::new();
+    let mut replaced = false;
+
+    for line in existing.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(&format!("{key}=")) {
+            if !replaced {
+                kept.push(format!("{key}={value}"));
+                replaced = true;
+            }
+            continue;
+        }
+        if line.trim() == header {
+            continue;
+        }
+        kept.push(line.to_string());
+    }
+
+    if !replaced {
+        let mut out = vec![header.to_string(), format!("{key}={value}")];
+        if !kept.is_empty() {
+            out.push(String::new());
+        }
+        out.extend(kept);
+        return out.join("\n") + "\n";
+    }
+
+    kept.join("\n") + "\n"
 }
 
 fn check_deployments(network: &str) {
@@ -724,4 +765,36 @@ async fn shutdown_child(name: &str, child: &mut Child) {
     let _ = child.start_kill();
     let _ = child.wait().await;
     stacksdapp_shell::debug(1, format!("Stopped {name}."));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::upsert_env_assignment;
+
+    #[test]
+    fn upsert_env_assignment_preserves_other_values() {
+        let existing = "# existing\nFOO=bar\nNEXT_PUBLIC_NETWORK=testnet\nAPI_KEY=secret\n";
+        let updated = upsert_env_assignment(
+            existing,
+            "NEXT_PUBLIC_NETWORK",
+            "mainnet",
+            "# Auto-written by stacksdapp dev --network mainnet",
+        );
+        assert!(updated.contains("FOO=bar"));
+        assert!(updated.contains("API_KEY=secret"));
+        assert!(updated.contains("NEXT_PUBLIC_NETWORK=mainnet"));
+        assert!(!updated.contains("NEXT_PUBLIC_NETWORK=testnet"));
+    }
+
+    #[test]
+    fn upsert_env_assignment_bootstraps_new_file() {
+        let updated = upsert_env_assignment(
+            "",
+            "NEXT_PUBLIC_NETWORK",
+            "devnet",
+            "# Auto-written by stacksdapp dev --network devnet",
+        );
+        assert!(updated.starts_with("# Auto-written by stacksdapp dev --network devnet"));
+        assert!(updated.contains("NEXT_PUBLIC_NETWORK=devnet"));
+    }
 }
