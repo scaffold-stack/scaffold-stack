@@ -8,7 +8,7 @@ use cli_style::{
 use colored::Colorize;
 use include_dir::{include_dir, Dir};
 use indicatif::{ProgressBar, ProgressStyle};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -293,91 +293,112 @@ pub async fn new_project(name: &str, git_init: bool) -> Result<()> {
         ));
     }
 
-    let style = ProgressStyle::with_template(
-        "  {spinner:.yellow} {wide_msg:.dim}  \x1b[2m[{elapsed}]\x1b[0m",
-    )
-    .unwrap()
-    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
+    let result: Result<()> = async {
+        let style = ProgressStyle::with_template(
+            "  {spinner:.yellow} {wide_msg:.dim}  \x1b[2m[{elapsed}]\x1b[0m",
+        )
+        .unwrap()
+        .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
 
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(style);
-    pb.enable_steady_tick(Duration::from_millis(80));
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(style);
+        pb.enable_steady_tick(Duration::from_millis(80));
 
-    // ── Step 1: Scaffold files ────────────────────────────────────────────────
-    pb.set_message("Scaffolding project structure...");
+        // ── Step 1: Scaffold files ────────────────────────────────────────────────
+        pb.set_message("Scaffolding project structure...");
 
-    tokio::fs::create_dir_all(root).await?;
-    let frontend_dir = root.join("frontend");
-    let contracts_root = root.join("contracts");
-    tokio::fs::create_dir_all(&frontend_dir).await?;
-    tokio::fs::create_dir_all(contracts_root.join("contracts")).await?;
-    tokio::fs::create_dir_all(contracts_root.join("settings")).await?;
-    tokio::fs::create_dir_all(contracts_root.join("tests")).await?;
+        tokio::fs::create_dir_all(root).await?;
+        let frontend_dir = root.join("frontend");
+        let contracts_root = root.join("contracts");
+        tokio::fs::create_dir_all(&frontend_dir).await?;
+        tokio::fs::create_dir_all(contracts_root.join("contracts")).await?;
+        tokio::fs::create_dir_all(contracts_root.join("settings")).await?;
+        tokio::fs::create_dir_all(contracts_root.join("tests")).await?;
 
-    FRONTEND_TEMPLATE
-        .extract(&frontend_dir)
-        .map_err(|e| anyhow!("Failed to copy frontend template: {e}"))?;
+        FRONTEND_TEMPLATE
+            .extract(&frontend_dir)
+            .map_err(|e| anyhow!("Failed to copy frontend template: {e}"))?;
 
-    write_project_files(name, root, &frontend_dir, &contracts_root).await?;
+        write_project_files(name, root, &frontend_dir, &contracts_root).await?;
 
-    pb.println(step_done_string("Scaffolded", &format!("{name}/")));
+        pb.println(step_done_string("Scaffolded", &format!("{name}/")));
 
-    // ── Step 2: Install dependencies (parallel) ───────────────────────────────
-    pb.set_message("Installing frontend dependencies...");
+        // ── Step 2: Install dependencies (parallel) ───────────────────────────────
+        pb.set_message("Installing frontend dependencies...");
 
-    let fe_dir = frontend_dir.clone();
-    let ct_dir = contracts_root.clone();
-    run_npm_install_with_feedback(&pb, &fe_dir, "frontend", "").await?;
+        let fe_dir = frontend_dir.clone();
+        let ct_dir = contracts_root.clone();
+        run_npm_install_with_feedback(&pb, &fe_dir, "frontend", "").await?;
 
-    pb.set_message("Installing contract dependencies...");
-    run_npm_install_with_feedback(&pb, &ct_dir, "contracts", "").await?;
+        pb.set_message("Installing contract dependencies...");
+        run_npm_install_with_feedback(&pb, &ct_dir, "contracts", "").await?;
 
-    pb.println(step_done_string("Installed", "node_modules"));
+        pb.println(step_done_string("Installed", "node_modules"));
 
-    // ── Step 3: Git init ──────────────────────────────────────────────────────
-    if git_init {
-        pb.set_message("Initialising git repository...");
+        // ── Step 3: Git init ──────────────────────────────────────────────────────
+        if git_init {
+            pb.set_message("Initialising git repository...");
 
-        Command::new("git")
-            .args(["init", "-b", "main"])
-            .current_dir(root)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await?;
+            ensure_success(
+                Command::new("git")
+                    .args(["init", "-b", "main"])
+                    .current_dir(root)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await?,
+                "git init",
+            )?;
 
-        try_set_git_hooks_path(root).await?;
+            try_set_git_hooks_path(root).await?;
 
-        Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(root)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await?;
+            ensure_success(
+                Command::new("git")
+                    .args(["add", "-A"])
+                    .current_dir(root)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await?,
+                "git add -A",
+            )?;
 
-        Command::new("git")
-            .args(["commit", "-m", "scaffold-stacks init"])
-            .current_dir(root)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await?;
+            ensure_success(
+                Command::new("git")
+                    .args(["commit", "-m", "scaffold-stacks init"])
+                    .current_dir(root)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await?,
+                "git commit",
+            )?;
 
-        pb.println(step_done_string("Initialized", "git (main)"));
-        pb.println(note_line(
-            "pre-commit hook: blocks likely mnemonics in contracts/settings/Testnet/Mainnet.toml",
-        ));
-        pb.println(note_line(
-            "after clone: npm run setup-hooks or git config core.hooksPath .githooks",
-        ));
+            pb.println(step_done_string("Initialized", "git (main)"));
+            pb.println(note_line(
+                "pre-commit hook: blocks likely mnemonics in contracts/settings/Testnet/Mainnet.toml",
+            ));
+            pb.println(note_line(
+                "after clone: npm run setup-hooks or git config core.hooksPath .githooks",
+            ));
+        }
+
+        pb.finish_and_clear();
+
+        // ── Success output ────────────────────────────────────────────────────────
+        print_success_block(name);
+        print_next_steps(name);
+
+        Ok(())
     }
+    .await;
 
-    pb.finish_and_clear();
-
-    // ── Success output ────────────────────────────────────────────────────────
-    print_success_block(name);
-    print_next_steps(name);
+    if let Err(err) = result {
+        if root.exists() {
+            let _ = tokio::fs::remove_dir_all(root).await;
+        }
+        return Err(err);
+    }
 
     Ok(())
 }
@@ -405,63 +426,84 @@ async fn normalize_standard_clarinet_layout(root: &Path) -> Result<()> {
         ));
     }
 
+    let mut rollback_moves: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
     let nested_sources = clar_root.join("contracts");
     tokio::fs::create_dir_all(&nested_sources).await?;
 
-    let mut entries = tokio::fs::read_dir(&clar_root).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        let ft = entry.file_type().await?;
-        if ft.is_file() && path.extension().is_some_and(|e| e == "clar") {
-            let dest = nested_sources.join(entry.file_name());
-            tokio::fs::rename(&path, &dest).await?;
+    let result: Result<()> = async {
+        let mut entries = tokio::fs::read_dir(&clar_root).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let ft = entry.file_type().await?;
+            if ft.is_file() && path.extension().is_some_and(|e| e == "clar") {
+                let dest = nested_sources.join(entry.file_name());
+                tokio::fs::rename(&path, &dest).await?;
+                rollback_moves.push((dest.clone(), path.clone()));
+            }
         }
+
+        tokio::fs::rename(&root_clarinet, &nested_clarinet).await?;
+        rollback_moves.push((nested_clarinet.clone(), root_clarinet.clone()));
+
+        let root_settings = root.join("settings");
+        let dest_settings = clar_root.join("settings");
+        if root_settings.exists() && root_settings.is_dir() {
+            if dest_settings.exists() {
+                return Err(anyhow!(
+                    "[init] Both ./settings and ./contracts/settings exist.\n\
+                     Remove or merge one directory, then rerun stacksdapp init."
+                ));
+            }
+            tokio::fs::rename(&root_settings, &dest_settings).await?;
+            rollback_moves.push((dest_settings.clone(), root_settings.clone()));
+        }
+
+        let root_tests = root.join("tests");
+        let dest_tests = clar_root.join("tests");
+        if root_tests.exists() && root_tests.is_dir() {
+            if dest_tests.exists() {
+                return Err(anyhow!(
+                    "[init] Both ./tests and ./contracts/tests exist.\n\
+                     Remove or merge one directory, then rerun stacksdapp init."
+                ));
+            }
+            tokio::fs::rename(&root_tests, &dest_tests).await?;
+            rollback_moves.push((dest_tests.clone(), root_tests.clone()));
+        }
+
+        let root_deployments = root.join("deployments");
+        let dest_deployments = clar_root.join("deployments");
+        if root_deployments.exists() && root_deployments.is_dir() {
+            if dest_deployments.exists() {
+                return Err(anyhow!(
+                    "[init] Both ./deployments and ./contracts/deployments exist.\n\
+                     Remove or merge one directory, then rerun stacksdapp init."
+                ));
+            }
+            tokio::fs::rename(&root_deployments, &dest_deployments).await?;
+            rollback_moves.push((dest_deployments.clone(), root_deployments.clone()));
+        }
+
+        for fname in ["package.json", "vitest.config.ts", "tsconfig.json"] {
+            let src = root.join(fname);
+            let dst = clar_root.join(fname);
+            if src.exists() && !dst.exists() {
+                tokio::fs::rename(&src, &dst).await?;
+                rollback_moves.push((dst.clone(), src.clone()));
+            }
+        }
+
+        Ok(())
     }
+    .await;
 
-    tokio::fs::rename(&root_clarinet, &nested_clarinet).await?;
-
-    let root_settings = root.join("settings");
-    let dest_settings = clar_root.join("settings");
-    if root_settings.exists() && root_settings.is_dir() {
-        if dest_settings.exists() {
-            return Err(anyhow!(
-                "[init] Both ./settings and ./contracts/settings exist.\n\
-                 Remove or merge one directory, then rerun stacksdapp init."
-            ));
+    if let Err(err) = result {
+        for (from, to) in rollback_moves.iter().rev() {
+            if from.exists() {
+                let _ = tokio::fs::rename(from, to).await;
+            }
         }
-        tokio::fs::rename(&root_settings, &dest_settings).await?;
-    }
-
-    let root_tests = root.join("tests");
-    let dest_tests = clar_root.join("tests");
-    if root_tests.exists() && root_tests.is_dir() {
-        if dest_tests.exists() {
-            return Err(anyhow!(
-                "[init] Both ./tests and ./contracts/tests exist.\n\
-                 Remove or merge one directory, then rerun stacksdapp init."
-            ));
-        }
-        tokio::fs::rename(&root_tests, &dest_tests).await?;
-    }
-
-    let root_deployments = root.join("deployments");
-    let dest_deployments = clar_root.join("deployments");
-    if root_deployments.exists() && root_deployments.is_dir() {
-        if dest_deployments.exists() {
-            return Err(anyhow!(
-                "[init] Both ./deployments and ./contracts/deployments exist.\n\
-                 Remove or merge one directory, then rerun stacksdapp init."
-            ));
-        }
-        tokio::fs::rename(&root_deployments, &dest_deployments).await?;
-    }
-
-    for fname in ["package.json", "vitest.config.ts", "tsconfig.json"] {
-        let src = root.join(fname);
-        let dst = clar_root.join(fname);
-        if src.exists() && !dst.exists() {
-            tokio::fs::rename(&src, &dst).await?;
-        }
+        return Err(err);
     }
 
     println!(
@@ -491,35 +533,107 @@ pub async fn init_project() -> Result<()> {
         ));
     }
 
-    tokio::fs::create_dir_all(contracts_root.join("contracts")).await?;
-    tokio::fs::create_dir_all(contracts_root.join("settings")).await?;
-    tokio::fs::create_dir_all(contracts_root.join("tests")).await?;
+    let mut rollback = InitRollback {
+        frontend_dir: frontend_dir.clone(),
+        ..InitRollback::default()
+    };
 
-    if !frontend_dir.exists() {
-        tokio::fs::create_dir_all(&frontend_dir).await?;
-        FRONTEND_TEMPLATE
-            .extract(&frontend_dir)
-            .map_err(|e| anyhow!("Failed to copy frontend template: {e}"))?;
-        println!("[init] Added frontend template in ./frontend");
-    } else if !frontend_dir.join("scripts/export-abi.mjs").exists() {
-        return Err(anyhow!(
-            "frontend/ exists but is missing scripts/export-abi.mjs.\n\
-             To avoid overwriting existing frontend files, init will not continue automatically.\n\
-             Add that script or move/backup frontend/ and rerun `stacksdapp init`."
-        ));
-    } else {
-        println!("[init] Existing frontend detected. Keeping files unchanged.");
+    let result: Result<()> = async {
+        tokio::fs::create_dir_all(contracts_root.join("contracts")).await?;
+        tokio::fs::create_dir_all(contracts_root.join("settings")).await?;
+        tokio::fs::create_dir_all(contracts_root.join("tests")).await?;
+
+        if !frontend_dir.exists() {
+            tokio::fs::create_dir_all(&frontend_dir).await?;
+            FRONTEND_TEMPLATE
+                .extract(&frontend_dir)
+                .map_err(|e| anyhow!("Failed to copy frontend template: {e}"))?;
+            rollback.frontend_created = true;
+            println!("[init] Added frontend template in ./frontend");
+        } else if !frontend_dir.join("scripts/export-abi.mjs").exists() {
+            return Err(anyhow!(
+                "frontend/ exists but is missing scripts/export-abi.mjs.\n\
+                 To avoid overwriting existing frontend files, init will not continue automatically.\n\
+                 Add that script or move/backup frontend/ and rerun `stacksdapp init`."
+            ));
+        } else {
+            println!("[init] Existing frontend detected. Keeping files unchanged.");
+        }
+
+        ensure_contract_support_files(
+            &contracts_root,
+            &frontend_dir,
+            Some(&mut rollback.created_files),
+        )
+        .await?;
+
+        if ensure_stacksdapp_toml(root).await? {
+            rollback
+                .created_files
+                .push(root.join(stacksdapp_shell::CONFIG_FILE));
+        }
+
+        write_git_hooks_tracked(root, &mut rollback).await?;
+        rollback.generated_touched = true;
+        run_generate_after_setup().await?;
+
+        let _ = try_set_git_hooks_path(root).await;
+
+        println!("[init] ✔ Existing Clarinet project initialized for scaffold-stacks.");
+        Ok(())
+    }
+    .await;
+
+    if let Err(err) = result {
+        rollback.apply().await;
+        return Err(err);
     }
 
-    ensure_contract_support_files(&contracts_root, &frontend_dir).await?;
-    ensure_stacksdapp_toml(root).await?;
-    run_generate_after_setup().await?;
-
-    write_git_hooks(Path::new(".")).await?;
-    let _ = try_set_git_hooks_path(Path::new(".")).await;
-
-    println!("[init] ✔ Existing Clarinet project initialized for scaffold-stacks.");
     Ok(())
+}
+
+#[derive(Default)]
+struct InitRollback {
+    frontend_created: bool,
+    frontend_dir: PathBuf,
+    created_files: Vec<PathBuf>,
+    generated_touched: bool,
+    pre_commit_backup: Option<(PathBuf, Option<Vec<u8>>)>,
+}
+
+impl InitRollback {
+    async fn apply(self) {
+        if self.generated_touched && !self.frontend_created {
+            let _ = tokio::fs::remove_dir_all(self.frontend_dir.join("src/generated")).await;
+        }
+        for path in self.created_files.into_iter().rev() {
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+        if let Some((path, backup)) = self.pre_commit_backup {
+            match backup {
+                Some(bytes) => {
+                    let _ = tokio::fs::write(&path, bytes).await;
+                }
+                None => {
+                    let _ = tokio::fs::remove_file(&path).await;
+                }
+            }
+        }
+        if self.frontend_created {
+            let _ = tokio::fs::remove_dir_all(&self.frontend_dir).await;
+        }
+    }
+}
+
+async fn write_git_hooks_tracked(root: &Path, rollback: &mut InitRollback) -> Result<()> {
+    let hook_path = root.join(".githooks/pre-commit");
+    let backup = if hook_path.exists() {
+        Some(tokio::fs::read(&hook_path).await?)
+    } else {
+        None
+    };
+    rollback.pre_commit_backup = Some((hook_path, backup));
+    write_git_hooks(root).await
 }
 
 pub async fn upgrade_project() -> Result<()> {
@@ -537,21 +651,37 @@ pub async fn upgrade_project() -> Result<()> {
     }
 
     println!("[upgrade] Refreshing dependencies and regenerating bindings (non-destructive)...");
-    ensure_stacksdapp_toml(Path::new(".")).await?;
-    ensure_contract_support_files(Path::new("contracts"), Path::new("frontend")).await?;
-    run_npm_install(Path::new("frontend"), "frontend", "[upgrade]").await?;
-    run_npm_install(Path::new("contracts"), "contracts", "[upgrade]").await?;
-    stacksdapp_codegen::generate_all().await?;
-    write_git_hooks(Path::new(".")).await?;
-    let _ = try_set_git_hooks_path(Path::new(".")).await;
-    println!("[upgrade] ✔ Upgrade complete.");
+    let mut created_config = None;
+
+    let result: Result<()> = async {
+        if ensure_stacksdapp_toml(Path::new(".")).await? {
+            created_config = Some(PathBuf::from(stacksdapp_shell::CONFIG_FILE));
+        }
+        ensure_contract_support_files(Path::new("contracts"), Path::new("frontend"), None).await?;
+        run_npm_install(Path::new("frontend"), "frontend", "[upgrade]").await?;
+        run_npm_install(Path::new("contracts"), "contracts", "[upgrade]").await?;
+        stacksdapp_codegen::generate_all().await?;
+        write_git_hooks(Path::new(".")).await?;
+        let _ = try_set_git_hooks_path(Path::new(".")).await;
+        println!("[upgrade] ✔ Upgrade complete.");
+        Ok(())
+    }
+    .await;
+
+    if let Err(err) = result {
+        if let Some(path) = created_config {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        return Err(err);
+    }
+
     Ok(())
 }
 
-async fn ensure_stacksdapp_toml(root: &Path) -> Result<()> {
+async fn ensure_stacksdapp_toml(root: &Path) -> Result<bool> {
     let path = root.join(stacksdapp_shell::CONFIG_FILE);
     if path.exists() {
-        return Ok(());
+        return Ok(false);
     }
     let name = root
         .file_name()
@@ -563,7 +693,7 @@ async fn ensure_stacksdapp_toml(root: &Path) -> Result<()> {
         "[scaffold] Wrote {} (project root marker for subdirectory commands)",
         stacksdapp_shell::CONFIG_FILE
     );
-    Ok(())
+    Ok(true)
 }
 
 async fn write_project_files(
@@ -794,47 +924,64 @@ settings/Simnet.toml
     Ok(())
 }
 
-async fn ensure_contract_support_files(contracts_root: &Path, frontend_dir: &Path) -> Result<()> {
+async fn ensure_contract_support_files(
+    contracts_root: &Path,
+    frontend_dir: &Path,
+    mut created: Option<&mut Vec<PathBuf>>,
+) -> Result<()> {
     write_if_missing(
         &contracts_root.join("package.json"),
         DEFAULT_CONTRACTS_PACKAGE_JSON,
+        &mut created,
     )
     .await?;
     write_if_missing(
         &contracts_root.join("package-lock.json"),
         CONTRACTS_PACKAGE_LOCK,
+        &mut created,
     )
     .await?;
     write_if_missing(
         &contracts_root.join("vitest.config.ts"),
         DEFAULT_VITEST_CONFIG,
+        &mut created,
     )
     .await?;
     write_if_missing(
         &contracts_root.join("tsconfig.json"),
         DEFAULT_CONTRACTS_TSCONFIG,
+        &mut created,
     )
     .await?;
     let devnet_settings = devnet_settings_with_warning(DEFAULT_DEVNET_SETTINGS_BODY);
     write_if_missing(
         &contracts_root.join("settings/Devnet.toml"),
         &devnet_settings,
+        &mut created,
     )
     .await?;
     write_if_missing(
         &contracts_root.join("settings/Testnet.toml"),
         DEFAULT_TESTNET_SETTINGS,
+        &mut created,
     )
     .await?;
     write_if_missing(
         &contracts_root.join("settings/Mainnet.toml"),
         DEFAULT_MAINNET_SETTINGS,
+        &mut created,
     )
     .await?;
-    write_if_missing(&frontend_dir.join(".env.local"), DEFAULT_FRONTEND_ENV_LOCAL).await?;
+    write_if_missing(
+        &frontend_dir.join(".env.local"),
+        DEFAULT_FRONTEND_ENV_LOCAL,
+        &mut created,
+    )
+    .await?;
     write_if_missing(
         &frontend_dir.join(".env.local.example"),
         DEFAULT_FRONTEND_ENV_LOCAL_EXAMPLE,
+        &mut created,
     )
     .await?;
     Ok(())
@@ -847,7 +994,11 @@ async fn run_generate_after_setup() -> Result<()> {
     Ok(())
 }
 
-async fn write_if_missing(path: &Path, contents: &str) -> Result<()> {
+async fn write_if_missing(
+    path: &Path,
+    contents: &str,
+    created: &mut Option<&mut Vec<PathBuf>>,
+) -> Result<()> {
     if path.exists() {
         return Ok(());
     }
@@ -855,6 +1006,9 @@ async fn write_if_missing(path: &Path, contents: &str) -> Result<()> {
         tokio::fs::create_dir_all(parent).await?;
     }
     tokio::fs::write(path, contents).await?;
+    if let Some(list) = created.as_deref_mut() {
+        list.push(path.to_path_buf());
+    }
     Ok(())
 }
 
@@ -890,8 +1044,17 @@ fn npm_install_message_head(message_prefix: &str) -> String {
     }
 }
 
+fn ensure_success(status: std::process::ExitStatus, command: &str) -> Result<()> {
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("{command} failed with status {status}"))
+    }
+}
+
 pub async fn add_contract(name: &str, template: &str) -> Result<()> {
     validate_contract_name(name)?;
+    validate_contract_template(template)?;
 
     let contracts_dir = Path::new("contracts/contracts");
     if !contracts_dir.exists() {
@@ -1052,7 +1215,7 @@ describe("{name} NFT", () => {{
             Some("SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait"),
         ),
 
-        _ => (
+        "blank" => (
             format!(
                 ";; {name}.clar\n\n(define-read-only (get-info)\n  (ok \"{name} contract\"))\n"
             ),
@@ -1073,16 +1236,22 @@ describe("{name}", () => {{
             ),
             None,
         ),
+        _ => unreachable!("template validated above"),
     };
 
     let step = stacksdapp_shell::begin_step("Created contract");
+    let clarinet_toml_path = Path::new("contracts/Clarinet.toml");
+    let clarinet_backup = tokio::fs::read_to_string(clarinet_toml_path).await.ok();
+    let test_path = Path::new("contracts/tests").join(format!("{name}.test.ts"));
+    let test_existed = test_path.exists();
+
     if let Err(e) = tokio::fs::write(&path, &contract_source).await {
         step.fail();
         return Err(e.into());
     }
-    let test_path = Path::new("contracts/tests").join(format!("{name}.test.ts"));
-    if !test_path.exists() {
+    if !test_existed {
         if let Err(e) = tokio::fs::write(&test_path, &test_source).await {
+            let _ = tokio::fs::remove_file(&path).await;
             step.fail();
             return Err(e.into());
         }
@@ -1090,10 +1259,13 @@ describe("{name}", () => {{
     step.finish();
 
     let step = stacksdapp_shell::begin_step("Updated project configuration");
-    let clarinet_toml_path = Path::new("contracts/Clarinet.toml");
     let mut existing = match tokio::fs::read_to_string(clarinet_toml_path).await {
         Ok(s) => s,
         Err(e) => {
+            let _ = tokio::fs::remove_file(&path).await;
+            if !test_existed {
+                let _ = tokio::fs::remove_file(&test_path).await;
+            }
             step.fail();
             return Err(e.into());
         }
@@ -1113,6 +1285,10 @@ describe("{name}", () => {{
     ));
 
     if let Err(e) = tokio::fs::write(clarinet_toml_path, existing).await {
+        let _ = tokio::fs::remove_file(&path).await;
+        if !test_existed {
+            let _ = tokio::fs::remove_file(&test_path).await;
+        }
         step.fail();
         return Err(e.into());
     }
@@ -1120,6 +1296,13 @@ describe("{name}", () => {{
 
     let step = stacksdapp_shell::begin_step("Generated TypeScript bindings");
     if let Err(e) = stacksdapp_codegen::generate_all_quiet().await {
+        let _ = tokio::fs::remove_file(&path).await;
+        if !test_existed {
+            let _ = tokio::fs::remove_file(&test_path).await;
+        }
+        if let Some(backup) = clarinet_backup {
+            let _ = tokio::fs::write(clarinet_toml_path, backup).await;
+        }
         step.fail();
         return Err(e);
     }
@@ -1319,6 +1502,15 @@ fn validate_contract_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_contract_template(template: &str) -> Result<()> {
+    match template {
+        "blank" | "sip010" | "sip009" => Ok(()),
+        other => Err(anyhow!(
+            "Invalid contract template '{other}'. Expected one of: blank | sip010 | sip009"
+        )),
+    }
+}
+
 fn validate_safe_path_segment(name: &str, label: &str) -> Result<()> {
     if name.is_empty() {
         return Err(anyhow!("{label} cannot be empty"));
@@ -1411,5 +1603,107 @@ mod tests {
         assert!(validate_contract_name("a/b").is_err());
         assert!(validate_contract_name(&"a".repeat(41)).is_err());
         assert!(validate_contract_name("9bad").is_err());
+    }
+
+    #[test]
+    fn contract_template_rejects_unknown_values() {
+        assert!(validate_contract_template("blank").is_ok());
+        assert!(validate_contract_template("sip010").is_ok());
+        assert!(validate_contract_template("sip009").is_ok());
+        assert!(validate_contract_template("sip10").is_err());
+    }
+
+    #[test]
+    fn edge_case_names_reject_unicode_and_control_chars() {
+        assert!(validate_project_name("café").is_err());
+        assert!(validate_contract_name("tok\u{0000}en").is_err());
+        assert!(validate_project_name("my\u{200b}dapp").is_err());
+    }
+
+    #[test]
+    fn edge_case_names_reject_boundary_lengths() {
+        assert!(validate_project_name(&"a".repeat(64)).is_ok());
+        assert!(validate_project_name(&"a".repeat(65)).is_err());
+        assert!(validate_contract_name(&"a".repeat(40)).is_ok());
+        assert!(validate_contract_name(&"a".repeat(41)).is_err());
+    }
+
+    mod fuzz_validation {
+        use super::{validate_contract_name, validate_project_name, validate_safe_path_segment};
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn fuzz_safe_path_segment_rejects_path_separators(s in r"[^/\\]*[/\\][^/\\]*") {
+                prop_assume!(!s.is_empty());
+                prop_assert!(validate_safe_path_segment(&s, "fuzz").is_err());
+            }
+
+            #[test]
+            fn fuzz_safe_path_segment_rejects_null_bytes(s in r"\PC*") {
+                if s.contains('\0') {
+                    prop_assert!(validate_safe_path_segment(&s, "fuzz").is_err());
+                }
+            }
+
+            #[test]
+            fn fuzz_identifier_names_reject_leading_digits(s in r"[0-9][a-zA-Z0-9_-]*") {
+                prop_assume!(!s.is_empty() && s.len() <= 40);
+                prop_assert!(validate_contract_name(&s).is_err());
+                prop_assume!(s.len() <= 64);
+                prop_assert!(validate_project_name(&s).is_err());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod init_tests {
+    use super::InitRollback;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn init_rollback_removes_created_frontend_and_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let frontend = tmp.path().join("frontend");
+        let config = tmp.path().join("stacksdapp.toml");
+        tokio::fs::create_dir_all(&frontend).await.unwrap();
+        tokio::fs::write(&config, "marker = true\n").await.unwrap();
+        tokio::fs::write(frontend.join("package.json"), "{}")
+            .await
+            .unwrap();
+
+        let rollback = InitRollback {
+            frontend_created: true,
+            frontend_dir: frontend.clone(),
+            created_files: vec![config.clone()],
+            generated_touched: false,
+            pre_commit_backup: None,
+        };
+        rollback.apply().await;
+
+        assert!(!frontend.exists());
+        assert!(!config.exists());
+    }
+
+    #[tokio::test]
+    async fn init_rollback_restores_pre_commit_hook_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hook = tmp.path().join(".githooks/pre-commit");
+        tokio::fs::create_dir_all(hook.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&hook, "original\n").await.unwrap();
+
+        let rollback = InitRollback {
+            frontend_created: false,
+            frontend_dir: PathBuf::from("frontend"),
+            created_files: Vec::new(),
+            generated_touched: false,
+            pre_commit_backup: Some((hook.clone(), None)),
+        };
+        rollback.apply().await;
+
+        assert!(!hook.exists());
     }
 }
