@@ -11,9 +11,23 @@ Version history is reconstructed from git tags, `cli/Cargo.toml` version bumps, 
 
 ---
 
-## [Unreleased]
+## [0.2.0] — 2026-07-20 [Unreleased]
 
-## [0.2.0] — 2026-07-14
+### Fixed
+- Production audit remediation: deploy dry-run snapshot/restore, fail-closed txid parsing, init/add rollback, quiet/json output in deploy UI and watcher, partial deploy state recovery (devnet + remote Clarinet apply).
+- `defaults.network` validation from `stacksdapp.toml`; invalid values rejected at CLI dispatch.
+- Human error output uses `{e:#}` instead of Debug formatting.
+- `--json` success payloads for `new`, `init`, `add`, `deploy`, `dev`, and `upgrade`.
+- `reorder_clarinet_toml` restores `Clarinet.toml` on deploy pipeline failure.
+- Release scripts (`check-versions.sh`, `pub.sh`) and `LICENSE` tracked in git.
+- Workspace crate versions aligned to `0.2.0`.
+
+### Added
+
+- CI: `cargo clippy`, `verify-e2e.sh`, production hardening and frontend build/typecheck jobs.
+- Parser unit tests, scaffold proptest fuzz on name validation, init rollback tests.
+
+## [0.2.0] — 2026-07-14 [Unreleased]
 
 ### Added
 
