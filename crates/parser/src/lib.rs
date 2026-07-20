@@ -176,8 +176,9 @@ pub async fn parse_project(contracts_dir: &Path) -> Result<Vec<ContractAbi>> {
     let stdout = String::from_utf8(output.stdout)?;
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Print stderr always so the developer sees what the script actually said
-    if !stderr.trim().is_empty() {
+    // Keep nested quiet generates clean (e.g. `stacksdapp dev` spinner steps).
+    let quiet = std::env::var_os("STACKSDAPP_QUIET").is_some();
+    if !quiet && !stderr.trim().is_empty() {
         eprintln!("[export-abi] {}", stderr.trim());
     }
 
