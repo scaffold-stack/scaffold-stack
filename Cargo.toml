@@ -28,4 +28,5 @@ which          = "6"
 dirs           = "5"
 fs_extra       = "1"
 tempfile       = "3"
+proptest       = "1"
 
