@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v0.1.9). Leave empty to use the pushed tag."
+        description: "Tag to release (e.g. v0.2.0). Leave empty to use the pushed tag."
         required: false
         default: ""
 
@@ -18,8 +18,57 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-release-validate-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.tag }}" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [[ -z "$TAG" || "$TAG" == "main" ]]; then
+            echo "error: could not resolve release tag (expected v* tag push or workflow_dispatch input)" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $TAG"
+
+      - name: Cargo fmt
+        run: cargo fmt --all --check
+
+      - name: Run tests
+        run: cargo test --all
+
+      - name: Verify release tag matches CLI version
+        run: bash scripts/check-versions.sh --check-tag "${{ steps.meta.outputs.tag }}"
+
+      - name: Build release binary (sanity check)
+        run: cargo build --release --package stacksdapp
+
   build-binaries:
     name: Build ${{ matrix.target }}
+    needs: validate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -61,7 +110,7 @@ jobs:
           STAGE="${{ matrix.artifact }}"
           mkdir -p "$STAGE"
           cp "$BIN" "$STAGE/stacksdapp"
-          cp README.md CHANGELOG.md "$STAGE/"
+          cp README.md CHANGELOG.md LICENSE "$STAGE/"
           chmod +x "$STAGE/stacksdapp"
           tar -czf "${STAGE}.tar.gz" "$STAGE"
 
@@ -73,7 +122,7 @@ jobs:
 
   github-release:
     name: GitHub Release
-    needs: build-binaries
+    needs: [validate, build-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -87,14 +136,16 @@ jobs:
         id: meta
         shell: bash
         run: |
+          set -euo pipefail
           if [[ -n "${{ github.event.inputs.tag }}" ]]; then
             TAG="${{ github.event.inputs.tag }}"
           else
             TAG="${GITHUB_REF_NAME}"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          CLI_VER=$(grep -E '^version' cli/Cargo.toml | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+          CLI_VER=$(awk -F'"' '/^version[[:space:]]*=/ { print $2; exit }' cli/Cargo.toml)
           echo "cli_version=$CLI_VER" >> "$GITHUB_OUTPUT"
+          bash scripts/check-versions.sh --check-tag "$TAG"
           echo "Resolved tag=$TAG cli=$CLI_VER"
 
       - name: Create GitHub Release
