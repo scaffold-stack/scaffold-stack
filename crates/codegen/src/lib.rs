@@ -91,6 +91,11 @@ async fn generate_all_impl(quiet: bool) -> Result<()> {
         );
     }
 
+    // Silence nested export-abi status lines while a parent spinner owns the TTY.
+    if quiet {
+        std::env::set_var("STACKSDAPP_QUIET", "1");
+    }
+
     let log = |msg: String| {
         if !quiet {
             println!("{msg}");
