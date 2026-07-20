@@ -239,3 +239,57 @@ pub fn abi_type_to_ts(t: &AbiType) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{abi_type_to_ts, parse_abi, parse_abi_list, AbiType};
+
+    #[test]
+    fn parse_abi_list_accepts_empty_array() {
+        let abis = parse_abi_list("[]").unwrap();
+        assert!(abis.is_empty());
+    }
+
+    #[test]
+    fn parse_abi_list_rejects_non_array_json() {
+        assert!(parse_abi_list("{}").is_err());
+        assert!(parse_abi_list("null").is_err());
+        assert!(parse_abi_list("not-json").is_err());
+    }
+
+    #[test]
+    fn parse_abi_list_rejects_truncated_json() {
+        assert!(parse_abi_list("[{\"contract_name\":").is_err());
+    }
+
+    #[test]
+    fn parse_abi_list_rejects_missing_required_fields() {
+        let json = r#"[{"contract_name":"counter"}]"#;
+        assert!(parse_abi_list(json).is_err());
+    }
+
+    #[test]
+    fn parse_abi_parses_minimal_contract() {
+        let json = r#"{
+            "contract_id": "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.counter",
+            "contract_name": "counter",
+            "functions": [],
+            "variables": [],
+            "maps": [],
+            "fungible_tokens": [],
+            "non_fungible_tokens": []
+        }"#;
+        let abi = parse_abi(json).unwrap();
+        assert_eq!(abi.contract_name, "counter");
+    }
+
+    #[test]
+    fn abi_type_to_ts_maps_primitives() {
+        assert_eq!(abi_type_to_ts(&AbiType::Simple("uint128".into())), "bigint");
+        assert_eq!(abi_type_to_ts(&AbiType::Simple("bool".into())), "boolean");
+        assert_eq!(
+            abi_type_to_ts(&AbiType::Simple("unknown-type".into())),
+            "unknown"
+        );
+    }
+}
