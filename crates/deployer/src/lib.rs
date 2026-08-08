@@ -18,6 +18,14 @@ use tokio::process::Command;
 mod ui;
 use ui::DeployUi;
 
+/// Result metadata for deploy (used by `--json` and scripting).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployOutcome {
+    /// `dry-run`, `broadcast`, or `confirmed`
+    pub status: &'static str,
+    pub block_height: Option<u64>,
+}
+
 pub struct NetworkConfig {
     pub stacks_node: String,
 }
@@ -160,7 +168,14 @@ async fn fetch_core_tip_height(client: &reqwest::Client) -> Result<Option<u64>> 
     Ok(json.get("stacks_tip_height").and_then(|v| v.as_u64()))
 }
 
-pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool, yes: bool) -> Result<()> {
+pub async fn deploy(
+    network: &str,
+    contract: Option<&str>,
+    dry_run: bool,
+    yes: bool,
+    wait_confirm: bool,
+    no_auto_version: bool,
+) -> Result<DeployOutcome> {
     if !Path::new("contracts/Clarinet.toml").exists() {
         return Err(anyhow!(
             "No scaffold-stacks project found. Run from the directory created by stacksdapp new"
@@ -178,7 +193,17 @@ pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool, yes: b
         wait_for_devnet_node().await?;
     }
 
-    deploy_via_clarinet(&ui, network, contract, dry_run, yes).await
+    deploy_via_clarinet(
+        &ui,
+        network,
+        contract,
+        dry_run,
+        yes,
+        wait_confirm,
+        no_auto_version,
+        &config.stacks_node,
+    )
+    .await
 }
 
 // ── Core deploy ───────────────────────────────────────────────────────────────
@@ -186,6 +211,11 @@ pub async fn deploy(network: &str, contract: Option<&str>, dry_run: bool, yes: b
 struct DeployWriteSnapshot {
     clarinet_toml: Option<Vec<u8>>,
     deployment_files: HashMap<std::path::PathBuf, Vec<u8>>,
+}
+
+/// Full contract tree snapshot before auto-version renames (Clarinet.toml + all .clar sources).
+struct RenameSnapshot {
+    files: HashMap<std::path::PathBuf, Vec<u8>>,
 }
 
 async fn snapshot_deploy_writes(contracts_dir: &Path) -> Result<DeployWriteSnapshot> {
@@ -246,13 +276,65 @@ async fn restore_deploy_writes(contracts_dir: &Path, snapshot: &DeployWriteSnaps
     Ok(())
 }
 
+async fn snapshot_contract_state(contracts_dir: &Path) -> Result<RenameSnapshot> {
+    let clarinet_path = contracts_dir.join("Clarinet.toml");
+    let clarinet_raw = fs::read_to_string(&clarinet_path).await?;
+    let clarinet_struct: ClarinetToml = toml::from_str(&clarinet_raw)?;
+    let mut files = HashMap::new();
+    files.insert(clarinet_path, clarinet_raw.into_bytes());
+    if let Some(contracts) = clarinet_struct.contracts {
+        for entry in contracts.values() {
+            let path = contracts_dir.join(&entry.path);
+            if path.is_file() {
+                files.insert(path.clone(), fs::read(&path).await?);
+            }
+        }
+    }
+    Ok(RenameSnapshot { files })
+}
+
+async fn restore_rename_snapshot(contracts_dir: &Path, snapshot: &RenameSnapshot) -> Result<()> {
+    let contracts_src = contracts_dir.join("contracts");
+    if contracts_src.is_dir() {
+        let mut entries = fs::read_dir(&contracts_src).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "clar") && !snapshot.files.contains_key(&path)
+            {
+                let _ = fs::remove_file(&path).await;
+            }
+        }
+    }
+
+    for (path, content) in &snapshot.files {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(path, content).await?;
+    }
+    Ok(())
+}
+
+async fn ensure_rename_snapshot(
+    contracts_dir: &Path,
+    slot: &mut Option<RenameSnapshot>,
+) -> Result<()> {
+    if slot.is_none() {
+        *slot = Some(snapshot_contract_state(contracts_dir).await?);
+    }
+    Ok(())
+}
+
 async fn deploy_via_clarinet(
     ui: &DeployUi,
     network: &str,
     contract: Option<&str>,
     dry_run: bool,
     yes: bool,
-) -> Result<()> {
+    wait_confirm: bool,
+    no_auto_version: bool,
+    stacks_node: &str,
+) -> Result<DeployOutcome> {
     let contracts_dir = std::path::Path::new("contracts");
 
     let step = ui.begin_step("Analyzing project");
@@ -273,13 +355,36 @@ async fn deploy_via_clarinet(
 
     if dry_run {
         let snapshot = snapshot_deploy_writes(contracts_dir).await?;
-        let result =
-            run_deploy_pipeline(ui, network, contract, dry_run, yes, contracts_dir, &ordered).await;
+        let result = run_deploy_pipeline(
+            ui,
+            network,
+            contract,
+            dry_run,
+            yes,
+            wait_confirm,
+            no_auto_version,
+            stacks_node,
+            contracts_dir,
+            &ordered,
+        )
+        .await;
         restore_deploy_writes(contracts_dir, &snapshot).await?;
         return result;
     }
 
-    run_deploy_pipeline(ui, network, contract, dry_run, yes, contracts_dir, &ordered).await
+    run_deploy_pipeline(
+        ui,
+        network,
+        contract,
+        dry_run,
+        yes,
+        wait_confirm,
+        no_auto_version,
+        stacks_node,
+        contracts_dir,
+        &ordered,
+    )
+    .await
 }
 
 async fn run_deploy_pipeline(
@@ -288,21 +393,39 @@ async fn run_deploy_pipeline(
     contract: Option<&str>,
     dry_run: bool,
     yes: bool,
+    wait_confirm: bool,
+    no_auto_version: bool,
+    stacks_node: &str,
     contracts_dir: &Path,
     ordered: &[String],
-) -> Result<()> {
+) -> Result<DeployOutcome> {
     let clarinet_path = contracts_dir.join("Clarinet.toml");
     let clarinet_backup = if !dry_run {
         Some(fs::read(&clarinet_path).await?)
     } else {
         None
     };
+    let mut rename_snapshot: Option<RenameSnapshot> = None;
 
-    let result =
-        run_deploy_pipeline_inner(ui, network, contract, dry_run, yes, contracts_dir, ordered)
-            .await;
+    let result = run_deploy_pipeline_inner(
+        ui,
+        network,
+        contract,
+        dry_run,
+        yes,
+        wait_confirm,
+        no_auto_version,
+        stacks_node,
+        contracts_dir,
+        ordered,
+        &mut rename_snapshot,
+    )
+    .await;
 
     if result.is_err() {
+        if let Some(snapshot) = rename_snapshot {
+            let _ = restore_rename_snapshot(contracts_dir, &snapshot).await;
+        }
         if let Some(bytes) = clarinet_backup {
             let _ = fs::write(&clarinet_path, bytes).await;
         }
@@ -316,9 +439,13 @@ async fn run_deploy_pipeline_inner(
     contract: Option<&str>,
     dry_run: bool,
     yes: bool,
+    wait_confirm: bool,
+    no_auto_version: bool,
+    stacks_node: &str,
     contracts_dir: &Path,
     ordered: &[String],
-) -> Result<()> {
+    rename_snapshot: &mut Option<RenameSnapshot>,
+) -> Result<DeployOutcome> {
     let fee_flag = "--low-cost";
 
     let step = ui.begin_step("Resolving contract dependencies");
@@ -358,7 +485,24 @@ async fn run_deploy_pipeline_inner(
                     "dry run note: conflicting contract names would be versioned on apply",
                 );
             }
-            return Ok(());
+            return Ok(DeployOutcome {
+                status: "dry-run",
+                block_height: None,
+            });
+        }
+
+        if no_auto_version && !renames.is_empty() {
+            let conflicts: Vec<String> = renames
+                .iter()
+                .map(|r| format!("{} (network has {}; would rename to {})", r.from, r.from, r.to))
+                .collect();
+            return Err(anyhow!(
+                "Contract name conflict on {network}: {}.\n\
+                 Omit --no-auto-version to allow auto-versioning (e.g. counter → counter-v2), \
+                 or pick a new contract name.\n\
+                 Tip: commit your project before deploying to testnet/mainnet.",
+                conflicts.join(", ")
+            ));
         }
 
         let deployer = get_deployer_from_plan(network).await?;
@@ -371,6 +515,7 @@ async fn run_deploy_pipeline_inner(
         }
 
         if !renames.is_empty() {
+            ensure_rename_snapshot(contracts_dir, rename_snapshot).await?;
             let step = ui.begin_step("Applying versioned contract names");
             if let Err(e) = apply_contract_renames(&renames).await {
                 step.fail();
@@ -398,6 +543,13 @@ async fn run_deploy_pipeline_inner(
             let retry_renames =
                 plan_conflicting_contract_renames(network, effective_contract.as_deref()).await?;
             if !retry_renames.is_empty() {
+                if no_auto_version {
+                    return Err(anyhow!(
+                        "Contract still exists on {network} after versioning. \
+                         Remove --no-auto-version or choose a new contract name."
+                    ));
+                }
+                ensure_rename_snapshot(contracts_dir, rename_snapshot).await?;
                 apply_contract_renames(&retry_renames).await?;
                 effective_contract = effective_contract
                     .as_deref()
@@ -418,6 +570,8 @@ async fn run_deploy_pipeline_inner(
                 network,
                 &clarinet_output2,
                 effective_contract.as_deref(),
+                wait_confirm,
+                stacks_node,
             )
             .await;
         }
@@ -427,6 +581,8 @@ async fn run_deploy_pipeline_inner(
             network,
             &clarinet_output,
             effective_contract.as_deref(),
+            wait_confirm,
+            stacks_node,
         )
         .await;
     }
@@ -435,10 +591,21 @@ async fn run_deploy_pipeline_inner(
         run_generate_and_apply(ui, network, fee_flag, contract, dry_run, yes, false).await?;
 
     if dry_run {
-        return Ok(());
+        return Ok(DeployOutcome {
+            status: "dry-run",
+            block_height: None,
+        });
     }
 
-    write_deployments_json_from_output(ui, network, &clarinet_output, contract).await
+    write_deployments_json_from_output(
+        ui,
+        network,
+        &clarinet_output,
+        contract,
+        wait_confirm,
+        stacks_node,
+    )
+    .await
 }
 
 async fn reorder_clarinet_toml(
@@ -977,7 +1144,17 @@ async fn write_partial_deployments_from_output(
     captured_stdout: &str,
     contract: Option<&str>,
 ) -> Result<()> {
-    write_deployments_json_from_output(ui, network, captured_stdout, contract).await
+    let stacks_node = network_config(network)?.stacks_node;
+    let _ = write_deployments_json_from_output(
+        ui,
+        network,
+        captured_stdout,
+        contract,
+        false,
+        &stacks_node,
+    )
+    .await?;
+    Ok(())
 }
 
 async fn read_deployment_plan(network: &str) -> Result<DeploymentPlanFile> {
@@ -1465,11 +1642,19 @@ fn strip_version_suffix(name: &str) -> String {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn validate_settings_mnemonic(network: &str) -> Result<()> {
-    let path = format!("contracts/settings/{}.toml", capitalize(network));
-    let raw =
-        std::fs::read_to_string(&path).map_err(|_| anyhow!("Settings file not found: {path}"))?;
-    let mnemonic = parse_mnemonic(&raw).unwrap_or_default();
-    if mnemonic.is_empty() || mnemonic.contains('<') || mnemonic.contains('>') {
+    let path = stacksdapp_shell::settings_relative_path(network);
+    let raw = std::fs::read_to_string(&path).map_err(|_| anyhow!("Settings file not found: {path}"))?;
+    let parsed = stacksdapp_shell::parse_deployer_mnemonic(&raw).ok_or_else(|| {
+        anyhow!(
+            "No [accounts.deployer].mnemonic in {path}.\n\
+             Add your deployer seed phrase:\n\n\
+             [accounts.deployer]\n\
+             mnemonic = \"your 24 words here\"\n\n\
+             Get testnet STX: https://explorer.hiro.so/sandbox/faucet?chain=testnet"
+        )
+    })?;
+
+    if stacksdapp_shell::is_mnemonic_placeholder(&parsed.mnemonic) {
         return Err(anyhow!(
             "No valid mnemonic in {path}.\n\
              Add your deployer seed phrase:\n\n\
@@ -1478,6 +1663,24 @@ fn validate_settings_mnemonic(network: &str) -> Result<()> {
              Get testnet STX: https://explorer.hiro.so/sandbox/faucet?chain=testnet"
         ));
     }
+
+    if stacksdapp_shell::is_public_devnet_mnemonic(&parsed.mnemonic) {
+        return Err(anyhow!(
+            "This is a public devnet mnemonic in {path} (line {}).\n\
+             Devnet seeds are publicly known — use a fresh wallet for {network}.\n\
+             Generate a new seed and fund it via the testnet faucet.",
+            parsed.line_number,
+            network = network
+        ));
+    }
+
+    if let Err(detail) = stacksdapp_shell::validate_mnemonic_word_format(&parsed.mnemonic) {
+        return Err(anyhow!(
+            "Invalid deployer mnemonic in {path} (line {}): {detail}",
+            parsed.line_number
+        ));
+    }
+
     Ok(())
 }
 
@@ -1581,7 +1784,9 @@ async fn write_deployments_json_from_output(
     network: &str,
     output: &str,
     contract: Option<&str>,
-) -> Result<()> {
+    wait_confirm: bool,
+    stacks_node: &str,
+) -> Result<DeployOutcome> {
     let mut txid_map: HashMap<String, String> = HashMap::new();
     let mut actual_deployer = None;
     for line in output.lines() {
@@ -1622,6 +1827,22 @@ async fn write_deployments_json_from_output(
         wait_for_devnet_contracts(&deployer_address, &contract_names).await?;
     }
 
+    let mut deploy_status = if network == "devnet" {
+        "confirmed"
+    } else {
+        "broadcast"
+    };
+    let mut block_height: Option<u64> = None;
+
+    if (network == "testnet" || network == "mainnet") && wait_confirm {
+        ui.waiting_confirmation();
+        block_height =
+            wait_for_remote_contracts(stacks_node, &deployer_address, &contract_names).await?;
+        deploy_status = "confirmed";
+    }
+
+    let confirmed_height = block_height.unwrap_or(0);
+
     let mut contracts_map = if contract.is_some() {
         load_existing_deployments_for_network(network).await?
     } else {
@@ -1659,7 +1880,7 @@ async fn write_deployments_json_from_output(
             DeploymentInfo {
                 contract_id,
                 tx_id: txid,
-                block_height: 0,
+                block_height: confirmed_height,
             },
         );
     }
@@ -1679,8 +1900,11 @@ async fn write_deployments_json_from_output(
     // Ensure bindings are fresh after rename (quiet).
     run_generate_quiet().await?;
 
-    ui.success(&success_entries);
-    Ok(())
+    ui.success(&success_entries, deploy_status);
+    Ok(DeployOutcome {
+        status: deploy_status,
+        block_height,
+    })
 }
 
 async fn load_existing_deployments_for_network(
@@ -1865,6 +2089,79 @@ async fn wait_for_devnet_contracts(deployer: &str, contract_names: &[String]) ->
     ))
 }
 
+async fn wait_for_remote_contracts(
+    stacks_node: &str,
+    deployer: &str,
+    contract_names: &[String],
+) -> Result<Option<u64>> {
+    if contract_names.is_empty() {
+        return Ok(None);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()?;
+    let node = stacks_node.trim_end_matches('/');
+
+    ui_log_wait_start();
+
+    for attempt in 1..=120 {
+        let mut pending = Vec::new();
+        for contract_name in contract_names {
+            let url = format!("{node}/v2/contracts/source/{deployer}/{contract_name}?proof=0");
+            let deployed = client
+                .get(&url)
+                .send()
+                .await
+                .map(|response| response.status().is_success())
+                .unwrap_or(false);
+            if !deployed {
+                pending.push(contract_name.clone());
+            }
+        }
+
+        if pending.is_empty() {
+            let mut tip = None;
+            if let Ok(response) = client.get(format!("{node}/v2/info")).send().await {
+                if let Ok(info) = response.json::<CoreInfoResponse>().await {
+                    tip = Some(info.stacks_tip_height);
+                }
+            }
+            return Ok(tip);
+        }
+
+        let _ = attempt;
+        if attempt == 1 || attempt % 5 == 0 {
+            ui_log_wait_tick(attempt, &pending);
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    Err(anyhow!(
+        "Timed out waiting for on-chain confirmation after broadcast.\n\
+         Contracts still pending: {}.\n\
+         Transactions were submitted — verify txids on the explorer.\n\
+         Re-run without --wait-confirm for the default fast broadcast-only flow.",
+        contract_names.join(", ")
+    ))
+}
+
+fn ui_log_wait_start() {
+    if !stacksdapp_shell::is_quiet() {
+        println!("Broadcast complete — waiting for chain confirmation (--wait-confirm)...");
+    }
+}
+
+fn ui_log_wait_tick(attempt: u32, pending: &[String]) {
+    if !stacksdapp_shell::is_quiet() {
+        let secs = attempt as u64 * 2;
+        eprintln!(
+            "  still waiting ({secs}s) — pending: {}",
+            pending.join(", ")
+        );
+    }
+}
+
 async fn probe_stacks_api_health() -> Result<bool> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
@@ -2018,6 +2315,9 @@ mod tests {
     use reqwest::StatusCode;
     use std::collections::{HashMap, HashSet};
     use std::fs;
+    use std::sync::Mutex;
+
+    static CWD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_strip_version_suffix() {
@@ -2291,5 +2591,77 @@ path = "contracts/c.clar"
             1, 2
         );
         assert!(err.contains("recorded in deployments.json"));
+    }
+
+    #[test]
+    fn validate_settings_rejects_public_devnet_mnemonic_on_testnet() {
+        let _lock = CWD_TEST_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let settings_dir = tmp.path().join("contracts/settings");
+        fs::create_dir_all(&settings_dir).unwrap();
+        fs::write(
+            settings_dir.join("Testnet.toml"),
+            format!(
+                "[accounts.deployer]\nmnemonic = \"{}\"\n",
+                stacksdapp_shell::PUBLIC_DEVNET_MNEMONICS[0]
+            ),
+        )
+        .unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let err = super::validate_settings_mnemonic("testnet").unwrap_err();
+        std::env::set_current_dir(prev).unwrap();
+        assert!(err.to_string().contains("public devnet mnemonic"));
+    }
+
+    #[test]
+    fn validate_settings_rejects_invalid_word_count() {
+        let _lock = CWD_TEST_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let settings_dir = tmp.path().join("contracts/settings");
+        fs::create_dir_all(&settings_dir).unwrap();
+        fs::write(
+            settings_dir.join("Testnet.toml"),
+            "[accounts.deployer]\nmnemonic = \"one two three\"\n",
+        )
+        .unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let err = super::validate_settings_mnemonic("testnet").unwrap_err();
+        std::env::set_current_dir(prev).unwrap();
+        assert!(err.to_string().contains("mnemonic has 3 words"));
+    }
+
+    #[tokio::test]
+    async fn rename_snapshot_restores_clar_and_clarinet_after_simulated_rename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let contracts_dir = tmp.path().join("contracts");
+        let src_dir = contracts_dir.join("contracts");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(
+            contracts_dir.join("Clarinet.toml"),
+            "[contracts.counter]\npath = \"contracts/counter.clar\"\n",
+        )
+        .unwrap();
+        fs::write(src_dir.join("counter.clar"), "(define-read-only (get) (ok u0))").unwrap();
+
+        let snapshot = super::snapshot_contract_state(&contracts_dir)
+            .await
+            .unwrap();
+        fs::rename(src_dir.join("counter.clar"), src_dir.join("counter-v2.clar")).unwrap();
+        fs::write(
+            contracts_dir.join("Clarinet.toml"),
+            "[contracts.counter-v2]\npath = \"contracts/counter-v2.clar\"\n",
+        )
+        .unwrap();
+
+        super::restore_rename_snapshot(&contracts_dir, &snapshot)
+            .await
+            .unwrap();
+
+        assert!(src_dir.join("counter.clar").exists());
+        assert!(!src_dir.join("counter-v2.clar").exists());
+        let clarinet = fs::read_to_string(contracts_dir.join("Clarinet.toml")).unwrap();
+        assert!(clarinet.contains("[contracts.counter]"));
     }
 }
