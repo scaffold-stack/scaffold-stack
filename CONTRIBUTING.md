@@ -13,6 +13,28 @@ Thanks for helping improve `stacksdapp`. This guide covers local development, ch
 
 Run `stacksdapp doctor` after building to verify your machine.
 
+## Git hooks (mnemonic guard)
+
+`stacksdapp new` and `stacksdapp init` install `.githooks/pre-commit`, which blocks commits that look like real BIP39 seed phrases in `contracts/settings/Testnet.toml` or `Mainnet.toml`. Enable it in a project:
+
+```bash
+git config core.hooksPath .githooks
+# or
+npm run setup-hooks
+```
+
+`stacksdapp doctor --strict` warns when you run doctor inside a scaffold project and `core.hooksPath` is not `.githooks` (or the hook file is missing).
+
+### Emergency bypass (not for routine use)
+
+The hook can be disabled for a **single commit** with:
+
+```bash
+SCAFFOLD_ALLOW_COMMITTED_MNEMONIC=1 git commit ...
+```
+
+This prints **BYPASS ACTIVE** to stderr and skips the guard. Use only when debugging a false positive or in a private repo with intentional test keys — never for mainnet mnemonics. Prefer env-based or gitignored local settings files instead of committing seeds.
+
 ## Setup
 
 ```bash
