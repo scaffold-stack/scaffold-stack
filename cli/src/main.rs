@@ -111,6 +111,13 @@ enum Commands {
         /// (required for non-interactive testnet/mainnet deploys)
         #[arg(short = 'y', long)]
         yes: bool,
+        /// After broadcast, poll the node until contracts appear on chain (testnet/mainnet only).
+        /// Default: exit once transactions are in the mempool (faster; verify txids on explorer).
+        #[arg(long)]
+        wait_confirm: bool,
+        /// Fail instead of auto-versioning contract names on redeploy (e.g. counter → counter-v2)
+        #[arg(long)]
+        no_auto_version: bool,
     },
     /// Run contract and frontend tests (vitest)
     Test,
@@ -157,15 +164,15 @@ async fn main() -> ExitCode {
             let code = exit_code_for(&e);
             let kind = code_name_for(&e);
             if shell::is_json() {
-                if !shell::json_already_emitted() {
-                    shell::emit_json(&json!({
-                        "ok": false,
-                        "command": "stacksdapp",
-                        "error": e.to_string(),
-                        "code": kind,
-                        "exit_code": code,
-                    }));
-                }
+                // Always emit failure JSON so automation sees errors even if a prior
+                // success payload was written (e.g. dev crashed after ready).
+                shell::emit_json(&json!({
+                    "ok": false,
+                    "command": "stacksdapp",
+                    "error": e.to_string(),
+                    "code": kind,
+                    "exit_code": code,
+                }));
             } else {
                 eprintln!("Error: {e:#}");
                 shell::debug(1, format!("exit_code={code} ({kind})"));
@@ -207,15 +214,6 @@ async fn dispatch(cli: Cli) -> Result<()> {
             keep_state,
         } => {
             let network = resolve_default_network(network.as_deref())?;
-            emit_command_ok(
-                "dev",
-                json!({
-                    "network": network,
-                    "auto_deploy": auto_deploy,
-                    "keep_state": keep_state,
-                    "status": "starting",
-                }),
-            );
             stacksdapp_process_supervisor::dev(&network, auto_deploy, keep_state).await
         }
         Commands::Generate { watch } => run_generate(watch).await,
@@ -238,22 +236,31 @@ async fn dispatch(cli: Cli) -> Result<()> {
             contract,
             dry_run,
             yes,
+            wait_confirm,
+            no_auto_version,
         } => {
             let network = resolve_default_network(network.as_deref())?;
-            stacksdapp_deployer::deploy(&network, contract.as_deref(), dry_run, yes)
-                .await
-                .map_err(|e| {
-                    let msg = format!("{e:#}");
-                    let lower = msg.to_ascii_lowercase();
-                    if lower.contains("refusing to deploy")
-                        || lower.contains("aborted")
-                        || lower.contains("confirmation cancelled")
-                    {
-                        anyhow::Error::new(CliError::Aborted(msg))
-                    } else {
-                        anyhow::Error::new(CliError::Deploy(msg))
-                    }
-                })?;
+            let outcome = stacksdapp_deployer::deploy(
+                &network,
+                contract.as_deref(),
+                dry_run,
+                yes,
+                wait_confirm,
+                no_auto_version,
+            )
+            .await
+            .map_err(|e| {
+                let msg = format!("{e:#}");
+                let lower = msg.to_ascii_lowercase();
+                if lower.contains("refusing to deploy")
+                    || lower.contains("aborted")
+                    || lower.contains("confirmation cancelled")
+                {
+                    anyhow::Error::new(CliError::Aborted(msg))
+                } else {
+                    anyhow::Error::new(CliError::Deploy(msg))
+                }
+            })?;
             emit_command_ok(
                 "deploy",
                 json!({
@@ -261,6 +268,10 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     "contract": contract,
                     "dry_run": dry_run,
                     "yes": yes,
+                    "wait_confirm": wait_confirm,
+                    "no_auto_version": no_auto_version,
+                    "status": outcome.status,
+                    "block_height": outcome.block_height,
                 }),
             );
             Ok(())
