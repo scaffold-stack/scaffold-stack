@@ -226,6 +226,14 @@ mnemonic = "<YOUR PRIVATE MAINNET MNEMONIC HERE>"
 const GIT_HOOK_PRE_COMMIT: &str = r#"#!/bin/sh
 # Installed by scaffold-stacks — block likely seed phrases in Testnet/Mainnet settings.
 if [ -n "${SCAFFOLD_ALLOW_COMMITTED_MNEMONIC}" ]; then
+  echo "" >&2
+  echo "================================================================" >&2
+  echo "  scaffold-stacks git hook: BYPASS ACTIVE" >&2
+  echo "================================================================" >&2
+  echo "  SCAFFOLD_ALLOW_COMMITTED_MNEMONIC is set — mnemonic guard skipped." >&2
+  echo "  Emergency override only; do not use for routine commits." >&2
+  echo "================================================================" >&2
+  echo "" >&2
   exit 0
 fi
 
@@ -1601,6 +1609,15 @@ mod tests {
         assert!(validate_contract_template("sip010").is_ok());
         assert!(validate_contract_template("sip009").is_ok());
         assert!(validate_contract_template("sip10").is_err());
+    }
+
+    #[test]
+    fn pre_commit_hook_logs_loudly_when_bypass_env_set() {
+        assert!(
+            GIT_HOOK_PRE_COMMIT.contains("BYPASS ACTIVE"),
+            "hook must warn loudly when SCAFFOLD_ALLOW_COMMITTED_MNEMONIC is set"
+        );
+        assert!(GIT_HOOK_PRE_COMMIT.contains("SCAFFOLD_ALLOW_COMMITTED_MNEMONIC"));
     }
 
     #[test]
