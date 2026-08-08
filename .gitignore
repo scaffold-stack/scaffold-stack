@@ -12,3 +12,4 @@ scripts/verify-p1-display.sh
 scripts/verify-p1-exit-codes.sh
 scripts/verify-functional.sh
 pub.sh
+file.md
