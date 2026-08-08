@@ -144,7 +144,9 @@ stacksdapp check
 
 ### Iterate and redeploy
 
-Because Stacks contracts are immutable, redeploying after changes auto-versions the contract name (`counter` → `counter-v2` → `counter-v3`). The CLI handles this automatically — no manual renaming needed.
+Because Stacks contracts are immutable, redeploying after changes auto-versions the contract name (`counter` → `counter-v2` → `counter-v3`). The CLI handles this automatically — no manual renaming needed. Use `--no-auto-version` to fail instead of renaming.
+
+**Testnet/mainnet deploy semantics:** By default, `deploy` exits once transactions are **broadcast** to the mempool (fast; no frozen terminal). Verify txids on the [Hiro explorer](https://explorer.hiro.so). Use `--wait-confirm` when you need the CLI to block until contracts are on chain (CI gates). Devnet always waits for local core confirmation.
 
 ---
 
@@ -227,6 +229,8 @@ my-app/
 | `stacksdapp deploy --network testnet --contract <name>` | Deploy only one contract by name |
 | `stacksdapp deploy --network testnet --dry-run` | Generate plan + estimated fee without broadcasting |
 | `stacksdapp deploy --network testnet -y` | Non-interactive deploy (skip confirmation / Clarinet fee prompts) |
+| `stacksdapp deploy --network testnet --wait-confirm` | Poll until contracts appear on chain (default: exit after mempool broadcast) |
+| `stacksdapp deploy --network testnet --no-auto-version` | Fail on name conflict instead of auto-renaming (`counter` → `counter-v2`) |
 | `stacksdapp deploy --network mainnet` | Deploy to mainnet |
 | `stacksdapp deploy --network devnet` | Deploy to local devnet |
 | `stacksdapp generate [--watch]` | Parse ABIs → regenerate TS bindings + debug UI |
@@ -244,7 +248,7 @@ my-app/
 | `-v` / `-vv`… | Increase diagnostic verbosity |
 | `-q` / `--quiet` | Suppress non-error human logs |
 | `--color auto\|always\|never` | Color control (default `auto`) |
-| `--json` | Machine-readable stdout (single JSON object) |
+| `--json` | Machine-readable stdout (single JSON object per command; `dev` emits once when the frontend is **ready**, errors always emit JSON) |
 | `--root <PATH>` | Project root (or set `STACKSDAPP_ROOT`); otherwise walks up for `stacksdapp.toml` / `contracts/Clarinet.toml` |
 
 ### Exit codes
