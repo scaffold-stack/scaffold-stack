@@ -133,6 +133,46 @@ fn print_ready_panel(network: &str, local_url: &str, tip_height: Option<u64>) {
     stacksdapp_shell::rule();
 }
 
+/// JSON payload emitted once when `stacksdapp dev --json` reaches a ready frontend (not at start).
+pub fn dev_ready_json_payload(
+    network: &str,
+    local_url: &str,
+    tip_height: Option<u64>,
+    auto_deploy: bool,
+    keep_state: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "command": "dev",
+        "status": "ready",
+        "network": network,
+        "url": local_url,
+        "tip_height": tip_height,
+        "auto_deploy": auto_deploy,
+        "keep_state": keep_state,
+    })
+}
+
+fn notify_dev_ready(
+    network: &str,
+    local_url: &str,
+    tip_height: Option<u64>,
+    auto_deploy: bool,
+    keep_state: bool,
+) {
+    if stacksdapp_shell::is_json() {
+        stacksdapp_shell::emit_json(&dev_ready_json_payload(
+            network,
+            local_url,
+            tip_height,
+            auto_deploy,
+            keep_state,
+        ));
+        return;
+    }
+    print_ready_panel(network, local_url, tip_height);
+}
+
 async fn dev_devnet(auto_deploy: bool, keep_state: bool) -> Result<()> {
     stacksdapp_shell::print_banner("Development Mode 🌱");
 
@@ -235,7 +275,7 @@ async fn dev_devnet(auto_deploy: bool, keep_state: bool) -> Result<()> {
     match tokio::time::timeout(Duration::from_secs(120), ready_rx).await {
         Ok(Ok(url)) => {
             step.finish();
-            print_ready_panel("devnet", &url, tip_height);
+            notify_dev_ready("devnet", &url, tip_height, auto_deploy, keep_state);
         }
         Ok(Err(_)) => {
             step.fail();
@@ -337,7 +377,7 @@ async fn dev_remote(network: &str) -> Result<()> {
     match tokio::time::timeout(Duration::from_secs(120), ready_rx).await {
         Ok(Ok(url)) => {
             step.finish();
-            print_ready_panel(network, &url, None);
+            notify_dev_ready(network, &url, None, false, false);
         }
         Ok(Err(_)) => {
             step.fail();
@@ -389,7 +429,7 @@ async fn dev_remote(network: &str) -> Result<()> {
 async fn run_auto_deploy() {
     match stacksdapp_deployer::wait_for_devnet_node().await {
         Ok(()) => {
-            if let Err(e) = stacksdapp_deployer::deploy("devnet", None, false, false).await {
+            if let Err(e) = stacksdapp_deployer::deploy("devnet", None, false, false, false, false).await {
                 stacksdapp_shell::println_human_safe(format!("[dev] Auto-deploy failed: {e:#}"));
                 stacksdapp_shell::println_human_safe(
                     "[dev] You can deploy manually in another terminal: stacksdapp deploy --network devnet",
@@ -1561,5 +1601,25 @@ bitcoin_controller_block_time = 1_000
         assert!(changed);
         assert!(updated.contains("bitcoin_controller_block_time = 15_000"));
         assert!(!updated.contains("bitcoin_controller_block_time = 1_000"));
+    }
+
+    #[test]
+    fn dev_ready_json_payload_uses_ready_status_not_starting() {
+        let payload = super::dev_ready_json_payload(
+            "devnet",
+            "http://localhost:3000",
+            Some(42),
+            true,
+            false,
+        );
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["command"], "dev");
+        assert_eq!(payload["status"], "ready");
+        assert_ne!(payload["status"], "starting");
+        assert_eq!(payload["network"], "devnet");
+        assert_eq!(payload["url"], "http://localhost:3000");
+        assert_eq!(payload["tip_height"], 42);
+        assert_eq!(payload["auto_deploy"], true);
+        assert_eq!(payload["keep_state"], false);
     }
 }
