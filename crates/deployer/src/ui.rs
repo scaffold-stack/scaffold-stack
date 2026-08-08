@@ -296,6 +296,7 @@ impl DeployUi {
     pub fn success(
         &self,
         entries: &[(String, String, String)], // name, full_contract_id, full_txid
+        deploy_status: &str,
     ) {
         if !human_output_enabled() {
             return;
@@ -393,11 +394,24 @@ impl DeployUi {
                     println!("{}", url.truecolor(167, 139, 250));
                 }
                 println!();
-                println!(
-                    "{}",
-                    "Note: the explorer link may take 10–15 seconds to show the transaction while it indexes."
-                        .truecolor(156, 163, 175)
-                );
+                if deploy_status == "broadcast" {
+                    println!(
+                        "{}",
+                        "Note: transactions were broadcast to the mempool. Verify txids on the explorer."
+                            .truecolor(156, 163, 175)
+                    );
+                    println!(
+                        "{}",
+                        "Use --wait-confirm to block until contracts appear on chain."
+                            .truecolor(156, 163, 175)
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        "Note: the explorer link may take 10–15 seconds to show the transaction while it indexes."
+                            .truecolor(156, 163, 175)
+                    );
+                }
                 println!();
             }
         }
@@ -483,7 +497,10 @@ mod tests {
         ui.step_detail("hidden");
         ui.print_summary("ST1PQ", &["counter".into()], 1000);
         ui.dry_run_done(&["counter".into()], 1000);
-        ui.success(&[("counter".into(), "ST1PQ.counter".into(), "0xabc".into())]);
+        ui.success(
+            &[("counter".into(), "ST1PQ.counter".into(), "0xabc".into())],
+            "confirmed",
+        );
         ui.begin_step("quiet step").finish();
     }
 }
