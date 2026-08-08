@@ -2,9 +2,15 @@
 //! Init once from `main` via [`init`]. Commands and crates then use [`status`],
 //! [`warn`], [`error`], [`debug`], and [`emit_json`].
 
+pub mod mnemonic;
 pub mod project;
 pub mod steps;
 
+pub use mnemonic::{
+    check_deployer_mnemonic, inspect_settings_file, is_mnemonic_placeholder,
+    is_public_devnet_mnemonic, parse_deployer_mnemonic, settings_relative_path,
+    validate_mnemonic_word_format, MnemonicCheck, ParsedDeployerMnemonic, PUBLIC_DEVNET_MNEMONICS,
+};
 pub use project::{
     default_config_toml, enter_scaffold_root, find_init_root, find_scaffold_root, load_config,
     project_root, resolve_scaffold_root, validate_network, StacksdappConfig, CONFIG_FILE,
