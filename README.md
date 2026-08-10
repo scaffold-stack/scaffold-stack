@@ -10,7 +10,7 @@ A Rust-powered CLI (`stacksdapp`) and Next.js template for building full-stack S
 |---|---|---|
 | **Rust** 1.75+ | [rustup.rs](https://rustup.rs) | Building the CLI |
 | **Node.js** 20+ | [nodejs.org](https://nodejs.org) | Frontend + contract tests |
-| **Clarinet** 3.21+ | `brew install clarinet` | Contract toolchain |
+| **Clarinet** 3.23+ | `brew install clarinet` | Contract toolchain (C6 devnet requires 3.23+) |
 | **Leather or Xverse** | [leather.io](https://leather.io) | Wallet for testnet/mainnet |
 | **Docker Desktop** | [docker.com](https://docker.com) | Local devnet only |
 
