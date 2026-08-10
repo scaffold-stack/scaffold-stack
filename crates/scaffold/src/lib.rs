@@ -1056,7 +1056,7 @@ fn default_epoch_for_clarity(clarity_version: u8) -> &'static str {
 
 fn validate_clarity_version(version: u8) -> Result<()> {
     match version {
-        4 | 5 | 6 => Ok(()),
+        4..=6 => Ok(()),
         _ => Err(anyhow!(
             "Unsupported clarity version {version} (supported: 4, 5, 6)"
         )),

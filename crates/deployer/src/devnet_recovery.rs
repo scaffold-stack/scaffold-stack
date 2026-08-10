@@ -226,10 +226,10 @@ pub async fn ensure_devnet_chain_mining(context: &str) -> Result<()> {
         if second.stacks_tip_height > first.stacks_tip_height {
             return Ok(());
         }
-        if !is_devnet_chain_stalled(&first, &second) {
-            if wait_for_stacks_tip_above(first.stacks_tip_height, Duration::from_secs(45)).await {
-                return Ok(());
-            }
+        if !is_devnet_chain_stalled(&first, &second)
+            && wait_for_stacks_tip_above(first.stacks_tip_height, Duration::from_secs(45)).await
+        {
+            return Ok(());
         }
         // Stalled sample — fall through to recovery using latest observation.
         return recover_devnet_chain_mining(&project, context, &second).await;

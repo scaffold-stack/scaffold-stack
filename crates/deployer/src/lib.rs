@@ -362,6 +362,7 @@ async fn ensure_rename_snapshot(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn deploy_via_clarinet(
     ui: &DeployUi,
     network: &str,
@@ -424,6 +425,7 @@ async fn deploy_via_clarinet(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_deploy_pipeline(
     ui: &DeployUi,
     network: &str,
@@ -470,6 +472,7 @@ async fn run_deploy_pipeline(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_deploy_pipeline_inner(
     ui: &DeployUi,
     network: &str,
@@ -1113,13 +1116,11 @@ async fn run_clarinet_deployments_apply(
         .await
         .map_err(|_| anyhow!("Timed out waiting for clarinet deployments apply to finish"))??;
 
-    if broadcast_count == 0 {
-        if captured_stdout.contains("Publish ST1") {
-            return Err(anyhow!(
-                "clarinet deployments apply did not confirm any broadcasts.\nOutput:\n{}",
-                captured_stdout.trim()
-            ));
-        }
+    if broadcast_count == 0 && captured_stdout.contains("Publish ST1") {
+        return Err(anyhow!(
+            "clarinet deployments apply did not confirm any broadcasts.\nOutput:\n{}",
+            captured_stdout.trim()
+        ));
     }
     if !status.success() && broadcast_count == 0 {
         return Err(anyhow!(
@@ -1136,9 +1137,7 @@ async fn run_clarinet_deployments_apply(
         ));
     }
 
-    if broadcast_count > 0 && broadcast_count < expected_count {
-        ui.render_bar(expected_count, expected_count);
-    } else if broadcast_count < expected_count {
+    if broadcast_count < expected_count {
         ui.render_bar(expected_count, expected_count);
     }
 
@@ -2237,7 +2236,7 @@ async fn write_deployments_json_from_output(
             None if was_broadcast => {
                 stacksdapp_shell::debug(
                     1,
-                    &format!(
+                    format!(
                         "deploy: broadcast for '{name}' succeeded but txid was not in clarinet output"
                     ),
                 );
