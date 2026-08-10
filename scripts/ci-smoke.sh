@@ -59,6 +59,11 @@ test -f contracts/Clarinet.toml
 test -f contracts/contracts/counter.clar
 test -f frontend/package.json
 test -f stacksdapp.toml
+test -f AGENTS.md
+test -f .cursor/skills/scaffold-stacks/SKILL.md
+test -f .cursor/skills/scaffold-stacks/frontend.md
+test -f .cursor/skills/scaffold-stacks/clarity-language.md
+test -f .cursor/skills/scaffold-stacks/sip-standards.md
 grep -q 'clarity_version = 6' contracts/Clarinet.toml || {
   echo "error: new projects should default to clarity_version = 6" >&2
   exit 1
