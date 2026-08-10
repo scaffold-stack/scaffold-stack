@@ -276,6 +276,7 @@ crates/
   shell/                          # verbosity / quiet / color / JSON + project root discovery
   scaffold/                       # stacksdapp new + init + add + upgrade
     frontend-template/            # copied into every new project's frontend/
+    agent-skill-template/         # AI agent skill → .cursor/skills/scaffold-stacks/
   parser/                         # Clarity ABI → Rust structs
   codegen/                        # Rust structs → TypeScript via Tera
     templates/
@@ -286,6 +287,23 @@ crates/
   deployer/                       # clarinet deployments generate + apply
   process_supervisor/             # orchestrates dev per network
 ```
+
+---
+
+## AI agents (Cursor, Claude Code, Codex)
+
+Every project from `stacksdapp new` or `stacksdapp init` includes a bundled agent skill — **no extra setup**.
+
+| Path | Purpose |
+|---|---|
+| `.cursor/skills/scaffold-stacks/SKILL.md` | Cursor auto-discovery; read this first in other agents |
+| `AGENTS.md` | Short pointer at project root for non-Cursor tools |
+
+The skill covers CLI commands, Clarity version rules, testnet-first workflows, devnet caveats, and troubleshooting. `stacksdapp upgrade` refreshes it to match your CLI version.
+
+**Docs for agents:** https://scaffoldstacks.mintlify.app/llms.txt
+
+To change the skill, edit `crates/scaffold/agent-skill-template/` in this repo (source of truth).
 
 ---
 
