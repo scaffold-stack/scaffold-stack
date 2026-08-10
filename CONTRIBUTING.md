@@ -58,8 +58,27 @@ bash scripts/ci-smoke.sh
 
 - `cli/` — `stacksdapp` binary (clap, exit codes, command dispatch)
 - `crates/shell/` — verbosity / quiet / color / JSON + root discovery
-- `crates/scaffold/` — `new` / `init` / `add` / `upgrade` + frontend template
+- `crates/scaffold/` — `new` / `init` / `add` / `upgrade` + frontend template + agent skill template
 - `crates/codegen/`, `parser/`, `deployer/`, `watcher/`, `process_supervisor/` — domain crates
+
+## Agent skill template
+
+Source: `crates/scaffold/agent-skill-template/`. Installed automatically into every scaffolded project:
+
+- `AGENTS.md` (project root)
+- `.cursor/skills/scaffold-stacks/` (`SKILL.md`, `frontend.md`, `clarity-language.md`, `sip-standards.md`, + reference files)
+
+`stacksdapp new`, `stacksdapp init`, and `stacksdapp upgrade` copy or refresh these files. Edit the template in this repo only.
+
+When editing the template, also sync the CLI repo’s Cursor copy:
+
+```bash
+cp crates/scaffold/agent-skill-template/.cursor/skills/scaffold-stacks/*.md .cursor/skills/scaffold-stacks/
+```
+
+After template changes, run `bash scripts/ci-smoke.sh` (asserts skill files exist after `stacksdapp new`).
+
+Docs index for agents: https://scaffoldstacks.mintlify.app/llms.txt
 
 Prefer small, focused PRs. Match existing naming and error style; use `CliError` (or messages classified in `cli/src/error.rs`) when adding failure paths scripts need to distinguish.
 
