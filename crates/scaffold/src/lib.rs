@@ -16,6 +16,7 @@ use tokio::process::Command;
 use which::which;
 
 static FRONTEND_TEMPLATE: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend-template");
+static AGENT_SKILL_TEMPLATE: Dir = include_dir!("$CARGO_MANIFEST_DIR/agent-skill-template");
 
 /// Default Clarity language version for newly scaffolded contracts (Clarity 6 / epoch 4.0).
 pub const DEFAULT_CLARITY_VERSION: u8 = 6;
@@ -173,6 +174,18 @@ btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"
 fn devnet_settings_with_warning(body: &str) -> String {
     format!("{DEVNET_MNEMONIC_WARNING}{body}")
 }
+
+/// Mainnet SIP-010 trait — used as Clarinet requirement for simnet type-checking.
+/// Testnet has no deployed standard trait contract; do not add `(impl-trait …)` until
+/// deploying to mainnet (see agent skill sip-standards.md).
+const SIP010_TRAIT_REQUIREMENT: &str =
+    "SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard";
+const SIP010_IMPL_TRAIT_MAINNET: &str =
+    "SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard.sip-010-trait";
+
+/// Mainnet SIP-009 trait requirement.
+const SIP009_TRAIT_REQUIREMENT: &str = "SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait";
+const SIP009_IMPL_TRAIT_MAINNET: &str = "SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait";
 
 const DEFAULT_TESTNET_SETTINGS: &str = r#"[network]
 name = "testnet"
@@ -543,6 +556,7 @@ pub async fn init_project() -> Result<()> {
         }
 
         write_git_hooks_tracked(root, &mut rollback).await?;
+        write_agent_skill_files(root).await?;
         rollback.generated_touched = true;
         run_generate_after_setup().await?;
 
@@ -631,8 +645,9 @@ pub async fn upgrade_project() -> Result<()> {
         run_npm_install(Path::new("contracts"), "contracts", "[upgrade]").await?;
         stacksdapp_codegen::generate_all().await?;
         write_git_hooks(Path::new(".")).await?;
+        write_agent_skill_files(Path::new(".")).await?;
         let _ = try_set_git_hooks_path(Path::new(".")).await;
-        println!("[upgrade] ✔ Upgrade complete.");
+        println!("[upgrade] ✔ Upgrade complete (bindings, hooks, agent skill).");
         Ok(())
     }
     .await;
@@ -889,7 +904,16 @@ settings/Simnet.toml
     .await?;
 
     write_git_hooks(root).await?;
+    write_agent_skill_files(root).await?;
 
+    Ok(())
+}
+
+/// Install or refresh the bundled AI agent skill (Cursor, Claude Code, etc.).
+async fn write_agent_skill_files(root: &Path) -> Result<()> {
+    AGENT_SKILL_TEMPLATE
+        .extract(root)
+        .map_err(|e| anyhow!("Failed to install agent skill: {e}"))?;
     Ok(())
 }
 
@@ -1072,6 +1096,11 @@ pub async fn add_contract(name: &str, template: &str, clarity_version: u8) -> Re
         "sip010" => (
             format!(
                 r#";; {name}.clar Fungible Token
+;;
+;; SIP-010-compatible functions (get-name, transfer, etc.) are implemented below.
+;; For mainnet wallet listing, add before deploy:
+;;   (impl-trait '{sip010_impl_trait})
+;; See .cursor/skills/scaffold-stacks/sip-standards.md - never use bare 'sip-010-trait.
 
 (define-fungible-token {name})
 
@@ -1114,7 +1143,8 @@ pub async fn add_contract(name: &str, template: &str, clarity_version: u8) -> Re
     (try! (ft-transfer? {name} amount sender recipient))
     (match memo to-print (print to-print) 0x)
     (ok true)))
-"#
+"#,
+                sip010_impl_trait = SIP010_IMPL_TRAIT_MAINNET,
             ),
             format!(
                 r#"import {{ describe, expect, it }} from "vitest";
@@ -1136,12 +1166,17 @@ describe("{name} FT", () => {{
 }});
 "#
             ),
-            Some("SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard"),
+            Some(SIP010_TRAIT_REQUIREMENT),
         ),
 
         "sip009" => (
             format!(
                 r#";; {name}.clar Non-Fungible Token
+;;
+;; SIP-009-compatible functions are implemented below.
+;; For mainnet wallet listing, add before deploy:
+;;   (impl-trait '{sip009_impl_trait})
+;; See .cursor/skills/scaffold-stacks/sip-standards.md - never use bare trait names.
 
 (define-non-fungible-token {name} uint)
 
@@ -1182,7 +1217,8 @@ describe("{name} FT", () => {{
     (try! (nft-mint? {name} token-id recipient))
     (var-set last-token-id token-id)
     (ok token-id)))
-"#
+"#,
+                sip009_impl_trait = SIP009_IMPL_TRAIT_MAINNET,
             ),
             format!(
                 r#"import {{ describe, expect, it }} from "vitest";
@@ -1204,7 +1240,7 @@ describe("{name} NFT", () => {{
 }});
 "#
             ),
-            Some("SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait"),
+            Some(SIP009_TRAIT_REQUIREMENT),
         ),
 
         "blank" => (
@@ -1628,6 +1664,15 @@ mod tests {
     }
 
     #[test]
+    fn sip_trait_constants_use_full_mainnet_contract_paths() {
+        assert!(SIP010_IMPL_TRAIT_MAINNET.starts_with("SP3"));
+        assert!(SIP010_IMPL_TRAIT_MAINNET.ends_with(".sip-010-trait"));
+        assert!(SIP010_TRAIT_REQUIREMENT.contains("sip-010-trait-ft-standard"));
+        assert!(SIP009_IMPL_TRAIT_MAINNET.starts_with("SP2"));
+        assert!(SIP009_TRAIT_REQUIREMENT.ends_with(".nft-trait"));
+    }
+
+    #[test]
     fn pre_commit_hook_logs_loudly_when_bypass_env_set() {
         assert!(
             GIT_HOOK_PRE_COMMIT.contains("BYPASS ACTIVE"),
@@ -1677,6 +1722,58 @@ mod tests {
                 prop_assert!(validate_project_name(&s).is_err());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod agent_skill_tests {
+    use super::{write_agent_skill_files, AGENT_SKILL_TEMPLATE};
+
+    #[test]
+    fn agent_skill_template_contains_skill_md() {
+        let skill = AGENT_SKILL_TEMPLATE
+            .get_file(".cursor/skills/scaffold-stacks/SKILL.md")
+            .expect("SKILL.md in template");
+        let content = skill.contents_utf8().expect("utf8");
+        assert!(content.contains("name: scaffold-stacks"));
+        assert!(content.contains("stacksdapp"));
+    }
+
+    #[tokio::test]
+    async fn write_agent_skill_files_extracts_to_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_agent_skill_files(tmp.path()).await.unwrap();
+        assert!(tmp.path().join("AGENTS.md").exists());
+        assert!(
+            tmp
+                .path()
+                .join(".cursor/skills/scaffold-stacks/SKILL.md")
+                .exists()
+        );
+        assert!(
+            tmp
+                .path()
+                .join(".cursor/skills/scaffold-stacks/frontend.md")
+                .exists()
+        );
+        assert!(
+            tmp
+                .path()
+                .join(".cursor/skills/scaffold-stacks/clarity-language.md")
+                .exists()
+        );
+        assert!(
+            tmp
+                .path()
+                .join(".cursor/skills/scaffold-stacks/sip-standards.md")
+                .exists()
+        );
+        assert!(
+            tmp
+                .path()
+                .join(".cursor/skills/scaffold-stacks/cli-reference.md")
+                .exists()
+        );
     }
 }
 
