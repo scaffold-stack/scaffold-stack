@@ -19,11 +19,11 @@ fi
 echo "==> binary: $BIN"
 "$BIN" --version
 
-echo "==> clarinet pin check (expect 3.21+)"
+echo "==> clarinet pin check (expect 3.23+)"
 clarinet --version
 clarinet_ver="$(clarinet --version | head -n1)"
-if ! [[ "$clarinet_ver" =~ clarinet[[:space:]]+3\.(2[1-9]|[3-9][0-9]|[0-9]{3,}) ]]; then
-  echo "error: Clarinet 3.21+ required for CI (got: $clarinet_ver)" >&2
+if ! [[ "$clarinet_ver" =~ clarinet[[:space:]]+3\.(2[3-9]|[3-9][0-9]|[0-9]{3,}) ]]; then
+  echo "error: Clarinet 3.23+ required for CI (Clarity 6 devnet; got: $clarinet_ver)" >&2
   exit 1
 fi
 
@@ -59,6 +59,14 @@ test -f contracts/Clarinet.toml
 test -f contracts/contracts/counter.clar
 test -f frontend/package.json
 test -f stacksdapp.toml
+grep -q 'clarity_version = 6' contracts/Clarinet.toml || {
+  echo "error: new projects should default to clarity_version = 6" >&2
+  exit 1
+}
+grep -q 'epoch = "4.0"' contracts/Clarinet.toml || {
+  echo "error: Clarity 6 projects should pin epoch = \"4.0\"" >&2
+  exit 1
+}
 
 echo "==> stacksdapp check"
 "$BIN" check
@@ -91,6 +99,12 @@ test -f contracts/contracts/hello-token.clar
 "$BIN" check
 "$BIN" generate
 grep -q 'hello-token' frontend/src/generated/contracts.ts
+
+echo "==> backward compat: add Clarity 5 contract"
+"$BIN" add legacy-counter --template blank --clarity-version 5
+grep -q 'clarity_version = 5' contracts/Clarinet.toml
+grep -q 'epoch = "3.4"' contracts/Clarinet.toml
+"$BIN" check
 
 echo "==> stacksdapp test"
 "$BIN" test
