@@ -17,6 +17,9 @@ use which::which;
 
 static FRONTEND_TEMPLATE: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend-template");
 
+/// Default Clarity language version for newly scaffolded contracts (Clarity 6 / epoch 4.0).
+pub const DEFAULT_CLARITY_VERSION: u8 = 6;
+
 const CONTRACTS_PACKAGE_LOCK: &str = include_str!("../contracts-template/package-lock.json");
 
 const DEFAULT_CONTRACTS_PACKAGE_JSON: &str = r#"{
@@ -28,8 +31,8 @@ const DEFAULT_CONTRACTS_PACKAGE_JSON: &str = r#"{
     "test:report": "vitest run -- --coverage --costs"
   },
   "devDependencies": {
-    "@stacks/clarinet-sdk": "3.21.0",
-    "@stacks/transactions": "7.4.0",
+    "@stacks/clarinet-sdk": "3.23.1",
+    "@stacks/transactions": "7.6.0",
     "@types/node": "^24",
     "typescript": "^5",
     "vitest": "^4.1.8",
@@ -115,26 +118,6 @@ balance = 100_000_000_000_000
 sbtc_balance = 1_000_000_000
 derivation = "m/44'/5757'/0'/0/0"
 
-[devnet]
-# Clarinet 3.2+ snapshot fast-boot: keep this section free of [[devnet.pox_stacking_orders]]
-# and avoid custom images / early-epoch overrides (those force slow genesis mining).
-disable_bitcoin_explorer = true
-disable_stacks_explorer = true
-disable_stacks_api = false
-# 15s keeps Nakamoto + signer able to keep up; 1s races burn height and stalls tips.
-bitcoin_controller_block_time = 15_000
-"#;
-
-const DEFAULT_FULL_DEVNET_SETTINGS_BODY: &str = r#"[network]
-name = "devnet"
-deployment_fee_rate = 10
-
-[accounts.deployer]
-mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip blue scout claw"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
 [accounts.wallet_1]
 mnemonic = "sell invite acquire kitten bamboo drastic jelly vivid peace spawn twice guilt pave pen trash pretty park cube fragile unaware remain midnight betray rebuild"
 balance = 100_000_000_000_000
@@ -153,50 +136,38 @@ balance = 100_000_000_000_000
 sbtc_balance = 1_000_000_000
 derivation = "m/44'/5757'/0'/0/0"
 
-[accounts.wallet_4]
-mnemonic = "board list obtain sugar hour worth raven scout denial thunder horse logic fury scorpion fold genuine phrase wealth news aim below celery when cabin"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_5]
-mnemonic = "hurry aunt blame peanut heavy update captain human rice crime juice adult scale device promote vast project quiz unit note reform update climb purchase"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_6]
-mnemonic = "area desk dutch sign gold cricket dawn toward giggle vibrant indoor bench warfare wagon number tiny universe sand talk dilemma pottery bone trap buddy"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_7]
-mnemonic = "prevent gallery kind limb income control noise together echo rival record wedding sense uncover school version force bleak nuclear include danger skirt enact arrow"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_8]
-mnemonic = "female adjust gallery certain visit token during great side clown fitness like hurt clip knife warm bench start reunion globe detail dream depend fortune"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.faucet]
-mnemonic = "shadow private easily thought say logic fault paddle word top book during ignore notable orange flight clock image wealth health outside kitten belt reform"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
 [devnet]
-# Clarinet 3.2+ snapshot fast-boot: no PoX stacking orders (those force slow genesis).
-# Explorers off by default — enable locally if you need http://localhost:8000 / :8001.
+# Clarinet 3.23+ epoch-4.0 snapshot requires default PoX stacking orders (wallet_1–3 below).
+# Do not remove them or override epoch_* heights — that disables the burn-163 snapshot.
 disable_bitcoin_explorer = true
 disable_stacks_explorer = true
-disable_stacks_api = false
-# 15s keeps Nakamoto + signer able to keep up; 1s races burn height and stalls tips.
-bitcoin_controller_block_time = 15_000
+disable_stacks_api = true
+# 45s gives Nakamoto signer time through PoX reward-cycle transitions (30s can stall at ~block 71).
+bitcoin_controller_block_time = 45_000
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_1"
+slots = 2
+btc_address = "mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_2"
+slots = 2
+btc_address = "muYdXKmX9bByAueDe6KFfHd5Ff1gdN9ErG"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_3"
+slots = 2
+btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"
 "#;
 
 fn devnet_settings_with_warning(body: &str) -> String {
@@ -741,8 +712,8 @@ check_checker = {{ trusted_sender = false, trusted_caller = false, callee_filter
 
 [contracts.counter]
 path = "contracts/counter.clar"
-clarity_version = 5
-epoch = "latest"
+clarity_version = {DEFAULT_CLARITY_VERSION}
+epoch = "4.0"
 "#
         ),
     )
@@ -750,7 +721,7 @@ epoch = "latest"
 
     tokio::fs::write(
         contracts_root.join("settings/Devnet.toml"),
-        devnet_settings_with_warning(DEFAULT_FULL_DEVNET_SETTINGS_BODY),
+        devnet_settings_with_warning(DEFAULT_DEVNET_SETTINGS_BODY),
     )
     .await?;
 
@@ -814,21 +785,21 @@ mnemonic = "<YOUR PRIVATE MAINNET MNEMONIC HERE>"
 import { Cl } from "@stacks/transactions";
 
 const accounts = simnet.getAccounts();
-const address1 = accounts.get("wallet_1")!;
+const deployer = accounts.get("deployer")!;
 
 describe("counter", () => {
   it("increments", () => {
-    const { result } = simnet.callPublicFn("counter", "increment", [], address1);
+    const { result } = simnet.callPublicFn("counter", "increment", [], deployer);
     expect(result).toBeOk(Cl.uint(1));
   });
   it("get-count returns current value", () => {
-    simnet.callPublicFn("counter", "increment", [], address1);
-    const { result } = simnet.callReadOnlyFn("counter", "get-count", [], address1);
+    simnet.callPublicFn("counter", "increment", [], deployer);
+    const { result } = simnet.callReadOnlyFn("counter", "get-count", [], deployer);
     expect(result).toBeOk(Cl.uint(1));
   });
   it("decrement", () => {
-    simnet.callPublicFn("counter", "increment", [], address1);
-    const { result } = simnet.callPublicFn("counter", "decrement", [], address1);
+    simnet.callPublicFn("counter", "increment", [], deployer);
+    const { result } = simnet.callPublicFn("counter", "decrement", [], deployer);
     expect(result).toBeOk(Cl.uint(0));
   });
 });
@@ -1050,9 +1021,28 @@ fn ensure_success(status: std::process::ExitStatus, command: &str) -> Result<()>
     }
 }
 
-pub async fn add_contract(name: &str, template: &str) -> Result<()> {
+fn default_epoch_for_clarity(clarity_version: u8) -> &'static str {
+    match clarity_version {
+        6 => "4.0",
+        // Pin C5/C4 to explicit epochs — Clarinet 3.23+ treats "latest" as 4.0 (burn 163).
+        5 => "3.4",
+        _ => "3.0",
+    }
+}
+
+fn validate_clarity_version(version: u8) -> Result<()> {
+    match version {
+        4 | 5 | 6 => Ok(()),
+        _ => Err(anyhow!(
+            "Unsupported clarity version {version} (supported: 4, 5, 6)"
+        )),
+    }
+}
+
+pub async fn add_contract(name: &str, template: &str, clarity_version: u8) -> Result<()> {
     validate_contract_name(name)?;
     validate_contract_template(template)?;
+    validate_clarity_version(clarity_version)?;
 
     let contracts_dir = Path::new("contracts/contracts");
     if !contracts_dir.exists() {
@@ -1070,6 +1060,10 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
     stacksdapp_shell::kv("Contract", name);
     if template != "blank" {
         stacksdapp_shell::kv("Template", template);
+    }
+    if clarity_version != DEFAULT_CLARITY_VERSION {
+        let version_label = format!("v{clarity_version}");
+        stacksdapp_shell::kv("Clarity", &version_label);
     }
     println!();
 
@@ -1222,11 +1216,11 @@ describe("{name} NFT", () => {{
 import {{ Cl }} from "@stacks/transactions";
 
 const accounts = simnet.getAccounts();
-const address1 = accounts.get("wallet_1")!;
+const deployer = accounts.get("deployer")!;
 
 describe("{name}", () => {{
   it("returns contract info", () => {{
-    const {{ result }} = simnet.callReadOnlyFn("{name}", "get-info", [], address1);
+    const {{ result }} = simnet.callReadOnlyFn("{name}", "get-info", [], deployer);
     expect(result).toBeOk(Cl.stringAscii("{name} contract"));
   }});
 }});
@@ -1278,8 +1272,9 @@ describe("{name}", () => {{
         }
     }
 
+    let epoch = default_epoch_for_clarity(clarity_version);
     existing.push_str(&format!(
-        "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = 5\nepoch = \"latest\"\n"
+        "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = {clarity_version}\nepoch = \"{epoch}\"\n"
     ));
 
     if let Err(e) = tokio::fs::write(clarinet_toml_path, existing).await {
@@ -1601,6 +1596,27 @@ mod tests {
         assert!(validate_contract_name("a/b").is_err());
         assert!(validate_contract_name(&"a".repeat(41)).is_err());
         assert!(validate_contract_name("9bad").is_err());
+    }
+
+    #[test]
+    fn clarity_version_defaults_to_six() {
+        assert_eq!(DEFAULT_CLARITY_VERSION, 6);
+    }
+
+    #[test]
+    fn default_epoch_for_clarity_version() {
+        assert_eq!(default_epoch_for_clarity(6), "4.0");
+        assert_eq!(default_epoch_for_clarity(5), "3.4");
+        assert_eq!(default_epoch_for_clarity(4), "3.0");
+    }
+
+    #[test]
+    fn clarity_version_validation() {
+        assert!(validate_clarity_version(4).is_ok());
+        assert!(validate_clarity_version(5).is_ok());
+        assert!(validate_clarity_version(6).is_ok());
+        assert!(validate_clarity_version(3).is_err());
+        assert!(validate_clarity_version(7).is_err());
     }
 
     #[test]
