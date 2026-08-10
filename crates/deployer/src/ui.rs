@@ -296,6 +296,7 @@ impl DeployUi {
     pub fn success(
         &self,
         entries: &[(String, String, String)], // name, full_contract_id, full_txid
+        deploy_status: &str,
     ) {
         if !human_output_enabled() {
             return;
@@ -323,12 +324,49 @@ impl DeployUi {
         println!();
         for (_, _, txid) in entries {
             if txid.is_empty() {
-                println!("{}", "(pending)".truecolor(156, 163, 175));
+                if deploy_status == "broadcast" {
+                    println!(
+                        "{}",
+                        "(submitted to mempool — txid not captured; re-run with -vv or check explorer)"
+                            .truecolor(156, 163, 175)
+                    );
+                } else {
+                    println!("{}", "(pending)".truecolor(156, 163, 175));
+                }
             } else {
                 println!("{}", txid.white());
             }
         }
         println!();
+
+        if deploy_status == "broadcast" && self.network != "devnet" {
+            println!("{}", "Status".bold().white());
+            println!();
+            let timing = if self.network == "mainnet" {
+                "Mainnet blocks typically confirm within 10–30 minutes."
+            } else {
+                "Testnet blocks typically confirm within 1–10 minutes."
+            };
+            println!(
+                "{}",
+                format!("Broadcast to mempool — {timing}").truecolor(156, 163, 175)
+            );
+            println!(
+                "{}",
+                "Use --wait-confirm to block until contracts appear on chain."
+                    .truecolor(156, 163, 175)
+            );
+            println!();
+        } else if deploy_status == "confirmed" && self.network == "devnet" {
+            println!("{}", "Status".bold().white());
+            println!();
+            println!(
+                "{}",
+                "Confirmed on local devnet — contract source is live on stacks-core."
+                    .truecolor(156, 163, 175)
+            );
+            println!();
+        }
 
         println!("{}", "Generated".bold().white());
         println!();
@@ -393,11 +431,19 @@ impl DeployUi {
                     println!("{}", url.truecolor(167, 139, 250));
                 }
                 println!();
-                println!(
-                    "{}",
-                    "Note: the explorer link may take 10–15 seconds to show the transaction while it indexes."
-                        .truecolor(156, 163, 175)
-                );
+                if deploy_status == "broadcast" {
+                    println!(
+                        "{}",
+                        "Explorer pages may take 10–30 seconds to appear after broadcast."
+                            .truecolor(156, 163, 175)
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        "Note: the explorer link may take 10–15 seconds to show the transaction while it indexes."
+                            .truecolor(156, 163, 175)
+                    );
+                }
                 println!();
             }
         }
@@ -483,7 +529,10 @@ mod tests {
         ui.step_detail("hidden");
         ui.print_summary("ST1PQ", &["counter".into()], 1000);
         ui.dry_run_done(&["counter".into()], 1000);
-        ui.success(&[("counter".into(), "ST1PQ.counter".into(), "0xabc".into())]);
+        ui.success(
+            &[("counter".into(), "ST1PQ.counter".into(), "0xabc".into())],
+            "confirmed",
+        );
         ui.begin_step("quiet step").finish();
     }
 }

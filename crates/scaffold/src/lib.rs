@@ -16,6 +16,10 @@ use tokio::process::Command;
 use which::which;
 
 static FRONTEND_TEMPLATE: Dir = include_dir!("$CARGO_MANIFEST_DIR/frontend-template");
+static AGENT_SKILL_TEMPLATE: Dir = include_dir!("$CARGO_MANIFEST_DIR/agent-skill-template");
+
+/// Default Clarity language version for newly scaffolded contracts (Clarity 6 / epoch 4.0).
+pub const DEFAULT_CLARITY_VERSION: u8 = 6;
 
 const CONTRACTS_PACKAGE_LOCK: &str = include_str!("../contracts-template/package-lock.json");
 
@@ -28,8 +32,8 @@ const DEFAULT_CONTRACTS_PACKAGE_JSON: &str = r#"{
     "test:report": "vitest run -- --coverage --costs"
   },
   "devDependencies": {
-    "@stacks/clarinet-sdk": "3.21.0",
-    "@stacks/transactions": "7.4.0",
+    "@stacks/clarinet-sdk": "3.23.1",
+    "@stacks/transactions": "7.6.0",
     "@types/node": "^24",
     "typescript": "^5",
     "vitest": "^4.1.8",
@@ -115,26 +119,6 @@ balance = 100_000_000_000_000
 sbtc_balance = 1_000_000_000
 derivation = "m/44'/5757'/0'/0/0"
 
-[devnet]
-# Clarinet 3.2+ snapshot fast-boot: keep this section free of [[devnet.pox_stacking_orders]]
-# and avoid custom images / early-epoch overrides (those force slow genesis mining).
-disable_bitcoin_explorer = true
-disable_stacks_explorer = true
-disable_stacks_api = false
-# 15s keeps Nakamoto + signer able to keep up; 1s races burn height and stalls tips.
-bitcoin_controller_block_time = 15_000
-"#;
-
-const DEFAULT_FULL_DEVNET_SETTINGS_BODY: &str = r#"[network]
-name = "devnet"
-deployment_fee_rate = 10
-
-[accounts.deployer]
-mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip blue scout claw"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
 [accounts.wallet_1]
 mnemonic = "sell invite acquire kitten bamboo drastic jelly vivid peace spawn twice guilt pave pen trash pretty park cube fragile unaware remain midnight betray rebuild"
 balance = 100_000_000_000_000
@@ -153,55 +137,55 @@ balance = 100_000_000_000_000
 sbtc_balance = 1_000_000_000
 derivation = "m/44'/5757'/0'/0/0"
 
-[accounts.wallet_4]
-mnemonic = "board list obtain sugar hour worth raven scout denial thunder horse logic fury scorpion fold genuine phrase wealth news aim below celery when cabin"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_5]
-mnemonic = "hurry aunt blame peanut heavy update captain human rice crime juice adult scale device promote vast project quiz unit note reform update climb purchase"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_6]
-mnemonic = "area desk dutch sign gold cricket dawn toward giggle vibrant indoor bench warfare wagon number tiny universe sand talk dilemma pottery bone trap buddy"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_7]
-mnemonic = "prevent gallery kind limb income control noise together echo rival record wedding sense uncover school version force bleak nuclear include danger skirt enact arrow"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.wallet_8]
-mnemonic = "female adjust gallery certain visit token during great side clown fitness like hurt clip knife warm bench start reunion globe detail dream depend fortune"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
-[accounts.faucet]
-mnemonic = "shadow private easily thought say logic fault paddle word top book during ignore notable orange flight clock image wealth health outside kitten belt reform"
-balance = 100_000_000_000_000
-sbtc_balance = 1_000_000_000
-derivation = "m/44'/5757'/0'/0/0"
-
 [devnet]
-# Clarinet 3.2+ snapshot fast-boot: no PoX stacking orders (those force slow genesis).
-# Explorers off by default — enable locally if you need http://localhost:8000 / :8001.
+# Clarinet 3.23+ epoch-4.0 snapshot requires default PoX stacking orders (wallet_1–3 below).
+# Do not remove them or override epoch_* heights — that disables the burn-163 snapshot.
 disable_bitcoin_explorer = true
 disable_stacks_explorer = true
-disable_stacks_api = false
-# 15s keeps Nakamoto + signer able to keep up; 1s races burn height and stalls tips.
-bitcoin_controller_block_time = 15_000
+disable_stacks_api = true
+# 45s gives Nakamoto signer time through PoX reward-cycle transitions (30s can stall at ~block 71).
+bitcoin_controller_block_time = 45_000
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_1"
+slots = 2
+btc_address = "mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_2"
+slots = 2
+btc_address = "muYdXKmX9bByAueDe6KFfHd5Ff1gdN9ErG"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_3"
+slots = 2
+btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"
 "#;
 
 fn devnet_settings_with_warning(body: &str) -> String {
     format!("{DEVNET_MNEMONIC_WARNING}{body}")
 }
+
+/// Mainnet SIP-010 trait — used as Clarinet requirement for simnet type-checking.
+/// Testnet has no deployed standard trait contract; do not add `(impl-trait …)` until
+/// deploying to mainnet (see agent skill sip-standards.md).
+const SIP010_TRAIT_REQUIREMENT: &str =
+    "SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard";
+const SIP010_IMPL_TRAIT_MAINNET: &str =
+    "SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard.sip-010-trait";
+
+/// Mainnet SIP-009 trait requirement.
+const SIP009_TRAIT_REQUIREMENT: &str = "SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait";
+const SIP009_IMPL_TRAIT_MAINNET: &str = "SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait";
 
 const DEFAULT_TESTNET_SETTINGS: &str = r#"[network]
 name = "testnet"
@@ -226,6 +210,14 @@ mnemonic = "<YOUR PRIVATE MAINNET MNEMONIC HERE>"
 const GIT_HOOK_PRE_COMMIT: &str = r#"#!/bin/sh
 # Installed by scaffold-stacks — block likely seed phrases in Testnet/Mainnet settings.
 if [ -n "${SCAFFOLD_ALLOW_COMMITTED_MNEMONIC}" ]; then
+  echo "" >&2
+  echo "================================================================" >&2
+  echo "  scaffold-stacks git hook: BYPASS ACTIVE" >&2
+  echo "================================================================" >&2
+  echo "  SCAFFOLD_ALLOW_COMMITTED_MNEMONIC is set — mnemonic guard skipped." >&2
+  echo "  Emergency override only; do not use for routine commits." >&2
+  echo "================================================================" >&2
+  echo "" >&2
   exit 0
 fi
 
@@ -564,6 +556,7 @@ pub async fn init_project() -> Result<()> {
         }
 
         write_git_hooks_tracked(root, &mut rollback).await?;
+        write_agent_skill_files(root).await?;
         rollback.generated_touched = true;
         run_generate_after_setup().await?;
 
@@ -652,8 +645,9 @@ pub async fn upgrade_project() -> Result<()> {
         run_npm_install(Path::new("contracts"), "contracts", "[upgrade]").await?;
         stacksdapp_codegen::generate_all().await?;
         write_git_hooks(Path::new(".")).await?;
+        write_agent_skill_files(Path::new(".")).await?;
         let _ = try_set_git_hooks_path(Path::new(".")).await;
-        println!("[upgrade] ✔ Upgrade complete.");
+        println!("[upgrade] ✔ Upgrade complete (bindings, hooks, agent skill).");
         Ok(())
     }
     .await;
@@ -733,8 +727,8 @@ check_checker = {{ trusted_sender = false, trusted_caller = false, callee_filter
 
 [contracts.counter]
 path = "contracts/counter.clar"
-clarity_version = 5
-epoch = "latest"
+clarity_version = {DEFAULT_CLARITY_VERSION}
+epoch = "4.0"
 "#
         ),
     )
@@ -742,7 +736,7 @@ epoch = "latest"
 
     tokio::fs::write(
         contracts_root.join("settings/Devnet.toml"),
-        devnet_settings_with_warning(DEFAULT_FULL_DEVNET_SETTINGS_BODY),
+        devnet_settings_with_warning(DEFAULT_DEVNET_SETTINGS_BODY),
     )
     .await?;
 
@@ -806,21 +800,21 @@ mnemonic = "<YOUR PRIVATE MAINNET MNEMONIC HERE>"
 import { Cl } from "@stacks/transactions";
 
 const accounts = simnet.getAccounts();
-const address1 = accounts.get("wallet_1")!;
+const deployer = accounts.get("deployer")!;
 
 describe("counter", () => {
   it("increments", () => {
-    const { result } = simnet.callPublicFn("counter", "increment", [], address1);
+    const { result } = simnet.callPublicFn("counter", "increment", [], deployer);
     expect(result).toBeOk(Cl.uint(1));
   });
   it("get-count returns current value", () => {
-    simnet.callPublicFn("counter", "increment", [], address1);
-    const { result } = simnet.callReadOnlyFn("counter", "get-count", [], address1);
+    simnet.callPublicFn("counter", "increment", [], deployer);
+    const { result } = simnet.callReadOnlyFn("counter", "get-count", [], deployer);
     expect(result).toBeOk(Cl.uint(1));
   });
   it("decrement", () => {
-    simnet.callPublicFn("counter", "increment", [], address1);
-    const { result } = simnet.callPublicFn("counter", "decrement", [], address1);
+    simnet.callPublicFn("counter", "increment", [], deployer);
+    const { result } = simnet.callPublicFn("counter", "decrement", [], deployer);
     expect(result).toBeOk(Cl.uint(0));
   });
 });
@@ -910,7 +904,16 @@ settings/Simnet.toml
     .await?;
 
     write_git_hooks(root).await?;
+    write_agent_skill_files(root).await?;
 
+    Ok(())
+}
+
+/// Install or refresh the bundled AI agent skill (Cursor, Claude Code, etc.).
+async fn write_agent_skill_files(root: &Path) -> Result<()> {
+    AGENT_SKILL_TEMPLATE
+        .extract(root)
+        .map_err(|e| anyhow!("Failed to install agent skill: {e}"))?;
     Ok(())
 }
 
@@ -1042,9 +1045,28 @@ fn ensure_success(status: std::process::ExitStatus, command: &str) -> Result<()>
     }
 }
 
-pub async fn add_contract(name: &str, template: &str) -> Result<()> {
+fn default_epoch_for_clarity(clarity_version: u8) -> &'static str {
+    match clarity_version {
+        6 => "4.0",
+        // Pin C5/C4 to explicit epochs — Clarinet 3.23+ treats "latest" as 4.0 (burn 163).
+        5 => "3.4",
+        _ => "3.0",
+    }
+}
+
+fn validate_clarity_version(version: u8) -> Result<()> {
+    match version {
+        4..=6 => Ok(()),
+        _ => Err(anyhow!(
+            "Unsupported clarity version {version} (supported: 4, 5, 6)"
+        )),
+    }
+}
+
+pub async fn add_contract(name: &str, template: &str, clarity_version: u8) -> Result<()> {
     validate_contract_name(name)?;
     validate_contract_template(template)?;
+    validate_clarity_version(clarity_version)?;
 
     let contracts_dir = Path::new("contracts/contracts");
     if !contracts_dir.exists() {
@@ -1063,6 +1085,10 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
     if template != "blank" {
         stacksdapp_shell::kv("Template", template);
     }
+    if clarity_version != DEFAULT_CLARITY_VERSION {
+        let version_label = format!("v{clarity_version}");
+        stacksdapp_shell::kv("Clarity", &version_label);
+    }
     println!();
 
     // ── Template Selection ───────────────────────────────────────────────────
@@ -1070,6 +1096,11 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
         "sip010" => (
             format!(
                 r#";; {name}.clar Fungible Token
+;;
+;; SIP-010-compatible functions (get-name, transfer, etc.) are implemented below.
+;; For mainnet wallet listing, add before deploy:
+;;   (impl-trait '{sip010_impl_trait})
+;; See .cursor/skills/scaffold-stacks/sip-standards.md - never use bare 'sip-010-trait.
 
 (define-fungible-token {name})
 
@@ -1112,7 +1143,8 @@ pub async fn add_contract(name: &str, template: &str) -> Result<()> {
     (try! (ft-transfer? {name} amount sender recipient))
     (match memo to-print (print to-print) 0x)
     (ok true)))
-"#
+"#,
+                sip010_impl_trait = SIP010_IMPL_TRAIT_MAINNET,
             ),
             format!(
                 r#"import {{ describe, expect, it }} from "vitest";
@@ -1134,12 +1166,17 @@ describe("{name} FT", () => {{
 }});
 "#
             ),
-            Some("SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard"),
+            Some(SIP010_TRAIT_REQUIREMENT),
         ),
 
         "sip009" => (
             format!(
                 r#";; {name}.clar Non-Fungible Token
+;;
+;; SIP-009-compatible functions are implemented below.
+;; For mainnet wallet listing, add before deploy:
+;;   (impl-trait '{sip009_impl_trait})
+;; See .cursor/skills/scaffold-stacks/sip-standards.md - never use bare trait names.
 
 (define-non-fungible-token {name} uint)
 
@@ -1180,7 +1217,8 @@ describe("{name} FT", () => {{
     (try! (nft-mint? {name} token-id recipient))
     (var-set last-token-id token-id)
     (ok token-id)))
-"#
+"#,
+                sip009_impl_trait = SIP009_IMPL_TRAIT_MAINNET,
             ),
             format!(
                 r#"import {{ describe, expect, it }} from "vitest";
@@ -1202,7 +1240,7 @@ describe("{name} NFT", () => {{
 }});
 "#
             ),
-            Some("SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait"),
+            Some(SIP009_TRAIT_REQUIREMENT),
         ),
 
         "blank" => (
@@ -1214,11 +1252,11 @@ describe("{name} NFT", () => {{
 import {{ Cl }} from "@stacks/transactions";
 
 const accounts = simnet.getAccounts();
-const address1 = accounts.get("wallet_1")!;
+const deployer = accounts.get("deployer")!;
 
 describe("{name}", () => {{
   it("returns contract info", () => {{
-    const {{ result }} = simnet.callReadOnlyFn("{name}", "get-info", [], address1);
+    const {{ result }} = simnet.callReadOnlyFn("{name}", "get-info", [], deployer);
     expect(result).toBeOk(Cl.stringAscii("{name} contract"));
   }});
 }});
@@ -1270,8 +1308,9 @@ describe("{name}", () => {{
         }
     }
 
+    let epoch = default_epoch_for_clarity(clarity_version);
     existing.push_str(&format!(
-        "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = 5\nepoch = \"latest\"\n"
+        "\n[contracts.{name}]\npath = \"contracts/{name}.clar\"\nclarity_version = {clarity_version}\nepoch = \"{epoch}\"\n"
     ));
 
     if let Err(e) = tokio::fs::write(clarinet_toml_path, existing).await {
@@ -1596,11 +1635,50 @@ mod tests {
     }
 
     #[test]
+    fn clarity_version_defaults_to_six() {
+        assert_eq!(DEFAULT_CLARITY_VERSION, 6);
+    }
+
+    #[test]
+    fn default_epoch_for_clarity_version() {
+        assert_eq!(default_epoch_for_clarity(6), "4.0");
+        assert_eq!(default_epoch_for_clarity(5), "3.4");
+        assert_eq!(default_epoch_for_clarity(4), "3.0");
+    }
+
+    #[test]
+    fn clarity_version_validation() {
+        assert!(validate_clarity_version(4).is_ok());
+        assert!(validate_clarity_version(5).is_ok());
+        assert!(validate_clarity_version(6).is_ok());
+        assert!(validate_clarity_version(3).is_err());
+        assert!(validate_clarity_version(7).is_err());
+    }
+
+    #[test]
     fn contract_template_rejects_unknown_values() {
         assert!(validate_contract_template("blank").is_ok());
         assert!(validate_contract_template("sip010").is_ok());
         assert!(validate_contract_template("sip009").is_ok());
         assert!(validate_contract_template("sip10").is_err());
+    }
+
+    #[test]
+    fn sip_trait_constants_use_full_mainnet_contract_paths() {
+        assert!(SIP010_IMPL_TRAIT_MAINNET.starts_with("SP3"));
+        assert!(SIP010_IMPL_TRAIT_MAINNET.ends_with(".sip-010-trait"));
+        assert!(SIP010_TRAIT_REQUIREMENT.contains("sip-010-trait-ft-standard"));
+        assert!(SIP009_IMPL_TRAIT_MAINNET.starts_with("SP2"));
+        assert!(SIP009_TRAIT_REQUIREMENT.ends_with(".nft-trait"));
+    }
+
+    #[test]
+    fn pre_commit_hook_logs_loudly_when_bypass_env_set() {
+        assert!(
+            GIT_HOOK_PRE_COMMIT.contains("BYPASS ACTIVE"),
+            "hook must warn loudly when SCAFFOLD_ALLOW_COMMITTED_MNEMONIC is set"
+        );
+        assert!(GIT_HOOK_PRE_COMMIT.contains("SCAFFOLD_ALLOW_COMMITTED_MNEMONIC"));
     }
 
     #[test]
@@ -1644,6 +1722,48 @@ mod tests {
                 prop_assert!(validate_project_name(&s).is_err());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod agent_skill_tests {
+    use super::{write_agent_skill_files, AGENT_SKILL_TEMPLATE};
+
+    #[test]
+    fn agent_skill_template_contains_skill_md() {
+        let skill = AGENT_SKILL_TEMPLATE
+            .get_file(".cursor/skills/scaffold-stacks/SKILL.md")
+            .expect("SKILL.md in template");
+        let content = skill.contents_utf8().expect("utf8");
+        assert!(content.contains("name: scaffold-stacks"));
+        assert!(content.contains("stacksdapp"));
+    }
+
+    #[tokio::test]
+    async fn write_agent_skill_files_extracts_to_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_agent_skill_files(tmp.path()).await.unwrap();
+        assert!(tmp.path().join("AGENTS.md").exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/SKILL.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/frontend.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/clarity-language.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/sip-standards.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/cli-reference.md")
+            .exists());
     }
 }
 

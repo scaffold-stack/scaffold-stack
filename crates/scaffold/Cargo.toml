@@ -24,6 +24,8 @@ include = [
     "frontend-template/public/**/*",
     "frontend-template/scripts/**/*",
     "frontend-template/src/**/*",
+    "agent-skill-template/AGENTS.md",
+    "agent-skill-template/.cursor/**/*",
 ]
 
 [dependencies]

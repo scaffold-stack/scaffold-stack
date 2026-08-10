@@ -7,8 +7,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Keep in sync with README / stacksdapp doctor (Clarinet 3.21+).
-  CLARINET_VERSION: "3.21.1"
+  # Keep in sync with README / stacksdapp doctor / scripts/ci-smoke.sh (Clarinet 3.23+).
+  CLARINET_VERSION: "3.23.1"
 
 jobs:
   lint:
@@ -101,7 +101,7 @@ jobs:
             | tar xz
           sudo mv clarinet /usr/local/bin/
           clarinet --version
-          clarinet --version | head -n1 | grep -E "clarinet 3\\.21"
+          clarinet --version | head -n1 | grep -E "clarinet 3\\.23"
 
       - name: Build CLI binary
         run: cargo build --package stacksdapp

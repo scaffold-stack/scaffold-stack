@@ -8,10 +8,32 @@ Thanks for helping improve `stacksdapp`. This guide covers local development, ch
 |---|---|
 | Rust 1.75+ | via [rustup](https://rustup.rs) |
 | Node.js 20+ | frontend + Vitest contract tests |
-| Clarinet 3.21+ | contract toolchain (`brew install clarinet` or CI-style install) |
+| Clarinet 3.23+ | contract toolchain (`brew install clarinet` or CI-style install) |
 | Docker Desktop | only for local `stacksdapp dev` (devnet) |
 
 Run `stacksdapp doctor` after building to verify your machine.
+
+## Git hooks (mnemonic guard)
+
+`stacksdapp new` and `stacksdapp init` install `.githooks/pre-commit`, which blocks commits that look like real BIP39 seed phrases in `contracts/settings/Testnet.toml` or `Mainnet.toml`. Enable it in a project:
+
+```bash
+git config core.hooksPath .githooks
+# or
+npm run setup-hooks
+```
+
+`stacksdapp doctor --strict` warns when you run doctor inside a scaffold project and `core.hooksPath` is not `.githooks` (or the hook file is missing).
+
+### Emergency bypass (not for routine use)
+
+The hook can be disabled for a **single commit** with:
+
+```bash
+SCAFFOLD_ALLOW_COMMITTED_MNEMONIC=1 git commit ...
+```
+
+This prints **BYPASS ACTIVE** to stderr and skips the guard. Use only when debugging a false positive or in a private repo with intentional test keys — never for mainnet mnemonics. Prefer env-based or gitignored local settings files instead of committing seeds.
 
 ## Setup
 
@@ -36,8 +58,27 @@ bash scripts/ci-smoke.sh
 
 - `cli/` — `stacksdapp` binary (clap, exit codes, command dispatch)
 - `crates/shell/` — verbosity / quiet / color / JSON + root discovery
-- `crates/scaffold/` — `new` / `init` / `add` / `upgrade` + frontend template
+- `crates/scaffold/` — `new` / `init` / `add` / `upgrade` + frontend template + agent skill template
 - `crates/codegen/`, `parser/`, `deployer/`, `watcher/`, `process_supervisor/` — domain crates
+
+## Agent skill template
+
+Source: `crates/scaffold/agent-skill-template/`. Installed automatically into every scaffolded project:
+
+- `AGENTS.md` (project root)
+- `.cursor/skills/scaffold-stacks/` (`SKILL.md`, `frontend.md`, `clarity-language.md`, `sip-standards.md`, + reference files)
+
+`stacksdapp new`, `stacksdapp init`, and `stacksdapp upgrade` copy or refresh these files. Edit the template in this repo only.
+
+When editing the template, also sync the CLI repo’s Cursor copy:
+
+```bash
+cp crates/scaffold/agent-skill-template/.cursor/skills/scaffold-stacks/*.md .cursor/skills/scaffold-stacks/
+```
+
+After template changes, run `bash scripts/ci-smoke.sh` (asserts skill files exist after `stacksdapp new`).
+
+Docs index for agents: https://scaffoldstacks.mintlify.app/llms.txt
 
 Prefer small, focused PRs. Match existing naming and error style; use `CliError` (or messages classified in `cli/src/error.rs`) when adding failure paths scripts need to distinguish.
 

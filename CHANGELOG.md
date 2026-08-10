@@ -29,8 +29,11 @@ Version history is reconstructed from git tags, `cli/Cargo.toml` version bumps, 
 - `--json` success payloads for `new`, `init`, `add`, `deploy`, `dev`, and `upgrade`.
 - Parser unit tests, scaffold proptest fuzz on name validation, and init rollback tests.
 - Devnet readiness panel: local URL, tip height, and deploy hint after `stacksdapp dev`.
-- Devnet deploy waits for Clarinet epoch burn height before broadcasting Clarity 5 contracts (epoch 3.4 / burn ≥ 150).
+- Devnet deploy waits for Clarinet epoch burn height before broadcasting Clarity 5/6 contracts (epoch 3.4 / burn ≥ 150, epoch 4.0 / burn ≥ 152).
+- **Clarity 6** support: new projects default to `clarity_version = 6` (epoch 4.0 / burn ≥ 152 on devnet).
+- `stacksdapp add --clarity-version <4|5|6>` for explicit language version when adding contracts (default `6`).
 - Devnet deploy success points to the running local app (`http://localhost:3000` or `:3001`) instead of restarting dev.
+- **Bundled AI agent skill** — every `stacksdapp new` / `init` project gets `.cursor/skills/scaffold-stacks/` and root `AGENTS.md`; `upgrade` refreshes them. Source: `crates/scaffold/agent-skill-template/`.
 
 ### Changed
 

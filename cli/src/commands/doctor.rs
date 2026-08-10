@@ -1,7 +1,10 @@
 use anyhow::Result;
 use colored::Colorize;
 use serde_json::json;
-use stacksdapp_shell::{self as shell, status};
+use stacksdapp_shell::{
+    self as shell, find_scaffold_root, inspect_settings_file, status, MnemonicCheck,
+};
+use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -48,6 +51,9 @@ pub async fn run(strict: bool) -> Result<()> {
         check_clarinet().await,
         check_docker().await,
         check_git().await,
+        check_git_hooks().await,
+        check_deploy_mnemonics().await,
+        check_devnet_epochs().await,
         check_stacksdapp().await,
     ];
 
@@ -272,17 +278,25 @@ async fn check_clarinet() -> Check {
                          Run: brew upgrade clarinet  OR  cargo install clarinet --locked"
                     )),
                 }
-            } else if meets_semver(&version, 3, 21) {
+            } else if meets_semver(&version, 3, 23) {
                 Check {
                     name: "Clarinet",
                     result: CheckResult::Ok(version),
+                }
+            } else if meets_semver(&version, 3, 21) {
+                Check {
+                    name: "Clarinet",
+                    result: CheckResult::Warn(format!(
+                        "{version} — Clarinet 3.23+ recommended (Clarity 6 devnet / epoch 4.0 at burn 163). \
+                         Run: brew upgrade clarinet"
+                    )),
                 }
             } else {
                 Check {
                     name: "Clarinet",
                     result: CheckResult::Warn(format!(
-                        "{version} — Clarinet 3.21+ recommended (templates target 3.21). \
-                         Run: brew upgrade clarinet"
+                        "{version} — Clarinet 3.21+ required. \
+                         Run: brew upgrade clarinet  OR  cargo install clarinet --locked"
                     )),
                 }
             }
@@ -377,6 +391,47 @@ async fn check_git() -> Check {
     }
 }
 
+async fn check_devnet_epochs() -> Check {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(_) => {
+            return Check {
+                name: "Devnet epochs",
+                result: CheckResult::Ok("could not read working directory".into()),
+            };
+        }
+    };
+
+    let Some(root) = find_scaffold_root(&cwd) else {
+        return Check {
+            name: "Devnet epochs",
+            result: CheckResult::Ok("not in a scaffold project".into()),
+        };
+    };
+
+    let path = root.join("contracts/settings/Devnet.toml");
+    let Ok(raw) = tokio::fs::read_to_string(&path).await else {
+        return Check {
+            name: "Devnet epochs",
+            result: CheckResult::Ok("no Devnet.toml".into()),
+        };
+    };
+
+    if raw.contains("[epochs]") {
+        return Check {
+            name: "Devnet epochs",
+            result: CheckResult::Warn(
+                "Devnet.toml contains [epochs] — this overrides Clarinet 3.23+ defaults and can block epoch 4.0 / Clarity 6. Remove [epochs] or add epoch_4_0, then run stacksdapp clean.".into(),
+            ),
+        };
+    }
+
+    Check {
+        name: "Devnet epochs",
+        result: CheckResult::Ok("using Clarinet default epoch schedule".into()),
+    }
+}
+
 async fn check_stacksdapp() -> Check {
     // Read the version baked into this binary at compile time
     let version = env!("CARGO_PKG_VERSION").to_string();
@@ -386,7 +441,168 @@ async fn check_stacksdapp() -> Check {
     }
 }
 
+async fn check_deploy_mnemonics() -> Check {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(_) => {
+            return Check {
+                name: "Deploy mnemonics",
+                result: CheckResult::Ok("could not read working directory".into()),
+            };
+        }
+    };
+
+    let Some(root) = find_scaffold_root(&cwd) else {
+        return Check {
+            name: "Deploy mnemonics",
+            result: CheckResult::Ok("not in a scaffold project".into()),
+        };
+    };
+
+    let mut warnings = Vec::new();
+    let mut strict_failures = Vec::new();
+
+    for network in ["testnet", "mainnet"] {
+        let Some((path, check)) = inspect_settings_file(network, &root, true) else {
+            continue;
+        };
+        let network_label = stacksdapp_shell::settings_relative_path(network);
+        match check {
+            MnemonicCheck::NotConfigured => {}
+            MnemonicCheck::Ok => {}
+            MnemonicCheck::PublicDevnet => {
+                warnings.push(format!(
+                    "{path}: public devnet mnemonic — use a fresh wallet ({network_label})"
+                ));
+            }
+            MnemonicCheck::InvalidFormat(detail) => {
+                strict_failures.push(format!("{path}: {detail}"));
+            }
+        }
+    }
+
+    if !strict_failures.is_empty() {
+        return Check {
+            name: "Deploy mnemonics",
+            result: CheckResult::Warn(strict_failures.join("; ")),
+        };
+    }
+
+    if !warnings.is_empty() {
+        return Check {
+            name: "Deploy mnemonics",
+            result: CheckResult::Warn(warnings.join("; ")),
+        };
+    }
+
+    Check {
+        name: "Deploy mnemonics",
+        result: CheckResult::Ok("testnet/mainnet settings look safe".into()),
+    }
+}
+
+async fn check_git_hooks() -> Check {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(_) => {
+            return Check {
+                name: "Git hooks",
+                result: CheckResult::Ok("could not read working directory".into()),
+            };
+        }
+    };
+
+    let Some(root) = find_scaffold_root(&cwd) else {
+        return Check {
+            name: "Git hooks",
+            result: CheckResult::Ok("not in a scaffold project".into()),
+        };
+    };
+
+    let hook_file = root.join(".githooks/pre-commit");
+    if !hook_file.is_file() {
+        return Check {
+            name: "Git hooks",
+            result: CheckResult::Warn(
+                "mnemonic guard hook missing (.githooks/pre-commit). \
+                 Run stacksdapp upgrade or recreate hooks from CONTRIBUTING.md"
+                    .into(),
+            ),
+        };
+    }
+
+    if !root.join(".git").exists() {
+        return Check {
+            name: "Git hooks",
+            result: CheckResult::Ok("scaffold project is not a git repository".into()),
+        };
+    }
+
+    match git_config_hooks_path(&root).await {
+        None => Check {
+            name: "Git hooks",
+            result: CheckResult::Warn(
+                "core.hooksPath not set — mnemonic guard inactive. \
+                 Run: npm run setup-hooks  OR  git config core.hooksPath .githooks"
+                    .into(),
+            ),
+        },
+        Some(path) if hooks_path_is_githooks(&path, &root) => Check {
+            name: "Git hooks",
+            result: CheckResult::Ok(".githooks".into()),
+        },
+        Some(path) => Check {
+            name: "Git hooks",
+            result: CheckResult::Warn(format!(
+                "core.hooksPath is \"{path}\" (expected .githooks) — mnemonic guard may be inactive. \
+                 Run: git config core.hooksPath .githooks"
+            )),
+        },
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// True when `git config core.hooksPath` points at this project's `.githooks` directory.
+fn hooks_path_is_githooks(configured: &str, root: &Path) -> bool {
+    let configured = configured.trim();
+    if configured == ".githooks" {
+        return true;
+    }
+
+    let expected = root.join(".githooks");
+    if let (Ok(expected_canon), Ok(configured_canon)) = (
+        expected.canonicalize(),
+        Path::new(configured).canonicalize(),
+    ) {
+        return expected_canon == configured_canon;
+    }
+
+    // When canonicalize fails (path does not exist yet), compare normalized absolute-style paths.
+    if let Ok(root_canon) = root.canonicalize() {
+        let expected = root_canon.join(".githooks");
+        let expected_display = expected.display().to_string().replace('\\', "/");
+        let configured_norm = configured.replace('\\', "/");
+        return configured_norm == expected_display;
+    }
+
+    false
+}
+
+async fn git_config_hooks_path(root: &Path) -> Option<String> {
+    Command::new("git")
+        .args(["config", "--get", "core.hooksPath"])
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
 
 /// Run a command and return its trimmed stdout, or None if it failed / not found.
 async fn version_output(cmd: &str, args: &[&str]) -> Option<String> {
@@ -409,4 +625,23 @@ fn meets_semver(version: &str, req_major: u32, req_minor: u32) -> bool {
     let major: u32 = parts.next().unwrap_or("0").parse().unwrap_or(0);
     let minor: u32 = parts.next().unwrap_or("0").parse().unwrap_or(0);
     (major, minor) >= (req_major, req_minor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn hooks_path_accepts_relative_githooks() {
+        let root = PathBuf::from("/tmp/my-app");
+        assert!(hooks_path_is_githooks(".githooks", &root));
+    }
+
+    #[test]
+    fn hooks_path_rejects_unrelated_path() {
+        let root = PathBuf::from("/tmp/my-app");
+        assert!(!hooks_path_is_githooks(".husky", &root));
+        assert!(!hooks_path_is_githooks("../other/.githooks", &root));
+    }
 }

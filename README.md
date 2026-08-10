@@ -10,7 +10,7 @@ A Rust-powered CLI (`stacksdapp`) and Next.js template for building full-stack S
 |---|---|---|
 | **Rust** 1.75+ | [rustup.rs](https://rustup.rs) | Building the CLI |
 | **Node.js** 20+ | [nodejs.org](https://nodejs.org) | Frontend + contract tests |
-| **Clarinet** 3.21+ | `brew install clarinet` | Contract toolchain |
+| **Clarinet** 3.23+ | `brew install clarinet` | Contract toolchain (C6 devnet requires 3.23+) |
 | **Leather or Xverse** | [leather.io](https://leather.io) | Wallet for testnet/mainnet |
 | **Docker Desktop** | [docker.com](https://docker.com) | Local devnet only |
 
@@ -144,7 +144,9 @@ stacksdapp check
 
 ### Iterate and redeploy
 
-Because Stacks contracts are immutable, redeploying after changes auto-versions the contract name (`counter` → `counter-v2` → `counter-v3`). The CLI handles this automatically — no manual renaming needed.
+Because Stacks contracts are immutable, redeploying after changes auto-versions the contract name (`counter` → `counter-v2` → `counter-v3`). The CLI handles this automatically — no manual renaming needed. Use `--no-auto-version` to fail instead of renaming.
+
+**Testnet/mainnet deploy semantics:** By default, `deploy` exits once transactions are **broadcast** to the mempool (fast; no frozen terminal). Verify txids on the [Hiro explorer](https://explorer.hiro.so). Use `--wait-confirm` when you need the CLI to block until contracts are on chain (CI gates). Devnet always waits for local core confirmation.
 
 ---
 
@@ -227,6 +229,8 @@ my-app/
 | `stacksdapp deploy --network testnet --contract <name>` | Deploy only one contract by name |
 | `stacksdapp deploy --network testnet --dry-run` | Generate plan + estimated fee without broadcasting |
 | `stacksdapp deploy --network testnet -y` | Non-interactive deploy (skip confirmation / Clarinet fee prompts) |
+| `stacksdapp deploy --network testnet --wait-confirm` | Poll until contracts appear on chain (default: exit after mempool broadcast) |
+| `stacksdapp deploy --network testnet --no-auto-version` | Fail on name conflict instead of auto-renaming (`counter` → `counter-v2`) |
 | `stacksdapp deploy --network mainnet` | Deploy to mainnet |
 | `stacksdapp deploy --network devnet` | Deploy to local devnet |
 | `stacksdapp generate [--watch]` | Parse ABIs → regenerate TS bindings + debug UI |
@@ -244,7 +248,7 @@ my-app/
 | `-v` / `-vv`… | Increase diagnostic verbosity |
 | `-q` / `--quiet` | Suppress non-error human logs |
 | `--color auto\|always\|never` | Color control (default `auto`) |
-| `--json` | Machine-readable stdout (single JSON object) |
+| `--json` | Machine-readable stdout (single JSON object per command; `dev` emits once when the frontend is **ready**, errors always emit JSON) |
 | `--root <PATH>` | Project root (or set `STACKSDAPP_ROOT`); otherwise walks up for `stacksdapp.toml` / `contracts/Clarinet.toml` |
 
 ### Exit codes
@@ -272,6 +276,7 @@ crates/
   shell/                          # verbosity / quiet / color / JSON + project root discovery
   scaffold/                       # stacksdapp new + init + add + upgrade
     frontend-template/            # copied into every new project's frontend/
+    agent-skill-template/         # AI agent skill → .cursor/skills/scaffold-stacks/
   parser/                         # Clarity ABI → Rust structs
   codegen/                        # Rust structs → TypeScript via Tera
     templates/
@@ -282,6 +287,23 @@ crates/
   deployer/                       # clarinet deployments generate + apply
   process_supervisor/             # orchestrates dev per network
 ```
+
+---
+
+## AI agents (Cursor, Claude Code, Codex)
+
+Every project from `stacksdapp new` or `stacksdapp init` includes a bundled agent skill — **no extra setup**.
+
+| Path | Purpose |
+|---|---|
+| `.cursor/skills/scaffold-stacks/SKILL.md` | Cursor auto-discovery; read this first in other agents |
+| `AGENTS.md` | Short pointer at project root for non-Cursor tools |
+
+The skill covers CLI commands, Clarity version rules, testnet-first workflows, devnet caveats, and troubleshooting. `stacksdapp upgrade` refreshes it to match your CLI version.
+
+**Docs for agents:** https://scaffoldstacks.mintlify.app/llms.txt
+
+To change the skill, edit `crates/scaffold/agent-skill-template/` in this repo (source of truth).
 
 ---
 

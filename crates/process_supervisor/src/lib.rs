@@ -1,3 +1,8 @@
+use stacksdapp_deployer::devnet_recovery::{
+    devnet_project_name, fetch_local_core_info_optional, is_devnet_chain_stalled,
+    stop_devnet_containers, try_recover_devnet_chain, RecoveryLevel,
+};
+
 use anyhow::{anyhow, Result};
 use colored::Colorize;
 use std::path::Path;
@@ -113,10 +118,13 @@ fn print_ready_panel(network: &str, local_url: &str, tip_height: Option<u64>) {
     }
     println!();
     if network == "devnet" {
-        stacksdapp_shell::kv("Deploy", "stacksdapp deploy --network devnet");
+        stacksdapp_shell::kv(
+            "Deploy",
+            "stacksdapp deploy --network devnet  (or stacksdapp dev --auto-deploy)",
+        );
         println!(
             "{}",
-            "  Tip must keep advancing before deploy; stalled tips need: stacksdapp clean && stacksdapp dev"
+            "  Deploy within ~2 min of ready, or use --auto-deploy — tip stalls ~#71 after PoX cycle 4."
                 .truecolor(156, 163, 175)
         );
     } else {
@@ -131,6 +139,46 @@ fn print_ready_panel(network: &str, local_url: &str, tip_height: Option<u64>) {
     );
     println!();
     stacksdapp_shell::rule();
+}
+
+/// JSON payload emitted once when `stacksdapp dev --json` reaches a ready frontend (not at start).
+pub fn dev_ready_json_payload(
+    network: &str,
+    local_url: &str,
+    tip_height: Option<u64>,
+    auto_deploy: bool,
+    keep_state: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "command": "dev",
+        "status": "ready",
+        "network": network,
+        "url": local_url,
+        "tip_height": tip_height,
+        "auto_deploy": auto_deploy,
+        "keep_state": keep_state,
+    })
+}
+
+fn notify_dev_ready(
+    network: &str,
+    local_url: &str,
+    tip_height: Option<u64>,
+    auto_deploy: bool,
+    keep_state: bool,
+) {
+    if stacksdapp_shell::is_json() {
+        stacksdapp_shell::emit_json(&dev_ready_json_payload(
+            network,
+            local_url,
+            tip_height,
+            auto_deploy,
+            keep_state,
+        ));
+        return;
+    }
+    print_ready_panel(network, local_url, tip_height);
 }
 
 async fn dev_devnet(auto_deploy: bool, keep_state: bool) -> Result<()> {
@@ -214,7 +262,12 @@ async fn dev_devnet(auto_deploy: bool, keep_state: bool) -> Result<()> {
         }
     };
 
-    let health_monitor = tokio::spawn(monitor_devnet_chain_health());
+    let health_monitor = {
+        let (respawn_tx, respawn_rx) = tokio::sync::mpsc::channel(1);
+        let monitor = tokio::spawn(monitor_devnet_chain_health(respawn_tx));
+        (monitor, respawn_rx)
+    };
+    let (health_monitor, mut devnet_respawn_rx) = health_monitor;
 
     let deploy_task = if auto_deploy {
         Some(tokio::spawn(run_auto_deploy()))
@@ -235,7 +288,7 @@ async fn dev_devnet(auto_deploy: bool, keep_state: bool) -> Result<()> {
     match tokio::time::timeout(Duration::from_secs(120), ready_rx).await {
         Ok(Ok(url)) => {
             step.finish();
-            print_ready_panel("devnet", &url, tip_height);
+            notify_dev_ready("devnet", &url, tip_height, auto_deploy, keep_state);
         }
         Ok(Err(_)) => {
             step.fail();
@@ -253,13 +306,25 @@ async fn dev_devnet(auto_deploy: bool, keep_state: bool) -> Result<()> {
         "contracts/contracts",
     )));
 
-    let result = tokio::select! {
+    let result = loop {
+        break tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             if !stacksdapp_shell::is_quiet() {
                 println!();
                 println!("{}", "Shutting down...".truecolor(156, 163, 175));
             }
             Ok(())
+        }
+        _ = devnet_respawn_rx.recv() => {
+            if let Err(e) = restart_clarinet_devnet(
+                &mut clarinet,
+                std::sync::Arc::clone(&fatal),
+            ).await {
+                stacksdapp_shell::println_human_safe(format!(
+                    "[devnet] Clarinet restart after stall failed: {e:#}"
+                ));
+            }
+            continue;
         }
         status = clarinet.wait() => {
             match status {
@@ -282,6 +347,7 @@ async fn dev_devnet(auto_deploy: bool, keep_state: bool) -> Result<()> {
                 Err(e) => Err(anyhow!("Contract watcher task join failed: {e}")),
             }
         }
+        };
     };
 
     health_monitor.abort();
@@ -337,7 +403,7 @@ async fn dev_remote(network: &str) -> Result<()> {
     match tokio::time::timeout(Duration::from_secs(120), ready_rx).await {
         Ok(Ok(url)) => {
             step.finish();
-            print_ready_panel(network, &url, None);
+            notify_dev_ready(network, &url, None, false, false);
         }
         Ok(Err(_)) => {
             step.fail();
@@ -389,7 +455,9 @@ async fn dev_remote(network: &str) -> Result<()> {
 async fn run_auto_deploy() {
     match stacksdapp_deployer::wait_for_devnet_node().await {
         Ok(()) => {
-            if let Err(e) = stacksdapp_deployer::deploy("devnet", None, false, false).await {
+            if let Err(e) =
+                stacksdapp_deployer::deploy("devnet", None, false, false, false, false).await
+            {
                 stacksdapp_shell::println_human_safe(format!("[dev] Auto-deploy failed: {e:#}"));
                 stacksdapp_shell::println_human_safe(
                     "[dev] You can deploy manually in another terminal: stacksdapp deploy --network devnet",
@@ -411,9 +479,6 @@ async fn wait_for_devnet_chain_ready(
     clarinet: &mut Child,
     fatal: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 ) -> Result<u64> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()?;
     let started = Instant::now();
     let mut first_tip: Option<u64> = None;
     let mut second_tip: Option<u64> = None;
@@ -480,7 +545,7 @@ async fn wait_for_devnet_chain_ready(
             ));
         }
 
-        match fetch_local_stacks_tip(&client).await {
+        match fetch_local_stacks_tip().await {
             Some(height) => match (first_tip, second_tip) {
                 (None, _) => {
                     first_tip = Some(height);
@@ -730,62 +795,124 @@ async fn detect_stacks_node_crash() -> Option<String> {
     )
 }
 
-/// Poll local devnet tip height and warn if the chain appears stalled.
-async fn monitor_devnet_chain_health() {
+/// Poll local devnet and attempt recovery when Bitcoin burn advances but Stacks tip stalls
+/// (common at PoX reward-cycle boundaries on Clarinet 3.23+ Nakamoto devnet).
+async fn monitor_devnet_chain_health(respawn_tx: tokio::sync::mpsc::Sender<()>) {
     tokio::time::sleep(Duration::from_secs(20)).await;
 
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-
-    let mut last_height: Option<u64> = None;
+    let project = devnet_project_name();
+    let mut last_core: Option<stacksdapp_deployer::devnet_recovery::LocalCoreInfo> = None;
     let mut unchanged_since = Instant::now();
     let mut last_warning = Instant::now() - Duration::from_secs(120);
+    let mut last_recovery = Instant::now() - Duration::from_secs(300);
+    let mut recovery_attempts = 0u32;
+    let mut last_respawn = Instant::now() - Duration::from_secs(600);
+
+    let recovery_levels = [
+        RecoveryLevel::StacksOnly,
+        RecoveryLevel::WithBitcoin,
+        RecoveryLevel::Full,
+    ];
 
     loop {
-        let current = fetch_local_stacks_tip(&client).await;
+        if let Some(info) = fetch_local_core_info_optional().await {
+            let stacks_stuck = last_core
+                .as_ref()
+                .map(|prev| prev.stacks_tip_height == info.stacks_tip_height)
+                .unwrap_or(false);
+            let burn_advanced = last_core
+                .as_ref()
+                .map(|prev| is_devnet_chain_stalled(prev, &info))
+                .unwrap_or(false);
 
-        if let Some(height) = current {
-            if Some(height) == last_height {
+            if stacks_stuck {
                 if unchanged_since.elapsed() >= Duration::from_secs(45)
                     && last_warning.elapsed() >= Duration::from_secs(60)
                 {
                     stacksdapp_shell::println_human_safe(format!(
-                        "[devnet] Warning: local chain tip stalled at height {height} for 45s+."
+                        "[devnet] Warning: Stacks tip stalled at #{}, burn at {}.",
+                        info.stacks_tip_height, info.burn_block_height
                     ));
+                    if burn_advanced {
+                        stacksdapp_shell::println_human_safe(
+                            "  Bitcoin is still mining — PoX/Nakamoto tenure desync (Missing canonical anchor block).",
+                        );
+                    }
                     stacksdapp_shell::println_human_safe(
-                        "  Deployments may hang until blocks advance. This is often a Clarinet/Docker issue.",
-                    );
-                    stacksdapp_shell::println_human_safe(
-                        "  Try: stacksdapp clean --force && stacksdapp dev",
+                        "  Deployments wait for blocks; the CLI will try restarting devnet containers.",
                     );
                     last_warning = Instant::now();
                 }
+
+                if burn_advanced
+                    && unchanged_since.elapsed() >= Duration::from_secs(60)
+                    && last_recovery.elapsed() >= Duration::from_secs(90)
+                {
+                    if let Some(ref name) = project {
+                        if recovery_attempts < 3 {
+                            let level = recovery_levels[recovery_attempts as usize];
+                            recovery_attempts += 1;
+                            last_recovery = Instant::now();
+                            stacksdapp_shell::println_human_safe(format!(
+                                "[devnet] Recovering stalled chain (attempt {recovery_attempts}/3): {} for {name}...",
+                                level.label()
+                            ));
+                            if try_recover_devnet_chain(name, level) {
+                                unchanged_since = Instant::now();
+                                last_warning = Instant::now();
+                            }
+                        } else if last_respawn.elapsed() >= Duration::from_secs(300)
+                            && respawn_tx.try_send(()).is_ok()
+                        {
+                            last_respawn = Instant::now();
+                            last_recovery = Instant::now();
+                            recovery_attempts = 0;
+                            stacksdapp_shell::println_human_safe(
+                                "[devnet] Docker recovery insufficient — restarting Clarinet devnet process...",
+                            );
+                        }
+                    }
+                }
             } else {
-                last_height = Some(height);
+                recovery_attempts = 0;
                 unchanged_since = Instant::now();
             }
+
+            last_core = Some(info);
         }
 
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
 
-async fn fetch_local_stacks_tip(client: &reqwest::Client) -> Option<u64> {
-    let response = client
-        .get("http://localhost:20443/v2/info")
-        .send()
+async fn fetch_local_stacks_tip() -> Option<u64> {
+    fetch_local_core_info_optional()
         .await
-        .ok()?;
-    if !response.status().is_success() {
-        return None;
+        .map(|info| info.stacks_tip_height)
+}
+
+async fn restart_clarinet_devnet(
+    clarinet: &mut Child,
+    fatal: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+) -> Result<()> {
+    let project = devnet_project_name().ok_or_else(|| anyhow!("Missing Clarinet project name"))?;
+    shutdown_child("clarinet devnet", clarinet).await;
+    stop_devnet_containers(&project);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    if let Ok(mut slot) = fatal.lock() {
+        *slot = None;
     }
-    let json: serde_json::Value = response.json().await.ok()?;
-    json.get("stacks_tip_height")?.as_u64()
+    *clarinet = spawn_clarinet_devnet()?;
+    attach_filtered_output(
+        clarinet,
+        OutputStyle::Clarinet,
+        std::sync::Arc::clone(&fatal),
+    );
+    let _ = wait_for_devnet_chain_ready(Duration::from_secs(300), clarinet, fatal).await?;
+    stacksdapp_shell::println_human_safe(
+        "[devnet] Clarinet devnet restarted — deploy now while the tip is advancing.",
+    );
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1250,9 +1377,10 @@ pub fn stop_stale_devnet_docker() {
         .status();
 }
 
-/// Rewrite `contracts/settings/Devnet.toml` for Clarinet 3.2+ snapshot fast-boot.
-/// Preserves accounts and other custom keys; only strips PoX stacking orders and
-/// ensures explorers are off / API on / faster block time. Does not touch Testnet/Mainnet.
+/// Rewrite `contracts/settings/Devnet.toml` for Clarinet 3.23+ snapshot fast-boot.
+/// Preserves accounts and other custom keys; ensures default PoX stacking orders
+/// (required for the epoch-4.0 snapshot), explorers off, and faster block time.
+/// Does not touch Testnet/Mainnet.
 async fn ensure_devnet_fast_boot_settings() -> Result<()> {
     let path = Path::new("contracts/settings/Devnet.toml");
     if !path.is_file() {
@@ -1263,43 +1391,77 @@ async fn ensure_devnet_fast_boot_settings() -> Result<()> {
     if changed {
         fs::write(path, updated).await?;
         stacksdapp_shell::println_human_safe(
-            "[devnet] Applied fast-boot settings (snapshot-friendly; explorers off).",
+            "[devnet] Applied fast-boot settings (snapshot-compatible PoX stacking; explorers off).",
         );
     }
     Ok(())
 }
 
+/// Snapshot-compatible PoX stacking block (matches Clarinet 3.23 `DevnetConfig::default()`).
+const SNAPSHOT_POX_STACKING_ORDERS: &str = r#"
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_1"
+slots = 2
+btc_address = "mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_2"
+slots = 2
+btc_address = "muYdXKmX9bByAueDe6KFfHd5Ff1gdN9ErG"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_3"
+slots = 2
+btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"
+"#;
+
+const SNAPSHOT_WALLET_ACCOUNTS: &str = r#"
+[accounts.wallet_1]
+mnemonic = "sell invite acquire kitten bamboo drastic jelly vivid peace spawn twice guilt pave pen trash pretty park cube fragile unaware remain midnight betray rebuild"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_2]
+mnemonic = "hold excess usual excess ring elephant install account glad dry fragile donkey gaze humble truck breeze nation gasp vacuum limb head keep delay hospital"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_3]
+mnemonic = "cycle puppy glare enroll cost improve round trend wrist mushroom scorpion tower claim oppose clever elephant dinosaur eight problem before frozen dune wagon high"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+"#;
+
 /// Pure rewrite helper (unit-tested). Returns `(new_contents, did_change)`.
 pub fn optimize_devnet_toml_for_fast_boot(raw: &str) -> (String, bool) {
     let mut out: Vec<String> = Vec::new();
-    let mut skipping_pox = false;
     let mut in_devnet = false;
     let mut saw_devnet = false;
     let mut has_btc_explorer = false;
     let mut has_stacks_explorer = false;
     let mut has_stacks_api = false;
     let mut has_block_time = false;
-    let mut removed_pox = false;
 
     for line in raw.lines() {
         let trimmed = line.trim();
 
         if trimmed.starts_with('[') {
-            skipping_pox = false;
             in_devnet = trimmed == "[devnet]";
             if in_devnet {
                 saw_devnet = true;
             }
-            if trimmed == "[[devnet.pox_stacking_orders]]" {
-                skipping_pox = true;
-                removed_pox = true;
-                continue;
-            }
-        }
-
-        if skipping_pox {
-            // Drop the whole array-of-tables block (keys until next [section]).
-            continue;
         }
 
         if in_devnet {
@@ -1315,15 +1477,13 @@ pub fn optimize_devnet_toml_for_fast_boot(raw: &str) -> (String, bool) {
             }
             if trimmed.starts_with("disable_stacks_api") {
                 has_stacks_api = true;
-                // Keep API enabled — frontend / deploy tooling may use :3999.
-                out.push("disable_stacks_api = false".to_string());
+                // Off by default: stacks-api + Clarinet snapshot often desync (blocks stall at ~38).
+                out.push("disable_stacks_api = true".to_string());
                 continue;
             }
             if trimmed.starts_with("bitcoin_controller_block_time") {
                 has_block_time = true;
-                // 15s: local UX stays usable; Nakamoto/signer can keep pace.
-                // 1s burns ahead of stacks-node and tips stall after the first tenure.
-                out.push("bitcoin_controller_block_time = 15_000".to_string());
+                out.push("bitcoin_controller_block_time = 45_000".to_string());
                 continue;
             }
         }
@@ -1347,11 +1507,11 @@ pub fn optimize_devnet_toml_for_fast_boot(raw: &str) -> (String, bool) {
                     injected = true;
                 }
                 if !has_stacks_api {
-                    final_out.push("disable_stacks_api = false".to_string());
+                    final_out.push("disable_stacks_api = true".to_string());
                     injected = true;
                 }
                 if !has_block_time {
-                    final_out.push("bitcoin_controller_block_time = 15_000".to_string());
+                    final_out.push("bitcoin_controller_block_time = 45_000".to_string());
                     injected = true;
                 }
             }
@@ -1362,8 +1522,8 @@ pub fn optimize_devnet_toml_for_fast_boot(raw: &str) -> (String, bool) {
         out.push("[devnet]".to_string());
         out.push("disable_bitcoin_explorer = true".to_string());
         out.push("disable_stacks_explorer = true".to_string());
-        out.push("disable_stacks_api = false".to_string());
-        out.push("bitcoin_controller_block_time = 15_000".to_string());
+        out.push("disable_stacks_api = true".to_string());
+        out.push("bitcoin_controller_block_time = 45_000".to_string());
         injected = true;
     }
 
@@ -1371,22 +1531,74 @@ pub fn optimize_devnet_toml_for_fast_boot(raw: &str) -> (String, bool) {
     if !updated.ends_with('\n') {
         updated.push('\n');
     }
+
+    let needs_wallets = !updated.contains("[accounts.wallet_1]");
+    if !snapshot_pox_orders_complete(&updated) {
+        updated = strip_pox_stacking_order_blocks(&updated);
+        updated.push_str(SNAPSHOT_POX_STACKING_ORDERS);
+        if !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        injected = true;
+    }
+    if needs_wallets {
+        if let Some(devnet_pos) = updated.find("\n[devnet]") {
+            updated.insert_str(devnet_pos, SNAPSHOT_WALLET_ACCOUNTS);
+        } else {
+            updated.push_str(SNAPSHOT_WALLET_ACCOUNTS);
+        }
+        injected = true;
+    }
+
     let normalized_raw = if raw.ends_with('\n') {
         raw.to_string()
     } else {
         format!("{raw}\n")
     };
-    let changed = removed_pox || injected || updated != normalized_raw;
+    let changed = injected || updated != normalized_raw;
     (updated, changed)
+}
+
+fn snapshot_pox_orders_complete(raw: &str) -> bool {
+    [
+        "mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC",
+        "muYdXKmX9bByAueDe6KFfHd5Ff1gdN9ErG",
+        "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7",
+    ]
+    .iter()
+    .all(|addr| raw.contains(addr))
+}
+
+fn strip_pox_stacking_order_blocks(raw: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut skipping_pox = false;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            skipping_pox = trimmed == "[[devnet.pox_stacking_orders]]";
+        }
+        if skipping_pox {
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    let mut updated = out.join("\n");
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated
 }
 
 fn spawn_clarinet_devnet() -> Result<Child> {
     // --no-dashboard is required: Clarinet's TUI corrupts our spinner/ready panel.
-    // --from-genesis avoids Clarinet's default snapshot path, which with Clarinet 3.21
-    // often boots a hybrid bitcoin/stacks snapshot that mines one Nakamoto tenure then stalls.
-    // stdin must be piped so we can answer the snapshot "continue? (y/N)" prompt if it still appears.
+    // Clarinet 3.23+ ships an epoch 4.0 / Clarity 6 snapshot (burn ≥ 163) — use it.
+    // Older Clarinet: --from-genesis avoids a hybrid snapshot that stalls after one tenure.
+    let mut args = vec!["devnet", "start", "--no-dashboard"];
+    if !stacksdapp_deployer::clarinet_version_at_least(3, 23, 0) {
+        args.push("--from-genesis");
+    }
     let child = Command::new("clarinet")
-        .args(["devnet", "start", "--no-dashboard", "--from-genesis"])
+        .args(&args)
         .current_dir("contracts")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1498,7 +1710,7 @@ auth_token = "12345"
     }
 
     #[test]
-    fn optimize_devnet_toml_strips_pox_and_disables_explorers() {
+    fn optimize_devnet_toml_injects_snapshot_pox_and_disables_explorers() {
         let raw = r#"# WARNING: public mnemonics
 
 [network]
@@ -1514,35 +1726,102 @@ disable_stacks_api = false
 [[devnet.pox_stacking_orders]]
 start_at_cycle = 1
 wallet = "wallet_1"
-
-[[devnet.pox_stacking_orders]]
-start_at_cycle = 1
-wallet = "wallet_2"
 "#;
         let (updated, changed) = optimize_devnet_toml_for_fast_boot(raw);
         assert!(changed);
-        assert!(!updated.contains("pox_stacking_orders"));
+        assert!(updated.contains("[[devnet.pox_stacking_orders]]"));
+        assert!(updated.contains("wallet = \"wallet_3\""));
+        assert!(updated.contains("[accounts.wallet_1]"));
         assert!(updated.contains("disable_bitcoin_explorer = true"));
         assert!(updated.contains("disable_stacks_explorer = true"));
-        assert!(updated.contains("disable_stacks_api = false"));
-        assert!(updated.contains("bitcoin_controller_block_time = 15_000"));
+        assert!(updated.contains("disable_stacks_api = true"));
+        assert!(updated.contains("bitcoin_controller_block_time = 45_000"));
         assert!(updated.contains("[accounts.deployer]"));
         assert!(updated.contains("mnemonic = \"twice kind fence tip\""));
     }
 
     #[test]
-    fn optimize_devnet_toml_is_idempotent_when_already_fast() {
+    fn optimize_devnet_toml_injects_missing_snapshot_block_for_minimal_devnet() {
         let raw = r#"[network]
 name = "devnet"
+
+[accounts.deployer]
+mnemonic = "twice kind fence tip"
 
 [devnet]
 disable_bitcoin_explorer = true
 disable_stacks_explorer = true
-disable_stacks_api = false
-bitcoin_controller_block_time = 15_000
+disable_stacks_api = true
+bitcoin_controller_block_time = 45_000
 "#;
         let (updated, changed) = optimize_devnet_toml_for_fast_boot(raw);
-        assert!(!changed, "already optimized file should not rewrite");
+        assert!(changed);
+        assert!(updated.contains("[accounts.wallet_1]"));
+        assert!(updated.contains("[[devnet.pox_stacking_orders]]"));
+        assert!(updated.contains("btc_address = \"mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7\""));
+    }
+
+    #[test]
+    fn optimize_devnet_toml_is_idempotent_when_snapshot_compatible() {
+        let raw = r#"[network]
+name = "devnet"
+
+[accounts.deployer]
+mnemonic = "twice kind fence tip"
+
+[accounts.wallet_1]
+mnemonic = "sell invite acquire kitten bamboo drastic jelly vivid peace spawn twice guilt pave pen trash pretty park cube fragile unaware remain midnight betray rebuild"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_2]
+mnemonic = "hold excess usual excess ring elephant install account glad dry fragile donkey gaze humble truck breeze nation gasp vacuum limb head keep delay hospital"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[accounts.wallet_3]
+mnemonic = "cycle puppy glare enroll cost improve round trend wrist mushroom scorpion tower claim oppose clever elephant dinosaur eight problem before frozen dune wagon high"
+balance = 100_000_000_000_000
+sbtc_balance = 1_000_000_000
+derivation = "m/44'/5757'/0'/0/0"
+
+[devnet]
+disable_bitcoin_explorer = true
+disable_stacks_explorer = true
+disable_stacks_api = true
+bitcoin_controller_block_time = 45_000
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_1"
+slots = 2
+btc_address = "mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_2"
+slots = 2
+btc_address = "muYdXKmX9bByAueDe6KFfHd5Ff1gdN9ErG"
+
+[[devnet.pox_stacking_orders]]
+start_at_cycle = 1
+duration = 10
+auto_extend = true
+wallet = "wallet_3"
+slots = 2
+btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"
+"#;
+        let (updated, changed) = optimize_devnet_toml_for_fast_boot(raw);
+        assert!(
+            !changed,
+            "already snapshot-compatible file should not rewrite"
+        );
         assert_eq!(updated, raw);
     }
 
@@ -1554,12 +1833,27 @@ name = "devnet"
 [devnet]
 disable_bitcoin_explorer = true
 disable_stacks_explorer = true
-disable_stacks_api = false
+disable_stacks_api = true
 bitcoin_controller_block_time = 1_000
 "#;
         let (updated, changed) = optimize_devnet_toml_for_fast_boot(raw);
         assert!(changed);
-        assert!(updated.contains("bitcoin_controller_block_time = 15_000"));
+        assert!(updated.contains("bitcoin_controller_block_time = 45_000"));
         assert!(!updated.contains("bitcoin_controller_block_time = 1_000"));
+    }
+
+    #[test]
+    fn dev_ready_json_payload_uses_ready_status_not_starting() {
+        let payload =
+            super::dev_ready_json_payload("devnet", "http://localhost:3000", Some(42), true, false);
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["command"], "dev");
+        assert_eq!(payload["status"], "ready");
+        assert_ne!(payload["status"], "starting");
+        assert_eq!(payload["network"], "devnet");
+        assert_eq!(payload["url"], "http://localhost:3000");
+        assert_eq!(payload["tip_height"], 42);
+        assert_eq!(payload["auto_deploy"], true);
+        assert_eq!(payload["keep_state"], false);
     }
 }
