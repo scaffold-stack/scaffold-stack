@@ -1744,36 +1744,26 @@ mod agent_skill_tests {
         let tmp = tempfile::tempdir().unwrap();
         write_agent_skill_files(tmp.path()).await.unwrap();
         assert!(tmp.path().join("AGENTS.md").exists());
-        assert!(
-            tmp
-                .path()
-                .join(".cursor/skills/scaffold-stacks/SKILL.md")
-                .exists()
-        );
-        assert!(
-            tmp
-                .path()
-                .join(".cursor/skills/scaffold-stacks/frontend.md")
-                .exists()
-        );
-        assert!(
-            tmp
-                .path()
-                .join(".cursor/skills/scaffold-stacks/clarity-language.md")
-                .exists()
-        );
-        assert!(
-            tmp
-                .path()
-                .join(".cursor/skills/scaffold-stacks/sip-standards.md")
-                .exists()
-        );
-        assert!(
-            tmp
-                .path()
-                .join(".cursor/skills/scaffold-stacks/cli-reference.md")
-                .exists()
-        );
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/SKILL.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/frontend.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/clarity-language.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/sip-standards.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/cli-reference.md")
+            .exists());
     }
 }
 

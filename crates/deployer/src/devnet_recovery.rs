@@ -290,10 +290,7 @@ pub async fn recover_devnet_if_stalled_during_wait(
     if !is_devnet_chain_stalled(previous, &current) {
         return false;
     }
-    let Some(name) = project
-        .map(str::to_string)
-        .or_else(devnet_project_name)
-    else {
+    let Some(name) = project.map(str::to_string).or_else(devnet_project_name) else {
         return false;
     };
     stacksdapp_shell::println_human_safe(format!(

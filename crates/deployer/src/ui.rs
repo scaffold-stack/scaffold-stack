@@ -349,8 +349,7 @@ impl DeployUi {
             };
             println!(
                 "{}",
-                format!("Broadcast to mempool — {timing}")
-                    .truecolor(156, 163, 175)
+                format!("Broadcast to mempool — {timing}").truecolor(156, 163, 175)
             );
             println!(
                 "{}",

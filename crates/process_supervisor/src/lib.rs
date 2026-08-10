@@ -118,7 +118,10 @@ fn print_ready_panel(network: &str, local_url: &str, tip_height: Option<u64>) {
     }
     println!();
     if network == "devnet" {
-        stacksdapp_shell::kv("Deploy", "stacksdapp deploy --network devnet  (or stacksdapp dev --auto-deploy)");
+        stacksdapp_shell::kv(
+            "Deploy",
+            "stacksdapp deploy --network devnet  (or stacksdapp dev --auto-deploy)",
+        );
         println!(
             "{}",
             "  Deploy within ~2 min of ready, or use --auto-deploy — tip stalls ~#71 after PoX cycle 4."
@@ -452,7 +455,9 @@ async fn dev_remote(network: &str) -> Result<()> {
 async fn run_auto_deploy() {
     match stacksdapp_deployer::wait_for_devnet_node().await {
         Ok(()) => {
-            if let Err(e) = stacksdapp_deployer::deploy("devnet", None, false, false, false, false).await {
+            if let Err(e) =
+                stacksdapp_deployer::deploy("devnet", None, false, false, false, false).await
+            {
                 stacksdapp_shell::println_human_safe(format!("[dev] Auto-deploy failed: {e:#}"));
                 stacksdapp_shell::println_human_safe(
                     "[dev] You can deploy manually in another terminal: stacksdapp deploy --network devnet",
@@ -898,13 +903,12 @@ async fn restart_clarinet_devnet(
         *slot = None;
     }
     *clarinet = spawn_clarinet_devnet()?;
-    attach_filtered_output(clarinet, OutputStyle::Clarinet, std::sync::Arc::clone(&fatal));
-    let _ = wait_for_devnet_chain_ready(
-        Duration::from_secs(300),
+    attach_filtered_output(
         clarinet,
-        fatal,
-    )
-    .await?;
+        OutputStyle::Clarinet,
+        std::sync::Arc::clone(&fatal),
+    );
+    let _ = wait_for_devnet_chain_ready(Duration::from_secs(300), clarinet, fatal).await?;
     stacksdapp_shell::println_human_safe(
         "[devnet] Clarinet devnet restarted — deploy now while the tip is advancing.",
     );
@@ -1814,7 +1818,10 @@ slots = 2
 btc_address = "mvZtbibDAAA3WLpY7zXXFqRa3T4XSknBX7"
 "#;
         let (updated, changed) = optimize_devnet_toml_for_fast_boot(raw);
-        assert!(!changed, "already snapshot-compatible file should not rewrite");
+        assert!(
+            !changed,
+            "already snapshot-compatible file should not rewrite"
+        );
         assert_eq!(updated, raw);
     }
 
@@ -1837,13 +1844,8 @@ bitcoin_controller_block_time = 1_000
 
     #[test]
     fn dev_ready_json_payload_uses_ready_status_not_starting() {
-        let payload = super::dev_ready_json_payload(
-            "devnet",
-            "http://localhost:3000",
-            Some(42),
-            true,
-            false,
-        );
+        let payload =
+            super::dev_ready_json_payload("devnet", "http://localhost:3000", Some(42), true, false);
         assert_eq!(payload["ok"], true);
         assert_eq!(payload["command"], "dev");
         assert_eq!(payload["status"], "ready");

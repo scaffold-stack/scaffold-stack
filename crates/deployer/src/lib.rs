@@ -18,8 +18,8 @@ use tokio::process::Command;
 pub mod devnet_recovery;
 mod ui;
 use devnet_recovery::{
-    ensure_devnet_chain_mining, fetch_local_core_info_optional, recover_devnet_if_stalled_during_wait,
-    LocalCoreInfo,
+    ensure_devnet_chain_mining, fetch_local_core_info_optional,
+    recover_devnet_if_stalled_during_wait, LocalCoreInfo,
 };
 use ui::DeployUi;
 
@@ -335,7 +335,8 @@ async fn restore_rename_snapshot(contracts_dir: &Path, snapshot: &RenameSnapshot
         let mut entries = fs::read_dir(&contracts_src).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "clar") && !snapshot.files.contains_key(&path)
+            if path.extension().is_some_and(|ext| ext == "clar")
+                && !snapshot.files.contains_key(&path)
             {
                 let _ = fs::remove_file(&path).await;
             }
@@ -530,7 +531,12 @@ async fn run_deploy_pipeline_inner(
         if no_auto_version && !renames.is_empty() {
             let conflicts: Vec<String> = renames
                 .iter()
-                .map(|r| format!("{} (network has {}; would rename to {})", r.from, r.from, r.to))
+                .map(|r| {
+                    format!(
+                        "{} (network has {}; would rename to {})",
+                        r.from, r.from, r.to
+                    )
+                })
                 .collect();
             return Err(anyhow!(
                 "Contract name conflict on {network}: {}.\n\
@@ -948,15 +954,7 @@ async fn run_apply_devnet(
     // Clarinet apply coordinates devnet mining with the bitcoin controller; prefer it on 3.23+.
     if clarinet_version_at_least(3, 23, 0) {
         ui.step_ok("Preparing Clarinet devnet broadcast");
-        match run_clarinet_deployments_apply(
-            ui,
-            network,
-            contracts,
-            single_contract,
-            None,
-        )
-        .await
-        {
+        match run_clarinet_deployments_apply(ui, network, contracts, single_contract, None).await {
             Ok(stdout) => return Ok(stdout),
             Err(clarinet_err) => {
                 stacksdapp_shell::println_human_safe(format!(
@@ -1096,7 +1094,9 @@ async fn run_clarinet_deployments_apply(
             }
         } else if let Some(name) = parse_clarinet_publish_line(&line) {
             // Intent only — success is counted when Broadcasted/txid appears above.
-            last_txid_by_name.entry(name).or_insert_with(|| "pending".to_string());
+            last_txid_by_name
+                .entry(name)
+                .or_insert_with(|| "pending".to_string());
         }
 
         if line.contains("Confirmed Publish") || line.contains("Published") {
@@ -1168,7 +1168,9 @@ async fn write_contracts_only_plan_file(network: &str) -> Result<PathBuf> {
     let mut file = NamedTempFile::new()?;
     use std::io::Write;
     file.write_all(rendered.as_bytes())?;
-    let (_, path) = file.keep().map_err(|e| anyhow!("Failed to persist filtered plan: {e:?}"))?;
+    let (_, path) = file
+        .keep()
+        .map_err(|e| anyhow!("Failed to persist filtered plan: {e:?}"))?;
     Ok(path)
 }
 
@@ -1967,7 +1969,8 @@ fn strip_version_suffix(name: &str) -> String {
 
 fn validate_settings_mnemonic(network: &str) -> Result<()> {
     let path = stacksdapp_shell::settings_relative_path(network);
-    let raw = std::fs::read_to_string(&path).map_err(|_| anyhow!("Settings file not found: {path}"))?;
+    let raw =
+        std::fs::read_to_string(&path).map_err(|_| anyhow!("Settings file not found: {path}"))?;
     let parsed = stacksdapp_shell::parse_deployer_mnemonic(&raw).ok_or_else(|| {
         anyhow!(
             "No [accounts.deployer].mnemonic in {path}.\n\
@@ -2527,7 +2530,9 @@ fn ui_log_wait_start() {
 
 fn ui_log_devnet_wait_start() {
     if !stacksdapp_shell::is_quiet() {
-        println!("Broadcast complete — waiting for local devnet confirmation (typically 15–90s)...");
+        println!(
+            "Broadcast complete — waiting for local devnet confirmation (typically 15–90s)..."
+        );
     }
 }
 
@@ -2563,9 +2568,9 @@ async fn probe_stacks_api_health() -> Result<bool> {
 }
 
 async fn fetch_local_core_info() -> Result<LocalCoreInfo> {
-    fetch_local_core_info_optional().await.ok_or_else(|| {
-        anyhow!("Local stacks-node at http://localhost:20443 is not responding.")
-    })
+    fetch_local_core_info_optional()
+        .await
+        .ok_or_else(|| anyhow!("Local stacks-node at http://localhost:20443 is not responding."))
 }
 
 fn parse_deployer_address_from_settings(toml_raw: &str) -> Option<String> {
@@ -2796,7 +2801,10 @@ mod tests {
 Broadcasted ContractPublish(StandardPrincipalData(ST1PQ), ContractName("counter"), "abc123def4567890abc123def4567890abc123def4567890abc123def4567890")
 "#;
         let map = super::collect_txids_from_clarinet_output(output);
-        assert_eq!(map.get("counter").map(String::as_str), Some("abc123def4567890abc123def4567890abc123def4567890abc123def4567890"));
+        assert_eq!(
+            map.get("counter").map(String::as_str),
+            Some("abc123def4567890abc123def4567890abc123def4567890abc123def4567890")
+        );
     }
 
     #[test]
@@ -3049,12 +3057,20 @@ path = "contracts/c.clar"
             "[contracts.counter]\npath = \"contracts/counter.clar\"\n",
         )
         .unwrap();
-        fs::write(src_dir.join("counter.clar"), "(define-read-only (get) (ok u0))").unwrap();
+        fs::write(
+            src_dir.join("counter.clar"),
+            "(define-read-only (get) (ok u0))",
+        )
+        .unwrap();
 
         let snapshot = super::snapshot_contract_state(&contracts_dir)
             .await
             .unwrap();
-        fs::rename(src_dir.join("counter.clar"), src_dir.join("counter-v2.clar")).unwrap();
+        fs::rename(
+            src_dir.join("counter.clar"),
+            src_dir.join("counter-v2.clar"),
+        )
+        .unwrap();
         fs::write(
             contracts_dir.join("Clarinet.toml"),
             "[contracts.counter-v2]\npath = \"contracts/counter-v2.clar\"\n",

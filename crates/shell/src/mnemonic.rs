@@ -120,7 +120,11 @@ fn capitalize(s: &str) -> String {
 }
 
 /// Inspect a network settings file on disk (for doctor).
-pub fn inspect_settings_file(network: &str, root: &Path, strict_format: bool) -> Option<(String, MnemonicCheck)> {
+pub fn inspect_settings_file(
+    network: &str,
+    root: &Path,
+    strict_format: bool,
+) -> Option<(String, MnemonicCheck)> {
     let path = root.join(settings_relative_path(network));
     let raw = std::fs::read_to_string(&path).ok()?;
     let parsed = parse_deployer_mnemonic(&raw)?;
@@ -134,21 +138,24 @@ mod tests {
 
     #[test]
     fn detects_public_devnet_deployer_seed() {
-        assert!(is_public_devnet_mnemonic(
-            PUBLIC_DEVNET_MNEMONICS[0]
-        ));
+        assert!(is_public_devnet_mnemonic(PUBLIC_DEVNET_MNEMONICS[0]));
     }
 
     #[test]
     fn rejects_placeholder_mnemonic() {
-        assert!(is_mnemonic_placeholder("<YOUR PRIVATE TESTNET MNEMONIC HERE>"));
+        assert!(is_mnemonic_placeholder(
+            "<YOUR PRIVATE TESTNET MNEMONIC HERE>"
+        ));
     }
 
     #[test]
     fn validates_word_count_and_charset() {
         assert!(validate_mnemonic_word_format(PUBLIC_DEVNET_MNEMONICS[0]).is_ok());
         assert!(validate_mnemonic_word_format("one two three").is_err());
-        assert!(validate_mnemonic_word_format("One two three four five six seven eight nine ten eleven twelve").is_err());
+        assert!(validate_mnemonic_word_format(
+            "One two three four five six seven eight nine ten eleven twelve"
+        )
+        .is_err());
     }
 
     #[test]

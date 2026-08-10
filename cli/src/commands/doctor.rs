@@ -1,7 +1,9 @@
 use anyhow::Result;
 use colored::Colorize;
 use serde_json::json;
-use stacksdapp_shell::{self as shell, find_scaffold_root, inspect_settings_file, status, MnemonicCheck};
+use stacksdapp_shell::{
+    self as shell, find_scaffold_root, inspect_settings_file, status, MnemonicCheck,
+};
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -569,9 +571,10 @@ fn hooks_path_is_githooks(configured: &str, root: &Path) -> bool {
     }
 
     let expected = root.join(".githooks");
-    if let (Ok(expected_canon), Ok(configured_canon)) =
-        (expected.canonicalize(), Path::new(configured).canonicalize())
-    {
+    if let (Ok(expected_canon), Ok(configured_canon)) = (
+        expected.canonicalize(),
+        Path::new(configured).canonicalize(),
+    ) {
         return expected_canon == configured_canon;
     }
 
