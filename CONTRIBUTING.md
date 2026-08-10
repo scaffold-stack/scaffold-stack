@@ -8,7 +8,7 @@ Thanks for helping improve `stacksdapp`. This guide covers local development, ch
 |---|---|
 | Rust 1.75+ | via [rustup](https://rustup.rs) |
 | Node.js 20+ | frontend + Vitest contract tests |
-| Clarinet 3.21+ | contract toolchain (`brew install clarinet` or CI-style install) |
+| Clarinet 3.23+ | contract toolchain (`brew install clarinet` or CI-style install) |
 | Docker Desktop | only for local `stacksdapp dev` (devnet) |
 
 Run `stacksdapp doctor` after building to verify your machine.
