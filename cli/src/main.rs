@@ -96,6 +96,9 @@ enum Commands {
         /// Template to use
         #[arg(long, default_value = "blank", value_parser = ["blank", "sip010", "sip009"])]
         template: String,
+        /// Clarity language version for the new contract (default 6; use 5 for legacy contracts)
+        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u8).range(4..=6))]
+        clarity_version: u8,
     },
     /// Deploy contracts to a network (defaults.network from stacksdapp.toml when omitted)
     Deploy {
@@ -224,11 +227,18 @@ async fn dispatch(cli: Cli) -> Result<()> {
             emit_command_ok("init", json!({}));
             Ok(())
         }
-        Commands::Add { name, template } => {
-            stacksdapp_scaffold::add_contract(&name, &template)
+        Commands::Add {
+            name,
+            template,
+            clarity_version,
+        } => {
+            stacksdapp_scaffold::add_contract(&name, &template, clarity_version)
                 .await
                 .map_err(map_scaffold_err)?;
-            emit_command_ok("add", json!({ "name": name, "template": template }));
+            emit_command_ok(
+                "add",
+                json!({ "name": name, "template": template, "clarity_version": clarity_version }),
+            );
             Ok(())
         }
         Commands::Deploy {
