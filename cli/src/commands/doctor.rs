@@ -51,6 +51,7 @@ pub async fn run(strict: bool) -> Result<()> {
         check_git().await,
         check_git_hooks().await,
         check_deploy_mnemonics().await,
+        check_devnet_epochs().await,
         check_stacksdapp().await,
     ];
 
@@ -275,17 +276,25 @@ async fn check_clarinet() -> Check {
                          Run: brew upgrade clarinet  OR  cargo install clarinet --locked"
                     )),
                 }
-            } else if meets_semver(&version, 3, 21) {
+            } else if meets_semver(&version, 3, 23) {
                 Check {
                     name: "Clarinet",
                     result: CheckResult::Ok(version),
+                }
+            } else if meets_semver(&version, 3, 21) {
+                Check {
+                    name: "Clarinet",
+                    result: CheckResult::Warn(format!(
+                        "{version} — Clarinet 3.23+ recommended (Clarity 6 devnet / epoch 4.0 at burn 163). \
+                         Run: brew upgrade clarinet"
+                    )),
                 }
             } else {
                 Check {
                     name: "Clarinet",
                     result: CheckResult::Warn(format!(
-                        "{version} — Clarinet 3.21+ recommended (templates target 3.21). \
-                         Run: brew upgrade clarinet"
+                        "{version} — Clarinet 3.21+ required. \
+                         Run: brew upgrade clarinet  OR  cargo install clarinet --locked"
                     )),
                 }
             }
@@ -377,6 +386,47 @@ async fn check_git() -> Check {
                 "not found — optional but recommended. Install from https://git-scm.com".into(),
             ),
         },
+    }
+}
+
+async fn check_devnet_epochs() -> Check {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(_) => {
+            return Check {
+                name: "Devnet epochs",
+                result: CheckResult::Ok("could not read working directory".into()),
+            };
+        }
+    };
+
+    let Some(root) = find_scaffold_root(&cwd) else {
+        return Check {
+            name: "Devnet epochs",
+            result: CheckResult::Ok("not in a scaffold project".into()),
+        };
+    };
+
+    let path = root.join("contracts/settings/Devnet.toml");
+    let Ok(raw) = tokio::fs::read_to_string(&path).await else {
+        return Check {
+            name: "Devnet epochs",
+            result: CheckResult::Ok("no Devnet.toml".into()),
+        };
+    };
+
+    if raw.contains("[epochs]") {
+        return Check {
+            name: "Devnet epochs",
+            result: CheckResult::Warn(
+                "Devnet.toml contains [epochs] — this overrides Clarinet 3.23+ defaults and can block epoch 4.0 / Clarity 6. Remove [epochs] or add epoch_4_0, then run stacksdapp clean.".into(),
+            ),
+        };
+    }
+
+    Check {
+        name: "Devnet epochs",
+        result: CheckResult::Ok("using Clarinet default epoch schedule".into()),
     }
 }
 
