@@ -363,7 +363,7 @@ fn print_completions(shell: Shell) -> Result<()> {
     }
 }
 
-/// Foundry-style root discovery: chdir into the project before path-relative commands.
+///  -style root discovery: chdir into the project before path-relative commands.
 fn enter_project_context(cli: &Cli) -> Result<()> {
     use std::env;
 

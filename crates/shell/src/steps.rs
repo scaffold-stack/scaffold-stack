@@ -1,4 +1,4 @@
-//! Shared spinner steps and banner chrome for Foundry-style CLI output.
+//! Shared spinner steps and banner chrome for  -style CLI output.
 
 use colored::Colorize;
 use std::io::{self, Write};
