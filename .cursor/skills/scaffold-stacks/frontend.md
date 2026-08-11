@@ -588,6 +588,9 @@ npm test             # vitest (optional frontend tests)
 | Clarity language + learning links | `clarity-language.md` |
 | SIP-010 / SIP-009 specs + templates | `sip-standards.md` |
 | Generated hooks + custom components | `frontend.md` |
+| Stacks.js / Connect / post-conditions | `stacks-js.md` |
+| Clarinet (official docs) | `stacks-clarinet-docs.md` |
+| Full Stacks docs catalog | `stacks-docs-index.md` → [llms.txt](https://docs.stacks.co/llms.txt) |
 | Wallet vs devnet signing | this file |
 | Project directories | `project-layout.md` |
 | Errors / devnet stall | `troubleshooting.md` |
