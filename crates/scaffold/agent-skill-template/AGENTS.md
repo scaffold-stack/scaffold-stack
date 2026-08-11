@@ -30,10 +30,12 @@ stacksdapp dev --network testnet
 
 ## Documentation
 
-- Guides: https://scaffoldstacks.mintlify.app/
-- Docs index for agents: https://scaffoldstacks.mintlify.app/llms.txt
+- **Scaffold guides:** https://scaffoldstacks.mintlify.app/
+- **Scaffold docs index:** https://scaffoldstacks.mintlify.app/llms.txt
+- **Stacks official docs index:** https://docs.stacks.co/llms.txt — section map in `.cursor/skills/scaffold-stacks/stacks-docs-index.md`
 - Clarity language: `.cursor/skills/scaffold-stacks/clarity-language.md`
 - SIP-010 / SIP-009: `.cursor/skills/scaffold-stacks/sip-standards.md`
+- Stacks.js / Connect: `.cursor/skills/scaffold-stacks/stacks-js.md`
 
 ## Frontend
 
