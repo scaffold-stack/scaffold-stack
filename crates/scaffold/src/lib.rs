@@ -1737,6 +1737,7 @@ mod agent_skill_tests {
         let content = skill.contents_utf8().expect("utf8");
         assert!(content.contains("name: scaffold-stacks"));
         assert!(content.contains("stacksdapp"));
+        assert!(content.contains("stacks-docs-index.md"));
     }
 
     #[tokio::test]
@@ -1763,6 +1764,18 @@ mod agent_skill_tests {
         assert!(tmp
             .path()
             .join(".cursor/skills/scaffold-stacks/cli-reference.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/stacks-docs-index.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/stacks-js.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join(".cursor/skills/scaffold-stacks/stacks-clarinet-docs.md")
             .exists());
     }
 }

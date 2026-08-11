@@ -1,4 +1,4 @@
-//! Clean Foundry-style deploy terminal UI.
+//! Clean  -style deploy terminal UI.
 
 use colored::Colorize;
 use std::io::{self, Write};

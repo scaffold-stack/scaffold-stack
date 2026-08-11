@@ -22,7 +22,7 @@ Scaffold Stacks = **Rust CLI** (`stacksdapp`) + **monorepo** (Clarity + Next.js)
 - User asks about Clarity + frontend integration on Stacks
 - User asks about SIP-010, SIP-009, or Clarity language syntax
 
-**Deep language / spec detail:** [clarity-language.md](clarity-language.md) · [sip-standards.md](sip-standards.md) · [Stacks docs](https://docs.stacks.co/llms.txt)
+**Deep language / spec detail:** [clarity-language.md](clarity-language.md) · [sip-standards.md](sip-standards.md) · [stacks-docs-index.md](stacks-docs-index.md) · [Stacks docs llms.txt](https://docs.stacks.co/llms.txt)
 
 ## Project root
 
@@ -103,6 +103,7 @@ Details: [clarity-versions.md](clarity-versions.md)
 - Use `--yes` for non-interactive deploys
 - Prefer **testnet** for deploy CI and first-time verification
 - Warn before committing mnemonics; devnet seeds in template are **public burners**
+- For Stacks topics not in this skill, **fetch** [docs.stacks.co/llms.txt](https://docs.stacks.co/llms.txt) or use `?ask=` on a doc page — see [stacks-docs-index.md](stacks-docs-index.md)
 
 ### Do not
 
@@ -210,6 +211,8 @@ stacksdapp dev --network mainnet
 
 ## Additional resources
 
+### Scaffold Stacks (local)
+
 - [frontend.md](frontend.md) — hooks, wallet, devnet signing, custom UI
 - [clarity-language.md](clarity-language.md) — Clarity cheat sheet + Stacks learning links
 - [sip-standards.md](sip-standards.md) — SIP-010/009 specs + scaffold templates
@@ -218,3 +221,9 @@ stacksdapp dev --network mainnet
 - [clarity-versions.md](clarity-versions.md) — C4/C5/C6 migration
 - [troubleshooting.md](troubleshooting.md) — doctor, Docker, deploy errors
 - [project-layout.md](project-layout.md) — directories and env vars
+
+### Official Stacks docs (fetch when needed)
+
+- [stacks-docs-index.md](stacks-docs-index.md) — **start here** for [docs.stacks.co/llms.txt](https://docs.stacks.co/llms.txt) section map + fetch workflow
+- [stacks-js.md](stacks-js.md) — Connect, transactions, post-conditions, read-only calls
+- [stacks-clarinet-docs.md](stacks-clarinet-docs.md) — Clarinet testing, deployment, Rendezvous

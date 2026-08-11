@@ -1,4 +1,4 @@
-//! Stable CLI exit codes for scripting (Foundry-style distinguishability).
+//! Stable CLI exit codes for scripting ( -style distinguishability).
 //!
 //! | Code | Meaning |
 //! |------|---------|

@@ -1,42 +1,47 @@
-# Scaffold Stacks — AI agent guide (CLI repo)
+# Scaffold Stacks — AI agent guide
 
-This repository builds the `stacksdapp` CLI. When helping users **build dApps**, read the bundled skill template — the same files installed into every scaffolded project.
+This project was scaffolded with [Scaffold Stacks](https://scaffoldstacks.mintlify.app/). Use the bundled agent skill for all Stacks dApp work.
 
-## Skill source (edit here)
+## Skill location
 
-```
-crates/scaffold/agent-skill-template/
-├── AGENTS.md
-└── .cursor/skills/scaffold-stacks/
-    ├── SKILL.md
-    ├── frontend.md
-    ├── clarity-language.md
-    ├── sip-standards.md
-    ├── cli-reference.md
-    ├── project-layout.md
-    ├── clarity-versions.md
-    ├── workflows.md
-    └── troubleshooting.md
-```
+**Cursor:** `.cursor/skills/scaffold-stacks/SKILL.md` (auto-discovered; no setup required)
 
-Changes here are copied into projects by `stacksdapp new`, `stacksdapp init`, and `stacksdapp upgrade`.
+**Other agents (Claude Code, Codex, etc.):** Read `.cursor/skills/scaffold-stacks/SKILL.md` first, then reference files in that directory as needed.
 
-After editing, sync the CLI repo Cursor copy:
+## Quick commands
+
+Run from project root (or any subdirectory — CLI walks up to `stacksdapp.toml` or `contracts/Clarinet.toml`):
 
 ```bash
-cp crates/scaffold/agent-skill-template/.cursor/skills/scaffold-stacks/*.md .cursor/skills/scaffold-stacks/
+stacksdapp doctor          # verify Rust, Node, Clarinet, Docker
+stacksdapp check           # type-check Clarity
+stacksdapp generate        # regenerate TypeScript bindings
+stacksdapp test            # contract + frontend tests
+stacksdapp deploy --network testnet --yes
+stacksdapp dev --network testnet
 ```
 
-## Working on this repo
+## Default workflow
 
-```bash
-cargo build -p stacksdapp
-cargo test --all
-bash scripts/ci-smoke.sh
-```
+1. Edit `contracts/contracts/*.clar`
+2. `stacksdapp check && stacksdapp generate && stacksdapp test`
+3. Deploy to **testnet** first (no Docker): `stacksdapp deploy --network testnet --yes`
+4. `stacksdapp dev --network testnet`
 
-## Working on a scaffolded dApp
+## Documentation
 
-Read `.cursor/skills/scaffold-stacks/SKILL.md` (or the template above). For React/hooks/wallet work, see `frontend.md`.
+- **Scaffold guides:** https://scaffoldstacks.mintlify.app/
+- **Scaffold docs index:** https://scaffoldstacks.mintlify.app/llms.txt
+- **Stacks official docs index:** https://docs.stacks.co/llms.txt — section map in `.cursor/skills/scaffold-stacks/stacks-docs-index.md`
+- Clarity language: `.cursor/skills/scaffold-stacks/clarity-language.md`
+- SIP-010 / SIP-009: `.cursor/skills/scaffold-stacks/sip-standards.md`
+- Stacks.js / Connect: `.cursor/skills/scaffold-stacks/stacks-js.md`
 
-Docs: https://scaffoldstacks.mintlify.app/ · Index: https://scaffoldstacks.mintlify.app/llms.txt
+## Frontend
+
+Generated hooks live in `frontend/src/generated/hooks.ts`. See `.cursor/skills/scaffold-stacks/frontend.md` for wallet vs devnet signing, hook usage, and custom UI patterns.
+
+## Never edit by hand
+
+- `frontend/src/generated/*` — run `stacksdapp generate`
+- Do not commit real mnemonics in `contracts/settings/Testnet.toml` or `Mainnet.toml`
