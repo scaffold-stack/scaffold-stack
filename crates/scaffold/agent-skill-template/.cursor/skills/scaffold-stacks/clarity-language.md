@@ -11,11 +11,11 @@ Scaffold Stacks handles deploy, bindings, and frontend — **you still write Cla
 | Interactive course | [Clarity Universe](https://clarity-lang.org/universe) |
 | Browser REPL | [Clarity Playground](https://play.stackslabs.com/) |
 | Function/type reference | [Clarity Reference](https://docs.stacks.co/reference/clarity/functions.md) |
-| Full docs index | [docs.stacks.co/llms.txt](https://docs.stacks.co/llms.txt) |
+| Full docs index | [docs.stacks.co/llms.txt](https://docs.stacks.co/llms.txt) — see [stacks-docs-index.md](stacks-docs-index.md) for section map + fetch workflow |
 | Language spec (SIP-002) | [SIP-002 Smart Contract Language](https://github.com/stacksgov/sips/blob/main/sips/sip-002/sip-002-smart-contract-language.md) |
 | Ask docs a question | `GET https://docs.stacks.co/<page>.md?ask=<question>&goal=<goal>` |
 
-**Agent rule:** For Clarity language questions beyond this cheat sheet, fetch Stacks docs — do not invent syntax.
+**Agent rule:** For Clarity language questions beyond this cheat sheet, read [stacks-docs-index.md](stacks-docs-index.md) then fetch Stacks docs — do not invent syntax.
 
 ## Scaffold project workflow (Clarity side)
 
