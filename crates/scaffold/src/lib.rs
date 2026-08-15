@@ -922,18 +922,20 @@ async fn ensure_contract_support_files(
     frontend_dir: &Path,
     mut created: Option<&mut Vec<PathBuf>>,
 ) -> Result<()> {
-    write_if_missing(
-        &contracts_root.join("package.json"),
-        DEFAULT_CONTRACTS_PACKAGE_JSON,
-        &mut created,
-    )
-    .await?;
-    write_if_missing(
-        &contracts_root.join("package-lock.json"),
-        CONTRACTS_PACKAGE_LOCK,
-        &mut created,
-    )
-    .await?;
+    let package_json = contracts_root.join("package.json");
+    let package_lock = contracts_root.join("package-lock.json");
+    let existing_package_json = package_json.exists();
+
+    write_if_missing(&package_json, DEFAULT_CONTRACTS_PACKAGE_JSON, &mut created).await?;
+
+    // A standard Clarinet project can bring its own package.json without a
+    // lockfile. Do not pair that manifest with Scaffold's unrelated lockfile:
+    // npm ci rejects mismatched manifests/locks. Leaving the lock absent makes
+    // the existing npm setup select `npm install`, which writes a matching lock.
+    if !existing_package_json {
+        write_if_missing(&package_lock, CONTRACTS_PACKAGE_LOCK, &mut created).await?;
+    }
+
     write_if_missing(
         &contracts_root.join("vitest.config.ts"),
         DEFAULT_VITEST_CONFIG,
@@ -1782,8 +1784,47 @@ mod agent_skill_tests {
 
 #[cfg(test)]
 mod init_tests {
-    use super::InitRollback;
+    use super::{ensure_contract_support_files, InitRollback};
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn init_does_not_add_scaffold_lock_to_existing_contract_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let contracts = tmp.path().join("contracts");
+        let frontend = tmp.path().join("frontend");
+        tokio::fs::create_dir_all(&contracts).await.unwrap();
+        let clarinet_manifest =
+            r#"{"name":"clarinet-project","dependencies":{"chokidar-cli":"^3.0.0"}}"#;
+        tokio::fs::write(contracts.join("package.json"), clarinet_manifest)
+            .await
+            .unwrap();
+
+        ensure_contract_support_files(&contracts, &frontend, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(contracts.join("package.json"))
+                .await
+                .unwrap(),
+            clarinet_manifest
+        );
+        assert!(!contracts.join("package-lock.json").exists());
+    }
+
+    #[tokio::test]
+    async fn init_adds_matching_lock_for_scaffold_contract_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let contracts = tmp.path().join("contracts");
+        let frontend = tmp.path().join("frontend");
+
+        ensure_contract_support_files(&contracts, &frontend, None)
+            .await
+            .unwrap();
+
+        assert!(contracts.join("package.json").exists());
+        assert!(contracts.join("package-lock.json").exists());
+    }
 
     #[tokio::test]
     async fn init_rollback_removes_created_frontend_and_files() {
