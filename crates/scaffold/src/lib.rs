@@ -1154,9 +1154,24 @@ import {{ Cl }} from "@stacks/transactions";
 
 const accounts = simnet.getAccounts();
 const deployer = accounts.get("deployer")!;
+const wallet1 = accounts.get("wallet_1")!;
 
 describe("{name} FT", () => {{
-  it("mints tokens", () => {{
+  it("returns token metadata", () => {{
+    const name = simnet.callReadOnlyFn("{name}", "get-name", [], deployer);
+    expect(name.result).toBeOk(Cl.stringAscii("{name}"));
+
+    const symbol = simnet.callReadOnlyFn("{name}", "get-symbol", [], deployer);
+    expect(symbol.result).toBeOk(Cl.stringAscii("{name}"));
+
+    const decimals = simnet.callReadOnlyFn("{name}", "get-decimals", [], deployer);
+    expect(decimals.result).toBeOk(Cl.uint(6));
+
+    const uri = simnet.callReadOnlyFn("{name}", "get-token-uri", [], deployer);
+    expect(uri.result).toBeOk(Cl.some(Cl.stringUtf8("https://hiro.so")));
+  }});
+
+  it("mints tokens and updates balances", () => {{
     const {{ result }} = simnet.callPublicFn(
       "{name}",
       "mint",
@@ -1164,6 +1179,88 @@ describe("{name} FT", () => {{
       deployer
     );
     expect(result).toBeOk(Cl.bool(true));
+
+    const balance = simnet.callReadOnlyFn(
+      "{name}",
+      "get-balance",
+      [Cl.standardPrincipal(deployer)],
+      deployer
+    );
+    expect(balance.result).toBeOk(Cl.uint(100));
+
+    const supply = simnet.callReadOnlyFn("{name}", "get-total-supply", [], deployer);
+    expect(supply.result).toBeOk(Cl.uint(100));
+  }});
+
+  it("transfers tokens", () => {{
+    simnet.callPublicFn(
+      "{name}",
+      "mint",
+      [Cl.uint(50), Cl.standardPrincipal(deployer)],
+      deployer
+    );
+
+    const {{ result }} = simnet.callPublicFn(
+      "{name}",
+      "transfer",
+      [
+        Cl.uint(20),
+        Cl.standardPrincipal(deployer),
+        Cl.standardPrincipal(wallet1),
+        Cl.none(),
+      ],
+      deployer
+    );
+    expect(result).toBeOk(Cl.bool(true));
+
+    const senderBalance = simnet.callReadOnlyFn(
+      "{name}",
+      "get-balance",
+      [Cl.standardPrincipal(deployer)],
+      deployer
+    );
+    expect(senderBalance.result).toBeOk(Cl.uint(30));
+
+    const recipientBalance = simnet.callReadOnlyFn(
+      "{name}",
+      "get-balance",
+      [Cl.standardPrincipal(wallet1)],
+      deployer
+    );
+    expect(recipientBalance.result).toBeOk(Cl.uint(20));
+  }});
+
+  it("set-token-uri updates metadata uri", () => {{
+    const {{ result }} = simnet.callPublicFn(
+      "{name}",
+      "set-token-uri",
+      [Cl.stringUtf8("https://example.com/token.json")],
+      deployer
+    );
+    expect(result).toBeOk(
+      Cl.tuple({{
+        notification: Cl.stringAscii("token-metadata-update"),
+        payload: Cl.tuple({{
+          "contract-id": Cl.contractPrincipal(deployer, "{name}"),
+          "token-class": Cl.stringAscii("ft"),
+        }}),
+      }})
+    );
+
+    const uri = simnet.callReadOnlyFn("{name}", "get-token-uri", [], deployer);
+    expect(uri.result).toBeOk(
+      Cl.some(Cl.stringUtf8("https://example.com/token.json"))
+    );
+  }});
+
+  it("rejects mint from non-owner", () => {{
+    const {{ result }} = simnet.callPublicFn(
+      "{name}",
+      "mint",
+      [Cl.uint(1), Cl.standardPrincipal(wallet1)],
+      wallet1
+    );
+    expect(result).toBeErr(Cl.uint(100));
   }});
 }});
 "#
@@ -1228,8 +1325,32 @@ import {{ Cl }} from "@stacks/transactions";
 
 const accounts = simnet.getAccounts();
 const deployer = accounts.get("deployer")!;
+const wallet1 = accounts.get("wallet_1")!;
 
 describe("{name} NFT", () => {{
+  it("starts with no minted tokens", () => {{
+    const lastId = simnet.callReadOnlyFn("{name}", "get-last-token-id", [], deployer);
+    expect(lastId.result).toBeOk(Cl.uint(0));
+
+    const uri = simnet.callReadOnlyFn(
+      "{name}",
+      "get-token-uri",
+      [Cl.uint(1)],
+      deployer
+    );
+    expect(uri.result).toBeOk(
+      Cl.some(Cl.stringAscii("https://api.example.com/metadata/{{id}}"))
+    );
+
+    const owner = simnet.callReadOnlyFn(
+      "{name}",
+      "get-owner",
+      [Cl.uint(1)],
+      deployer
+    );
+    expect(owner.result).toBeOk(Cl.none());
+  }});
+
   it("mints a token", () => {{
     const {{ result }} = simnet.callPublicFn(
       "{name}",
@@ -1238,6 +1359,84 @@ describe("{name} NFT", () => {{
       deployer
     );
     expect(result).toBeOk(Cl.uint(1));
+
+    const lastId = simnet.callReadOnlyFn("{name}", "get-last-token-id", [], deployer);
+    expect(lastId.result).toBeOk(Cl.uint(1));
+
+    const owner = simnet.callReadOnlyFn(
+      "{name}",
+      "get-owner",
+      [Cl.uint(1)],
+      deployer
+    );
+    expect(owner.result).toBeOk(Cl.some(Cl.standardPrincipal(deployer)));
+  }});
+
+  it("transfers a token", () => {{
+    simnet.callPublicFn(
+      "{name}",
+      "mint",
+      [Cl.standardPrincipal(deployer)],
+      deployer
+    );
+
+    const {{ result }} = simnet.callPublicFn(
+      "{name}",
+      "transfer",
+      [
+        Cl.uint(1),
+        Cl.standardPrincipal(deployer),
+        Cl.standardPrincipal(wallet1),
+      ],
+      deployer
+    );
+    expect(result).toBeOk(Cl.bool(true));
+
+    const owner = simnet.callReadOnlyFn(
+      "{name}",
+      "get-owner",
+      [Cl.uint(1)],
+      deployer
+    );
+    expect(owner.result).toBeOk(Cl.some(Cl.standardPrincipal(wallet1)));
+  }});
+
+  it("set-base-uri updates metadata uri", () => {{
+    const {{ result }} = simnet.callPublicFn(
+      "{name}",
+      "set-base-uri",
+      [Cl.stringAscii("https://example.com/nft/{{id}}.json")],
+      deployer
+    );
+    expect(result).toBeOk(
+      Cl.tuple({{
+        notification: Cl.stringAscii("token-metadata-update"),
+        payload: Cl.tuple({{
+          "token-class": Cl.stringAscii("nft"),
+          "contract-id": Cl.contractPrincipal(deployer, "{name}"),
+        }}),
+      }})
+    );
+
+    const uri = simnet.callReadOnlyFn(
+      "{name}",
+      "get-token-uri",
+      [Cl.uint(1)],
+      deployer
+    );
+    expect(uri.result).toBeOk(
+      Cl.some(Cl.stringAscii("https://example.com/nft/{{id}}.json"))
+    );
+  }});
+
+  it("rejects mint from non-owner", () => {{
+    const {{ result }} = simnet.callPublicFn(
+      "{name}",
+      "mint",
+      [Cl.standardPrincipal(wallet1)],
+      wallet1
+    );
+    expect(result).toBeErr(Cl.uint(100));
   }});
 }});
 "#
