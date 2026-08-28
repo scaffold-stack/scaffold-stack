@@ -7,11 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Version history is reconstructed from git tags, `cli/Cargo.toml` version bumps, and commit messages.
 
-> **Note:** Only **`v0.1.9`** is git-tagged today. Intermediate versions (`0.1.0`–`0.1.8`) were published to crates.io without tags in this repository.
+---
+
+## [Unreleased]
 
 ---
 
-## [0.2.0] - Unreleased
+## [0.2.2] — 2026-08-27
+
+Released on crates.io and GitHub Releases; git tag **`v0.2.2`**.
+
+### Added
+
+- Pre-built release binaries on GitHub Releases (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`).
+
+### Changed
+
+- Expanded SIP-010 and SIP-009 template bootstrap tests to cover all public and read-only functions (`set-token-uri`, `set-base-uri`, owner-only rejection, sold-out cap).
+- Release workflow: `macos-15-intel` runner for `x86_64-apple-darwin` builds.
+
+---
+
+## [0.2.1] — 2026-08-15
+
+Released on crates.io and GitHub Releases; git tag **`v0.2.1`**.
+
+### Fixed
+
+- `stacksdapp init` npm dependency mismatch when adopting existing Clarinet projects (aligns `contracts/package.json` with Clarinet SDK expectations).
+
+---
+
+## [0.2.0] — 2026-08-11
+
+Released on crates.io and GitHub Releases; git tag **`v0.2.0`**. Milestone 1 release.
 
 ### Added
 
@@ -24,7 +53,7 @@ Version history is reconstructed from git tags, `cli/Cargo.toml` version bumps, 
 - `clean --force` — skip confirmation prompt.
 - `deploy -y` / `--yes` — non-interactive deploy and Clarinet fee prompts.
 - GitHub Actions **Release** workflow (multi-target binaries + GitHub Release on `v*` tags).
-- CI: Clarinet pin **3.21.1**, `cargo clippy`, `verify-e2e.sh`, audit-fix regression checks, frontend build/typecheck, and smoke integration (`scripts/ci-smoke.sh`).
+- CI: Clarinet pin **3.23.1**, `cargo clippy`, `verify-e2e.sh`, audit-fix regression checks, frontend build/typecheck, and smoke integration (`scripts/ci-smoke.sh`).
 - `scripts/check-versions.sh`, `CONTRIBUTING.md`, MIT `LICENSE`, and local verify scripts under `scripts/`.
 - `--json` success payloads for `new`, `init`, `add`, `deploy`, `dev`, and `upgrade`.
 - Parser unit tests, scaffold proptest fuzz on name validation, and init rollback tests.
@@ -34,6 +63,10 @@ Version history is reconstructed from git tags, `cli/Cargo.toml` version bumps, 
 - `stacksdapp add --clarity-version <4|5|6>` for explicit language version when adding contracts (default `6`).
 - Devnet deploy success points to the running local app (`http://localhost:3000` or `:3001`) instead of restarting dev.
 - **Bundled AI agent skill** — every `stacksdapp new` / `init` project gets `.cursor/skills/scaffold-stacks/` and root `AGENTS.md`; `upgrade` refreshes them. Source: `crates/scaffold/agent-skill-template/`.
+- Agent skill expansions: `stacks-docs-index`, `stacks-js`, `stacks-clarinet-docs` reference files for official Stacks docs.
+- **SIP-010 / SIP-009 template hardening** — testnet-safe trait handling, mainnet `impl-trait` comments, Clarinet `[[project.requirements]]`, and generated Vitest tests per template.
+- Deployer mnemonic blocklist and format validation in `stacksdapp-shell`.
+- Devnet chain stall detection and Docker recovery.
 
 ### Changed
 
@@ -44,6 +77,7 @@ Version history is reconstructed from git tags, `cli/Cargo.toml` version bumps, 
 - `stacksdapp dev` starts Clarinet with `--no-dashboard` and `--from-genesis` to avoid snapshot stalls and Clarinet 3.21 / stacks-core 3.4 config skew.
 - Devnet deploy uses `@stacks/transactions` v7 `broadcastTransaction` against stacks core (`:20443`) instead of removed `broadcastRawTransaction`.
 - Devnet node readiness and deploy confirmation poll stacks core (`:20443`), not stacks-api alone.
+- **Clarinet 3.23+** required (`doctor` check, CI smoke, template lockfiles for `@stacks/clarinet-sdk` 3.23.1).
 - Workspace crate versions aligned to `0.2.0`.
 
 ### Fixed
@@ -61,6 +95,9 @@ Version history is reconstructed from git tags, `cli/Cargo.toml` version bumps, 
 - **Devnet boot:** auto-answer Clarinet snapshot “continue? (y/N)” prompt; strip incompatible `pox_5_*` keys from generated `Stacks.toml`; fail fast when stacks-node container exits; stop stale Clarinet Docker on `dev` and `clean`.
 - **Devnet UX:** spinner no longer corrupted by Clarinet/codegen logs (`STACKSDAPP_QUIET`, stdout lock); wait for sustained tip advancement before “ready”.
 - **Devnet deploy:** epoch-gated publishes no longer accepted to mempool then left unmined; skip re-broadcast when contract already on core; reject broadcast API error responses; omit misleading Hiro explorer link on devnet success.
+- Pre-commit mnemonic guard logs loudly when bypass env is active.
+- `stacksdapp dev --json` emits payload when frontend is ready.
+- Deployer distinguishes broadcast vs confirmed success messaging.
 
 ---
 
@@ -262,7 +299,9 @@ Initial public CLI draft.
 - Next.js frontend template with wallet connect and generated debug UI.
 - Tera templates for `contracts.ts`, `hooks.ts`, `DebugContracts.tsx`.
 
-[Unreleased]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.1.3...v0.1.9
 [0.1.3]: https://github.com/scaffold-stack/scaffold-stack/releases/tag/v0.1.3
