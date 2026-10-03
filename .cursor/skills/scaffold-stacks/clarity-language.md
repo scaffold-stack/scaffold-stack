@@ -81,7 +81,7 @@ Public functions return `(response T uint)` — success `(ok value)` or error `(
 |------|---------|
 | `tx-sender` | Principal that signed the transaction |
 | `contract-caller` | Immediate caller (another contract if applicable) |
-| `as-contract` | Run as current contract |
+| `as-contract?` | Run as the contract on Clarity 6. Pass an allowance such as `((with-stx amount))`. Bare `as-contract` does not resolve. |
 
 ### Fungible tokens (SIP-010 building blocks)
 
