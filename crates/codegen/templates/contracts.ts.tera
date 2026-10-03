@@ -2,9 +2,10 @@
 // Re-run `stacksdapp generate` to update.
 
 import { request } from '@stacks/connect';
-import { fetchCallReadOnlyFunction, cvToValue, ClarityValue } from '@stacks/transactions';
+import { fetchCallReadOnlyFunction, ClarityValue } from '@stacks/transactions';
 import { getReadOnlyNetwork, scaffoldConfig } from '../scaffold.config';
 import { callDevnetContract, getDevnetSenderAddress } from '../lib/devnet';
+import { readClarity } from '../lib/clarity';
 
 let _deployments: Record<string, any> = { contracts: {} };
 try { _deployments = require('./deployments.json'); } catch {}
@@ -21,10 +22,13 @@ function getContractId(name: string): { address: string; contractName: string } 
 
 {% for contract in contracts %}
 // ── {{ contract.contract_name }} ──────────────────────
+{% if contract.export_name != contract.contract_name %}
+// Imports use `{{ contract.export_name }}` so a redeploy to {{ contract.contract_name }} does not rename custom UI.
+{% endif %}
 
 {% for fn in contract.functions %}
 {% if fn.access == "public" %}
-export async function {{ contract.contract_name | camel }}_{{ fn.name | camel }}(
+export async function {{ contract.export_name | camel }}_{{ fn.name | camel }}(
   functionArgs: ClarityValue[] = [],
   postConditions: any[] = [],
 ): Promise<any> {
@@ -44,13 +48,16 @@ export async function {{ contract.contract_name | camel }}_{{ fn.name | camel }}
     functionName: '{{ fn.name }}',
     functionArgs,
     postConditions,
-    postConditionMode : 'allow',
+    // Deny only when the caller supplied post-conditions, so existing
+    // calls that pass none keep working. Deny rejects any transfer the
+    // post-conditions do not list.
+    postConditionMode: postConditions.length > 0 ? 'deny' : 'allow',
     network: scaffoldConfig.targetNetwork,
   });
 }
 {% endif %}
 {% if fn.access == "read_only" %}
-export async function {{ contract.contract_name | camel }}_{{ fn.name | camel }}(
+export async function {{ contract.export_name | camel }}_{{ fn.name | camel }}(
   functionArgs: ClarityValue[] = [],
   senderAddress?: string
 ): Promise<unknown> {
@@ -64,7 +71,7 @@ export async function {{ contract.contract_name | camel }}_{{ fn.name | camel }}
     network: getReadOnlyNetwork(),
     senderAddress: senderAddress ?? getDevnetSenderAddress() ?? address,
   });
-  return cvToValue(result);
+  return readClarity(result);
 }
 {% endif %}
 {% endfor %}
