@@ -274,7 +274,7 @@ async fn check_clarinet() -> Check {
                 Check {
                     name: "Clarinet",
                     result: CheckResult::Warn(format!(
-                        "{version} — Clarinet 3.21+ required. \
+                        "{version} — Clarinet 3.23+ required for Clarity 6. \
                          Run: brew upgrade clarinet  OR  cargo install clarinet --locked"
                     )),
                 }
@@ -295,7 +295,7 @@ async fn check_clarinet() -> Check {
                 Check {
                     name: "Clarinet",
                     result: CheckResult::Warn(format!(
-                        "{version} — Clarinet 3.21+ required. \
+                        "{version} — Clarinet 3.23+ required for Clarity 6. \
                          Run: brew upgrade clarinet  OR  cargo install clarinet --locked"
                     )),
                 }
