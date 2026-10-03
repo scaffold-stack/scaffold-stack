@@ -74,7 +74,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # glibc 2.35. ubuntu-latest is 24.04 (glibc 2.39) and that binary
+          # does not start on Debian 12 or Ubuntu 22.04. This label is
+          # supported through 2027-04-17.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: stacksdapp-x86_64-unknown-linux-gnu
           - os: macos-latest
