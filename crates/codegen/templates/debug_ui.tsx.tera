@@ -4,11 +4,10 @@
 
 import { useState } from 'react';
 import { Cl } from '@stacks/transactions';
-import Message from '@/components/Message';
 {% for contract in contracts %}
 {% for fn in contract.functions %}
 {% if fn.access == "public" or fn.access == "read_only" %}
-import { use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }} } from './hooks';
+import { use{{ contract.export_name | upper_camel }}_{{ fn.name | upper_camel }} } from './hooks';
 {% endif %}
 {% endfor %}
 {% endfor %}
@@ -160,6 +159,14 @@ const S = {
     borderRadius: '50%', 
     background: 'currentColor', 
     marginRight: '6px' 
+  },
+  footer: {
+    width: '50%',
+    marginBottom: 50,
+    fontSize: 12,
+    fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+    color: '#908E8E',
+    textAlign: 'center' as const,
   },
 } as const;
 
@@ -354,7 +361,7 @@ export default function DebugContracts() {
               
               {% if fn.access == "read_only" %}
   {activeTab === 'read' && (
-    <FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }} 
+    <FunctionCard_{{ contract.export_name | upper_camel }}_{{ fn.name | upper_camel }} 
       num="{{ padded_idx }}"
       isOpen={openFunction === "{{ fn_id }}"}
       onToggle={() => setOpenFunction(openFunction === "{{ fn_id }}" ? null : "{{ fn_id }}")}
@@ -362,7 +369,7 @@ export default function DebugContracts() {
   )}
               {% else %}
                 {activeTab === 'write' && (
-                  <FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }} 
+                  <FunctionCard_{{ contract.export_name | upper_camel }}_{{ fn.name | upper_camel }} 
                     num="{{ padded_idx }}"
                     isOpen={openFunction === "{{ fn_id }}"}
                     onToggle={() => setOpenFunction(openFunction === "{{ fn_id }}" ? null : "{{ fn_id }}")}
@@ -375,7 +382,9 @@ export default function DebugContracts() {
         )}
       </div>
       {% endfor %}
-      <Message />
+      <p style={S.footer}>
+        Quickly launch a full dapp on stacks. Move past the challenges posed by setup nightmare and focus on creating innovative solutions that drive progress.
+      </p>
     </div>
   );
 }
@@ -400,8 +409,8 @@ function ContractPanel({ name, children }: { name: string; children: React.React
 {% for contract in contracts %}
 {% for fn in contract.functions %}
 {% if fn.access == "public" or fn.access == "read_only" %}
-function FunctionCard_{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}({ num, isOpen, onToggle }: { num: string, isOpen: boolean, onToggle: () => void }) {
-  const { data, loading, txid, txStatus, txStatusError, explorerUrl, call } = use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}();
+function FunctionCard_{{ contract.export_name | upper_camel }}_{{ fn.name | upper_camel }}({ num, isOpen, onToggle }: { num: string, isOpen: boolean, onToggle: () => void }) {
+  const { data, loading, txid, txStatus, txStatusError, explorerUrl, call } = use{{ contract.export_name | upper_camel }}_{{ fn.name | upper_camel }}();
   const isReadOnly = {% if fn.access == "read_only" %}true{% else %}false{% endif %};
 
   {% if fn.args %}
