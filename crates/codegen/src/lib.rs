@@ -19,6 +19,11 @@ const DEBUG_UI_TSX_TEMPLATE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/templates/debug_ui.tsx.tera"
 ));
+/// Generated bindings import this. New projects already have the same file from
+/// the frontend template. Older projects only regenerate bindings, so write it
+/// when missing. This copy lives inside the codegen crate so `cargo package` works.
+const CLARITY_HELPER: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/clarity.ts"));
 
 // ── Custom Tera filters ───────────────────────────────────────────────────────
 
@@ -103,6 +108,9 @@ async fn generate_all_impl(quiet: bool) -> Result<()> {
     };
 
     let frontend_dir = project_root.join("frontend");
+    if ensure_read_clarity_helper(&frontend_dir).await? && !quiet {
+        log("[generate] Wrote frontend/src/lib/clarity.ts (read-only result decoder).".into());
+    }
     if !frontend_dir.join("node_modules").exists() {
         log("[generate] Installing frontend dependencies...".into());
         let subcommand = if frontend_dir.join("package-lock.json").exists() {
@@ -178,6 +186,24 @@ async fn generate_all_impl(quiet: bool) -> Result<()> {
     Ok(())
 }
 
+/// Bindings import `../lib/clarity`. Create that file when an older project
+/// does not have it yet. Leave a non-empty file alone.
+async fn ensure_read_clarity_helper(frontend_dir: &Path) -> Result<bool> {
+    let path = frontend_dir.join("src/lib/clarity.ts");
+    if tokio::fs::metadata(&path)
+        .await
+        .map(|meta| meta.len() > 0)
+        .unwrap_or(false)
+    {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&path, CLARITY_HELPER).await?;
+    Ok(true)
+}
+
 /// Render all templates. Returns the number of files actually written.
 pub fn render(abis: &[ContractAbi], out_dir: &Path) -> Result<usize> {
     render_with_quiet(abis, out_dir, false)
@@ -196,10 +222,16 @@ fn render_with_quiet(abis: &[ContractAbi], out_dir: &Path, quiet: bool) -> Resul
     // a simple lowercase Clarity type string (e.g. "uint128", "bool", "principal",
     // "string-ascii", "string-utf8", "buff") used by the debug UI to build
     // typed inputs and call toClarityValue() correctly.
+    let contract_names: Vec<String> = abis.iter().map(|c| c.contract_name.clone()).collect();
     let contracts_json: Vec<serde_json::Value> = abis
         .iter()
         .map(|c| {
             let mut val = serde_json::to_value(c).expect("ContractAbi serialization failed");
+            // `counter-v2.clar` still calls getContractId("counter-v2"). The
+            // TypeScript export stays `counter` so custom UI imports survive
+            // auto-version. Skip that when `counter` is also in the project.
+            val["export_name"] =
+                serde_json::Value::String(export_name(&c.contract_name, &contract_names));
             if let Some(fns) = val["functions"].as_array_mut() {
                 for f in fns.iter_mut() {
                     if let Some(args) = f["args"].as_array_mut() {
@@ -320,6 +352,37 @@ fn stale_contract_names(abis: &[ContractAbi], json: &serde_json::Value) -> Vec<S
             }
         })
         .collect()
+}
+
+/// `counter-v2` → `counter`. `counter-vault` and `counter-v` stay unchanged.
+fn strip_version_suffix(name: &str) -> &str {
+    if let Some(idx) = name.rfind("-v") {
+        let suffix = &name[idx + 2..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            return &name[..idx];
+        }
+    }
+    name
+}
+
+/// Name used for generated hooks and contract functions.
+/// A lone `counter-v2` exports as `counter`. Two contracts that would share
+/// that export (`counter` plus `counter-v2`, or `counter-v2` plus `counter-v3`)
+/// keep their real names.
+fn export_name(name: &str, all: &[String]) -> String {
+    let stable = strip_version_suffix(name);
+    if stable == name {
+        return name.to_string();
+    }
+    let claimants = all
+        .iter()
+        .filter(|other| strip_version_suffix(other) == stable)
+        .count();
+    if claimants == 1 {
+        stable.to_string()
+    } else {
+        name.to_string()
+    }
 }
 
 /// `ST….counter` or bare `counter` matches local name `counter`.
@@ -458,6 +521,88 @@ mod tests {
         assert!(deployment_id_matches("ST1.counter", "counter"));
         assert!(!deployment_id_matches("ST1.my-counter", "counter"));
         assert!(deployment_id_matches("counter", "counter"));
+    }
+
+    #[test]
+    fn version_suffix_strips_only_a_trailing_version() {
+        assert_eq!(strip_version_suffix("counter"), "counter");
+        assert_eq!(strip_version_suffix("counter-v2"), "counter");
+        assert_eq!(strip_version_suffix("counter-v10"), "counter");
+        assert_eq!(strip_version_suffix("my-token-v2"), "my-token");
+        assert_eq!(strip_version_suffix("counter-vault"), "counter-vault");
+        assert_eq!(strip_version_suffix("counter-v"), "counter-v");
+    }
+
+    #[test]
+    fn lone_versioned_contract_exports_the_stable_name() {
+        let names = vec!["counter-v2".to_string()];
+        assert_eq!(export_name("counter-v2", &names), "counter");
+        assert_eq!(export_name("counter", &["counter".into()]), "counter");
+    }
+
+    #[test]
+    fn versioned_export_keeps_its_name_when_the_stable_name_is_taken() {
+        let both = vec!["counter".to_string(), "counter-v2".to_string()];
+        assert_eq!(export_name("counter", &both), "counter");
+        assert_eq!(export_name("counter-v2", &both), "counter-v2");
+
+        let two_versions = vec!["counter-v2".to_string(), "counter-v3".to_string()];
+        assert_eq!(export_name("counter-v2", &two_versions), "counter-v2");
+        assert_eq!(export_name("counter-v3", &two_versions), "counter-v3");
+    }
+
+    fn abi_with_calls(name: &str) -> ContractAbi {
+        use stacksdapp_parser::{AbiFunction, AbiType, FunctionAccess};
+        let mut contract = abi(name);
+        contract.functions = vec![
+            AbiFunction {
+                name: "get-count".into(),
+                access: FunctionAccess::ReadOnly,
+                args: vec![],
+                outputs: AbiType::Simple("uint".into()),
+            },
+            AbiFunction {
+                name: "increment".into(),
+                access: FunctionAccess::Public,
+                args: vec![],
+                outputs: AbiType::Simple("bool".into()),
+            },
+        ];
+        contract
+    }
+
+    #[test]
+    fn render_keeps_counter_imports_for_a_lone_counter_v2() {
+        let tmp = tempfile::tempdir().unwrap();
+        render(&[abi_with_calls("counter-v2")], tmp.path()).unwrap();
+        let contracts = std::fs::read_to_string(tmp.path().join("contracts.ts")).unwrap();
+        let hooks = std::fs::read_to_string(tmp.path().join("hooks.ts")).unwrap();
+        let debug = std::fs::read_to_string(tmp.path().join("DebugContracts.tsx")).unwrap();
+
+        assert!(contracts.contains("export async function counter_getCount("));
+        assert!(contracts.contains("export async function counter_increment("));
+        assert!(contracts.contains("getContractId('counter-v2')"));
+        assert!(!contracts.contains("counterV2_"));
+        assert!(hooks.contains("export function useCounter_GetCount("));
+        assert!(hooks.contains("export function useCounter_Increment("));
+        assert!(hooks.contains("(contracts as any).counter_getCount"));
+        assert!(!hooks.contains("useCounterV2_"));
+        assert!(debug.contains("useCounter_GetCount"));
+        assert!(debug.contains("Counter-v2"));
+        assert!(!debug.contains("useCounterV2_"));
+    }
+
+    #[test]
+    fn render_keeps_versioned_names_when_both_contracts_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        render(
+            &[abi_with_calls("counter"), abi_with_calls("counter-v2")],
+            tmp.path(),
+        )
+        .unwrap();
+        let hooks = std::fs::read_to_string(tmp.path().join("hooks.ts")).unwrap();
+        assert!(hooks.contains("export function useCounter_GetCount("));
+        assert!(hooks.contains("export function useCounterV2_GetCount("));
     }
 
     #[test]
