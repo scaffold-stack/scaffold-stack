@@ -1065,6 +1065,123 @@ fn validate_clarity_version(version: u8) -> Result<()> {
     }
 }
 
+/// Remove a contract added to this project: source, test, Clarinet.toml entry, then regenerate.
+pub async fn remove_contract(name: &str) -> Result<()> {
+    validate_contract_name(name)?;
+
+    let contracts_dir = Path::new("contracts/contracts");
+    if !contracts_dir.exists() {
+        return Err(anyhow!(
+            "No scaffold-stacks project found. Run from the directory created by stacksdapp new"
+        ));
+    }
+
+    let clarinet_toml_path = Path::new("contracts/Clarinet.toml");
+    let existing = tokio::fs::read_to_string(clarinet_toml_path).await?;
+    let updated = remove_contract_block(&existing, name)?;
+
+    stacksdapp_shell::print_banner("Removing Contract");
+    stacksdapp_shell::kv("Contract", name);
+    println!();
+
+    let step = stacksdapp_shell::begin_step("Updated project configuration");
+    if let Err(e) = tokio::fs::write(clarinet_toml_path, &updated).await {
+        step.fail();
+        return Err(e.into());
+    }
+    step.finish();
+
+    let step = stacksdapp_shell::begin_step("Removed contract files");
+    let clar_path = contracts_dir.join(format!("{name}.clar"));
+    let test_path = Path::new("contracts/tests").join(format!("{name}.test.ts"));
+    if clar_path.exists() {
+        tokio::fs::remove_file(&clar_path).await?;
+    }
+    if test_path.exists() {
+        tokio::fs::remove_file(&test_path).await?;
+    }
+    forget_deployment(name).await?;
+    step.finish();
+
+    let step = stacksdapp_shell::begin_step("Generated TypeScript bindings");
+    if let Err(e) = stacksdapp_codegen::generate_all_quiet().await {
+        step.fail();
+        return Err(e);
+    }
+    step.finish();
+    println!();
+    status_line(&format!("Removed contracts/contracts/{name}.clar"));
+    Ok(())
+}
+
+fn remove_contract_block(toml: &str, name: &str) -> Result<String> {
+    let header = format!("[contracts.{name}]");
+    let mut out = String::new();
+    let mut skipping = false;
+    let mut found = false;
+    for line in toml.lines() {
+        let trimmed = line.trim();
+        if is_named_contract_header(trimmed, &header) {
+            skipping = true;
+            found = true;
+            continue;
+        }
+        if skipping {
+            if trimmed.starts_with('[') {
+                skipping = false;
+            } else {
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !found {
+        return Err(anyhow!(
+            "Contract '{name}' is not listed in contracts/Clarinet.toml"
+        ));
+    }
+    Ok(out)
+}
+
+/// `[contracts.name]`, including a trailing comment. Does not match a longer name.
+fn is_named_contract_header(trimmed: &str, header: &str) -> bool {
+    if trimmed == header {
+        return true;
+    }
+    let Some(rest) = trimmed.strip_prefix(header) else {
+        return false;
+    };
+    rest.trim_start().starts_with('#')
+}
+
+/// Drop one contract from deployments.json so a removed source is not still
+/// advertised as deployed. Leaves every other entry, including version bumps.
+async fn forget_deployment(name: &str) -> Result<()> {
+    let path = Path::new("frontend/src/generated/deployments.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = tokio::fs::read_to_string(path).await.unwrap_or_default();
+    let mut json: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(_) => return Ok(()),
+    };
+    let Some(contracts) = json.get_mut("contracts").and_then(|value| value.as_object_mut()) else {
+        return Ok(());
+    };
+    if contracts.remove(name).is_none() {
+        return Ok(());
+    }
+    let pretty = serde_json::to_string_pretty(&json)?;
+    tokio::fs::write(path, format!("{pretty}\n")).await?;
+    Ok(())
+}
+
+fn status_line(message: &str) {
+    println!("{message}");
+}
+
 pub async fn add_contract(name: &str, template: &str, clarity_version: u8) -> Result<()> {
     validate_contract_name(name)?;
     validate_contract_template(template)?;
@@ -1819,6 +1936,53 @@ mod tests {
         assert!(validate_project_name("1dapp").is_err());
         assert!(validate_project_name("my dapp").is_err());
         assert!(validate_project_name("my.dapp").is_err());
+    }
+
+    #[test]
+    fn remove_contract_block_drops_only_the_named_section() {
+        let toml = "\
+[contracts.counter]
+path = \"contracts/counter.clar\"
+clarity_version = 6
+epoch = \"4.0\"
+
+[contracts.pot]
+path = \"contracts/pot.clar\"
+clarity_version = 6
+epoch = \"4.0\"
+";
+        let updated = remove_contract_block(toml, "counter").unwrap();
+        assert!(!updated.contains("[contracts.counter]"));
+        assert!(updated.contains("[contracts.pot]"));
+        assert!(updated.contains("contracts/pot.clar"));
+        assert!(remove_contract_block(toml, "missing").is_err());
+
+        let commented = "\
+[contracts.counter] # starter
+path = \"contracts/counter.clar\"
+
+[contracts.counter-v2]
+path = \"contracts/counter-v2.clar\"
+";
+        let kept = remove_contract_block(commented, "counter").unwrap();
+        assert!(!kept.contains("counter.clar"));
+        assert!(kept.contains("[contracts.counter-v2]"));
+        assert!(kept.contains("counter-v2.clar"));
+    }
+
+    #[test]
+    fn read_clarity_helper_matches_the_packaged_codegen_copy() {
+        let sibling = Path::new(env!("CARGO_MANIFEST_DIR")).join("../codegen/templates/clarity.ts");
+        if !sibling.exists() {
+            return;
+        }
+        let template = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("frontend-template/src/lib/clarity.ts"),
+        )
+        .unwrap();
+        let packaged = std::fs::read_to_string(sibling).unwrap();
+        assert_eq!(template, packaged);
     }
 
     #[test]
