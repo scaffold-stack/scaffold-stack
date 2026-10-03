@@ -21,7 +21,7 @@ function isTransientTxPollHttpStatus(status: number): boolean {
 {% for contract in contracts %}
 {% for fn in contract.functions %}
 {% if fn.access == "public" or fn.access == "read_only" %}
-export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper_camel }}() {
+export function use{{ contract.export_name | upper_camel }}_{{ fn.name | upper_camel }}() {
   const [data, setData] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
@@ -32,7 +32,7 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
   
   const isReadOnly = {% if fn.access == "read_only" %}true{% else %}false{% endif %};
 
-  const call = useCallback(async (functionArgs: ClarityValue[] = []) => {
+  const call = useCallback(async (functionArgs: ClarityValue[] = [], postConditions: any[] = []) => {
     setLoading(true);
     setError(null);
     setTxid(null);
@@ -40,11 +40,11 @@ export function use{{ contract.contract_name | upper_camel }}_{{ fn.name | upper
     setTxStatusError(null);
     try {
       // Use the generated contract function from the index
-      const fn = (contracts as any).{{ contract.contract_name | camel }}_{{ fn.name | camel }};
+      const fn = (contracts as any).{{ contract.export_name | camel }}_{{ fn.name | camel }};
       
       const result = isReadOnly 
         ? await fn(functionArgs) 
-        : await fn(functionArgs, []); // Default empty post-conditions for public
+        : await fn(functionArgs, postConditions);
 
       if (!isReadOnly && result?.txid) {
         setTxid(result.txid);
