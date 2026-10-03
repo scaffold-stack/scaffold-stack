@@ -64,6 +64,10 @@ Add contract to `contracts/contracts/<name>.clar`, update `Clarinet.toml`, regen
 | `--template` | `blank` | `blank`, `sip010`, `sip009` |
 | `--clarity-version` | `6` | `4`, `5`, or `6` — sets matching epoch |
 
+### `stacksdapp remove <name>`
+
+Delete `contracts/contracts/<name>.clar`, its Vitest file, and the `[contracts.<name>]` block in `contracts/Clarinet.toml`, then regenerate bindings.
+
 ### `stacksdapp check`
 
 Run Clarinet type-checker on all contracts.
