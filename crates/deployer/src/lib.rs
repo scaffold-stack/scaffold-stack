@@ -2755,19 +2755,27 @@ mod tests {
 
     static CWD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    #[tokio::test]
-    async fn hosted_env_records_testnet_and_does_not_overwrite() {
+    #[test]
+    fn hosted_env_records_testnet_and_does_not_overwrite() {
         let _guard = CWD_TEST_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
         fs::create_dir_all("frontend").unwrap();
-        super::write_hosted_network_env("testnet").await.unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(super::write_hosted_network_env("testnet"))
+            .unwrap();
         assert_eq!(
             fs::read_to_string("frontend/.env.production").unwrap(),
             "NEXT_PUBLIC_NETWORK=testnet\n"
         );
-        super::write_hosted_network_env("mainnet").await.unwrap();
+        runtime
+            .block_on(super::write_hosted_network_env("mainnet"))
+            .unwrap();
         assert_eq!(
             fs::read_to_string("frontend/.env.production").unwrap(),
             "NEXT_PUBLIC_NETWORK=testnet\n"

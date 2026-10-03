@@ -22,10 +22,8 @@ const DEBUG_UI_TSX_TEMPLATE: &str = include_str!(concat!(
 /// Generated bindings import this. New projects already have the same file from
 /// the frontend template. Older projects only regenerate bindings, so write it
 /// when missing. This copy lives inside the codegen crate so `cargo package` works.
-const CLARITY_HELPER: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/templates/clarity.ts"
-));
+const CLARITY_HELPER: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/clarity.ts"));
 
 // ── Custom Tera filters ───────────────────────────────────────────────────────
 
@@ -232,10 +230,8 @@ fn render_with_quiet(abis: &[ContractAbi], out_dir: &Path, quiet: bool) -> Resul
             // `counter-v2.clar` still calls getContractId("counter-v2"). The
             // TypeScript export stays `counter` so custom UI imports survive
             // auto-version. Skip that when `counter` is also in the project.
-            val["export_name"] = serde_json::Value::String(export_name(
-                &c.contract_name,
-                &contract_names,
-            ));
+            val["export_name"] =
+                serde_json::Value::String(export_name(&c.contract_name, &contract_names));
             if let Some(fns) = val["functions"].as_array_mut() {
                 for f in fns.iter_mut() {
                     if let Some(args) = f["args"].as_array_mut() {

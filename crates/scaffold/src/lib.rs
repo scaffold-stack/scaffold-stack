@@ -1167,7 +1167,10 @@ async fn forget_deployment(name: &str) -> Result<()> {
         Ok(value) => value,
         Err(_) => return Ok(()),
     };
-    let Some(contracts) = json.get_mut("contracts").and_then(|value| value.as_object_mut()) else {
+    let Some(contracts) = json
+        .get_mut("contracts")
+        .and_then(|value| value.as_object_mut())
+    else {
         return Ok(());
     };
     if contracts.remove(name).is_none() {
@@ -1977,8 +1980,7 @@ path = \"contracts/counter-v2.clar\"
             return;
         }
         let template = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("frontend-template/src/lib/clarity.ts"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend-template/src/lib/clarity.ts"),
         )
         .unwrap();
         let packaged = std::fs::read_to_string(sibling).unwrap();
