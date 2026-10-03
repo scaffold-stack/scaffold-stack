@@ -2267,6 +2267,10 @@ async fn write_deployments_json_from_output(
     }
     fs::write(out_path, &json).await?;
 
+    if network == "testnet" || network == "mainnet" {
+        write_hosted_network_env(network).await?;
+    }
+
     // Ensure bindings are fresh after rename (quiet).
     run_generate_quiet().await?;
 
@@ -2275,6 +2279,49 @@ async fn write_deployments_json_from_output(
         status: deploy_status,
         block_height,
     })
+}
+
+/// Vercel and other hosts load `.env.production` and ignore gitignored `.env.local`.
+/// Without this, a testnet deploy still builds a frontend that talks to devnet.
+async fn write_hosted_network_env(network: &str) -> Result<()> {
+    let path = Path::new("frontend/.env.production");
+    if path.parent().is_some_and(|parent| !parent.exists()) {
+        return Ok(());
+    }
+    let line = format!("NEXT_PUBLIC_NETWORK={network}");
+    if path.exists() {
+        let existing = fs::read_to_string(path).await.unwrap_or_default();
+        if existing.lines().any(line_sets_hosted_network) {
+            return Ok(());
+        }
+        let mut next = existing;
+        if !next.is_empty() && !next.ends_with('\n') {
+            next.push('\n');
+        }
+        next.push_str(&line);
+        next.push('\n');
+        fs::write(path, next).await?;
+        return Ok(());
+    }
+    fs::write(path, format!("{line}\n")).await?;
+    Ok(())
+}
+
+/// True when a non-comment line already assigns NEXT_PUBLIC_NETWORK.
+/// Accepts `export` and spaces around `=`, which Next.js still loads.
+fn line_sets_hosted_network(entry: &str) -> bool {
+    let trimmed = entry.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return false;
+    }
+    let rest = trimmed
+        .strip_prefix("export")
+        .map(str::trim_start)
+        .unwrap_or(trimmed);
+    let Some((key, _)) = rest.split_once('=') else {
+        return false;
+    };
+    key.trim() == "NEXT_PUBLIC_NETWORK"
 }
 
 async fn load_existing_deployments_for_network(
@@ -2707,6 +2754,40 @@ mod tests {
     use std::sync::Mutex;
 
     static CWD_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    async fn hosted_env_records_testnet_and_does_not_overwrite() {
+        let _guard = CWD_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        fs::create_dir_all("frontend").unwrap();
+        super::write_hosted_network_env("testnet").await.unwrap();
+        assert_eq!(
+            fs::read_to_string("frontend/.env.production").unwrap(),
+            "NEXT_PUBLIC_NETWORK=testnet\n"
+        );
+        super::write_hosted_network_env("mainnet").await.unwrap();
+        assert_eq!(
+            fs::read_to_string("frontend/.env.production").unwrap(),
+            "NEXT_PUBLIC_NETWORK=testnet\n"
+        );
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn hosted_env_line_detects_export_and_ignores_comments() {
+        assert!(super::line_sets_hosted_network(
+            "export NEXT_PUBLIC_NETWORK=devnet"
+        ));
+        assert!(super::line_sets_hosted_network(
+            "  NEXT_PUBLIC_NETWORK = testnet"
+        ));
+        assert!(!super::line_sets_hosted_network(
+            "# NEXT_PUBLIC_NETWORK=devnet"
+        ));
+        assert!(!super::line_sets_hosted_network("NEXT_PUBLIC_API=testnet"));
+    }
 
     #[test]
     fn test_strip_version_suffix() {
