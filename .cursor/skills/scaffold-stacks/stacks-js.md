@@ -9,7 +9,7 @@ Scaffold frontend uses **`@stacks/connect` v8**, **`@stacks/transactions` v7**, 
 | Package | Role in scaffold |
 |---------|------------------|
 | `@stacks/connect` | Wallet connect + `request('stx_callContract', …)` on testnet/mainnet |
-| `@stacks/transactions` | `Cl.*` args, `fetchCallReadOnlyFunction`, `cvToValue`, post-conditions |
+| `@stacks/transactions` | `Cl.*` args, `fetchCallReadOnlyFunction`, `readClarity`, post-conditions |
 | `@stacks/network` | `createNetwork`, Hiro API key — see `scaffold.config.ts` |
 
 Devnet **does not** use Connect for writes — see [frontend.md](frontend.md) (`lib/devnet.ts` burners).
@@ -34,12 +34,13 @@ Generated public calls (testnet/mainnet):
 ```typescript
 import { request } from '@stacks/connect';
 
+const postConditions = []; // pass Pc builders here to switch the mode to deny
 await request('stx_callContract', {
   contract: `${address}.${contractName}`,
   functionName: 'increment',
   functionArgs: [], // ClarityValue[]
-  postConditions: [],
-  postConditionMode: 'allow',
+  postConditions,
+  postConditionMode: postConditions.length > 0 ? 'deny' : 'allow',
   network: scaffoldConfig.targetNetwork,
 });
 ```
@@ -52,7 +53,7 @@ await request('stx_callContract', {
 | `fetchCallReadOnlyFunction` | [fetchCallReadOnlyFunction](https://docs.stacks.co/reference/stacks.js/stacks-transactions/network/fetchcallreadonlyfunction.md) |
 | Decode results | [cvToValue](https://docs.stacks.co/reference/stacks.js/stacks-transactions/utilities/cvtovalue.md) · [cvToJSON](https://docs.stacks.co/reference/stacks.js/stacks-transactions/utilities/cvtojson.md) |
 
-Scaffold generated read-only functions use `cvToValue` — hook `data` shapes are documented in [frontend.md](frontend.md) (do not `BigInt(hook.data)` blindly).
+Scaffold generated read-only functions use `readClarity` (`src/lib/clarity.ts`). Hook `data` is `{ ok, value }` with `bigint` amounts — see [frontend.md](frontend.md). Do not `BigInt(hook.data)`.
 
 ## Building Clarity values (`Cl.*`)
 
@@ -90,7 +91,7 @@ Post-conditions protect users from unexpected token/STX transfers during contrac
 | `Pc` builder API | [Post Conditions](https://docs.stacks.co/reference/stacks.js/stacks-transactions/post-conditions.md) |
 | Cookbook: FT PC | [Build an ft pc](https://docs.stacks.co/cookbook/stacks.js/cryptography-and-security/build-an-ft-pc.md) |
 
-Scaffold **hooks** default to `postConditionMode: 'allow'` with empty post-conditions. For explicit PCs, call **`contracts.ts` directly** — see [frontend.md](frontend.md).
+Scaffold **hooks** forward a post-condition list. Wallet mode is `allow` when that list is empty, and `deny` when it is not. Pass the list as the second argument to `call` or to the function in `contracts.ts` — see [frontend.md](frontend.md).
 
 ```typescript
 import { Pc, PostConditionMode } from '@stacks/transactions';
