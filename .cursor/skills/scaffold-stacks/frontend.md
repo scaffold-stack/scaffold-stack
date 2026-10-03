@@ -118,50 +118,43 @@ counter_getCount(functionArgs, senderAddress?)
 ```
 
 - **Public:** devnet → `callDevnetContract`; testnet/mainnet → wallet `request()`
-- **Read-only:** always RPC via `fetchCallReadOnlyFunction` + `cvToValue`
+- **Read-only:** always RPC via `fetchCallReadOnlyFunction`, then `readClarity` in `src/lib/clarity.ts`
 - Import `Cl` from `@stacks/transactions` to build args (see table below)
-- Read-only `data` is JSON from `cvToValue` (numbers, booleans, objects, `(ok …)` / `(err …)` shapes)
+- Read-only `data` is `{ ok: true | false, value }`. Nested tuples, lists, and optionals are already unwrapped. `uint` and `int` are `bigint`.
 
 ### Parsing hook `data` — avoid `BigInt([object Object])`
 
-Read-only hooks (e.g. `useMyToken_GetBalance`, `useMyToken_GetTotalSupply`) return **`cvToValue` output**, not plain JavaScript numbers.
+Read-only hooks (e.g. `useMyToken_GetBalance`, `useMyToken_GetTotalSupply`) return a **response object**, not a bare number.
 
-For Clarity `(response uint uint)` functions like SIP-010 `get-balance`, `data` is typically a **cvToJSON-shaped object**, not a `bigint`:
+For Clarity `(response uint uint)` functions like SIP-010 `get-balance`:
 
 ```ts
-// hook.data after get-balance — NOT a bigint
-{ type: "uint", value: "1500000" }
+// hook.data after a successful get-balance
+{ ok: true, value: 1500000n }
+// failed read
+{ ok: false, value: 1n }
 ```
 
 **Wrong** (throws `Cannot convert [object Object] to a BigInt`):
 
 ```tsx
 function formatTokenAmount(raw: unknown, decimals = 6): string {
-  const value = typeof raw === "bigint" ? raw : BigInt(String(raw)); // raw is { type, value }
+  const value = typeof raw === "bigint" ? raw : BigInt(String(raw)); // raw is { ok, value }
   // ...
 }
 ```
 
-**Right** — unwrap cvToJSON shapes first, then format:
+**Right** — use the `ok` flag, then format the bigint:
 
 ```tsx
-/** Extract a Clarity uint/int from hook `data` (cvToValue / cvToJSON shapes). */
+/** Extract a successful Clarity uint/int from hook `data`. */
 function clarityUintToBigInt(raw: unknown): bigint | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw === "bigint") return raw;
-  if (typeof raw === "number" && Number.isFinite(raw)) return BigInt(Math.trunc(raw));
-  if (typeof raw === "string" && raw !== "") return BigInt(raw);
-
-  if (typeof raw === "object") {
-    const obj = raw as { type?: string; value?: unknown };
-    // (ok uint) / (ok int) from read-only calls
-    if (obj.type === "uint" || obj.type === "int") {
-      return BigInt(String(obj.value));
-    }
-    // (optional uint), nested some, etc.
-    if ("value" in obj && obj.value != null) {
-      return clarityUintToBigInt(obj.value);
-    }
+  if (typeof raw === "object" && raw !== null && "ok" in raw) {
+    const response = raw as { ok: boolean; value: unknown };
+    if (!response.ok) return null;
+    return clarityUintToBigInt(response.value);
   }
   return null;
 }
@@ -198,7 +191,7 @@ export function BalanceDisplay() {
   }, [call, address]);
 
   if (loading) return <p>Loading…</p>;
-  return <p>Balance: {formatTokenAmount(data)}</p>; // pass hook.data, not data.value blindly
+  return <p>Balance: {formatTokenAmount(data)}</p>;
 }
 ```
 
@@ -206,13 +199,13 @@ export function BalanceDisplay() {
 
 | `data` shape | What to do |
 |--------------|------------|
-| `{ type: "uint", value: "123" }` | Use `BigInt(obj.value)` — SIP-010 amounts are **base units** (divide by `10**decimals` for display) |
-| `{ type: "(optional …)", value: … }` | Recurse into `.value` |
-| `{ type: "bool", value: true }` | Use `.value` directly — do not `BigInt()` |
-| `string` / `bigint` | `BigInt(raw)` after null check |
-| Unsure | `console.log(JSON.stringify(data))` once, then write extractor |
+| `{ ok: true, value: 123n }` | Format `value`. SIP-010 amounts are **base units** (divide by `10**decimals` for display) |
+| `{ ok: false, value: 1n }` | The read failed. Do not format `value` as a balance |
+| `{ ok: true, value: null }` | Optional `none` |
+| `{ ok: true, value: { amount: 1n, note: "hi" } }` | Fields are already plain values |
+| Unsure | `JSON.stringify(data, (_, v) => typeof v === "bigint" ? v.toString() : v)` |
 
-**Never** `BigInt(hook.data)` or `BigInt(String(hook.data))` when `data` comes from a read-only hook — always unwrap first.
+**Never** `BigInt(hook.data)` or `BigInt(String(hook.data))` when `data` comes from a read-only hook. Check `ok`, then use `value` when it is a `bigint`.
 
 ### Read-only RPC — avoid `Failed to fetch`
 
@@ -361,18 +354,18 @@ Check the generated debug UI or contract ABI for exact field names. For complex 
 
 ### Post-conditions
 
-Generated **hooks** call public functions with default empty post-conditions (`[]`). Wallet requests use `postConditionMode: 'allow'`.
-
-For explicit post-conditions, call **`contracts.ts` directly**:
+Generated **hooks** forward post-conditions as the second argument. Wallet mode is `allow` when that list is empty, and `deny` when it is not. `deny` rejects any transfer the post-conditions do not list.
 
 ```ts
-import { counter_increment } from '@/generated/contracts';
-import { Pc, PostConditionMode } from '@stacks/transactions';
+import { Pc } from '@stacks/transactions';
 
-await counter_increment([Cl.uint(1)], [
-  Pc.principal('ST…').willSendLte(1000).ustx(),
-]);
+await call(
+  [Cl.uint(1)],
+  [Pc.principal('ST…').willSendLte(1000).ustx()],
+);
 ```
+
+The same second argument works on the generated function in `contracts.ts`.
 
 Devnet path uses `PostConditionMode.Deny` in `lib/devnet.ts`.
 
@@ -382,6 +375,9 @@ One hook per public/read-only function:
 
 ```ts
 // Naming: use{ContractPascal}_{FunctionPascal}
+// A redeployed counter-v2.clar still exports useCounter_Increment.
+// The on-chain name stays in deployments.json. If counter and counter-v2
+// are both in the project, the versioned file keeps useCounterV2_*.
 import { useCounter_Increment } from '@/generated/hooks';
 
 function MyButton() {
@@ -403,7 +399,7 @@ function MyButton() {
 
 | Field | Meaning |
 |-------|---------|
-| `call(args)` | Invoke the contract function |
+| `call(args, postConditions?)` | Invoke the contract function. The second argument is for public calls |
 | `data` | Last result |
 | `loading` | In-flight |
 | `error` | Thrown error |
@@ -572,7 +568,7 @@ npm test             # vitest (optional frontend tests)
 | Skip `"use client"` in hook components | Hooks require client components |
 | Build args as plain JS | Use `Cl.*` from `@stacks/transactions` |
 | `BigInt(hook.data)` on read-only uint | Unwrap cvToJSON shape first — see **Parsing hook data** above |
-| Pass `data` straight to `formatTokenAmount` without unwrapping | SIP-010 `get-balance` returns `{ type: "uint", value: "…" }`, not `bigint` |
+| Pass `data` straight to `BigInt` | SIP-010 `get-balance` returns `{ ok: true, value: 1500000n }`. Format `value` only when `ok` is true |
 | Fire read-only hooks on mount without guards | Wait for valid wallet address + deployed contract; handle `hook.error` |
 | `stacksdapp dev` after testnet deploy | Use `stacksdapp dev --network testnet` so `.env.local` matches `deployments.json` |
 | `npm run dev` alone on devnet | Needs `stacksdapp dev` — local node at `localhost:3999` |
