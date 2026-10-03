@@ -100,6 +100,11 @@ enum Commands {
         #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u8).range(4..=6))]
         clarity_version: u8,
     },
+    /// Remove a contract, its test, and its Clarinet.toml entry, then regenerate bindings
+    Remove {
+        /// Contract name to remove
+        name: String,
+    },
     /// Deploy contracts to a network (defaults.network from stacksdapp.toml when omitted)
     Deploy {
         #[arg(long, value_parser = ["devnet", "testnet", "mainnet"])]
@@ -239,6 +244,13 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 "add",
                 json!({ "name": name, "template": template, "clarity_version": clarity_version }),
             );
+            Ok(())
+        }
+        Commands::Remove { name } => {
+            stacksdapp_scaffold::remove_contract(&name)
+                .await
+                .map_err(map_scaffold_err)?;
+            emit_command_ok("remove", json!({ "name": name }));
             Ok(())
         }
         Commands::Deploy {
@@ -585,7 +597,10 @@ fn capitalize_test_label(label: &str) -> String {
 }
 
 async fn run_check() -> Result<()> {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::process::Command;
+    use tokio::sync::mpsc;
 
     status(
         "[check] Type-checking Clarity contracts..."
@@ -593,13 +608,66 @@ async fn run_check() -> Result<()> {
             .to_string(),
     );
 
-    let cmd_status = Command::new("clarinet")
+    let mut child = Command::new("clarinet")
         .args(["check"])
         .current_dir("contracts")
-        .status()
-        .await;
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| {
+            CliError::Prerequisite(
+                "clarinet is required. Install: brew install clarinet OR cargo install clarinet"
+                    .into(),
+            )
+        })?;
 
-    match cmd_status {
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| CliError::Check("failed to open clarinet stdin".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Check("failed to open clarinet stdout".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliError::Check("failed to open clarinet stderr".into()))?;
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let tx_out = tx.clone();
+    let tx_err = tx.clone();
+    drop(tx);
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tx_out.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tx_err.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    while let Some(line) = rx.recv().await {
+        println!("{line}");
+        // Clarinet asks this when the simnet plan changed. Answering keeps
+        // `stacksdapp check` from hanging in CI and agent sessions.
+        if line.contains("Overwrite?") {
+            let _ = stdin.write_all(b"y\n").await;
+            let _ = stdin.flush().await;
+        }
+    }
+
+    match child.wait().await {
         Ok(s) if s.success() => {
             status(
                 "[check] All contracts passed type-checking."
@@ -615,10 +683,7 @@ async fn run_check() -> Result<()> {
             "Clarity type-check failed. Fix the errors reported above.".into(),
         )
         .into()),
-        Err(_) => Err(CliError::Prerequisite(
-            "clarinet is required. Install: brew install clarinet OR cargo install clarinet".into(),
-        )
-        .into()),
+        Err(e) => Err(CliError::Check(format!("clarinet check failed to finish: {e}")).into()),
     }
 }
 
