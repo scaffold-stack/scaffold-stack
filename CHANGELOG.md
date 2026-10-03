@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.2.3] — 2026-10-03
+
+Released on crates.io. Git tag **`v0.2.3`**.
+
+`stacksdapp` and `stacksdapp-scaffold` are **0.2.3**. `stacksdapp-codegen` and `stacksdapp-deployer` are **0.2.1**. Parser, shell, watcher, and process-supervisor stay at 0.2.0.
+
+### Added
+
+- `stacksdapp remove NAME` drops the Clarinet contract entry, the `.clar` file, its test, and that key in `deployments.json`, then regenerates bindings.
+- `readClarity` decodes read-only results to plain `{ ok, value }` values, including nested responses, options, lists, and buffers. New projects get it from the frontend template, and the same file is packaged inside the codegen crate.
+
+### Changed
+
+- Wallet calls use `postConditionMode: deny` only when post-conditions are passed. Hooks forward that second argument. The devnet signer still always denies.
+- A lone auto-versioned contract keeps its TypeScript names (`counter-v2.clar` still exports `useCounter_*`) while `getContractId` uses the on-chain name. If `counter` and `counter-v2` both exist, the versioned file keeps `useCounterV2_*`.
+- After a successful testnet or mainnet deploy, `frontend/.env.production` receives `NEXT_PUBLIC_NETWORK` when that key is absent. An existing value is left alone.
+- `doctor` requires Clarinet 3.23+ for Clarity 6. Clarinet 3.21–3.22 still says 3.23+ is recommended.
+- `reqwest` is built with rustls, so the CLI does not link OpenSSL.
+- Linux release binaries build on `ubuntu-22.04` (glibc 2.35) so they start on Debian 12 and Ubuntu 22.04.
+- Bundled agent skill docs cover `as-contract?` with an allowance, `stacksdapp remove`, decoded reads, post-conditions, and stable hook names.
+
+### Fixed
+
+- `stacksdapp check` answers Clarinet’s `Overwrite?` prompt.
+- Generated debug UI no longer imports `@/components/Message`, and its footer style is valid in the Tera template.
+
+---
+
 ## [0.2.2] — 2026-08-27
 
 Released on crates.io and GitHub Releases; git tag **`v0.2.2`**.
@@ -292,7 +320,8 @@ Initial public CLI draft.
 - Next.js frontend template with wallet connect and generated debug UI.
 - Tera templates for `contracts.ts`, `hooks.ts`, `DebugContracts.tsx`.
 
-[Unreleased]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/scaffold-stack/scaffold-stack/compare/v0.1.9...v0.2.0
