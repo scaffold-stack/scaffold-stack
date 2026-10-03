@@ -117,15 +117,15 @@ formatTokenAmount(raw) → BigInt(String(raw))
 Cannot convert [object Object] to a BigInt
 ```
 
-**Cause:** `raw` is hook `data` from a read-only call. Scaffold uses `cvToValue`, which represents `(ok uint)` as `{ type: "uint", value: "1500000" }` — not a native `bigint`.
+**Cause:** `raw` is hook `data` from a read-only call. Scaffold uses `readClarity`, which represents `(ok uint)` as `{ ok: true, value: 1500000n }`. `BigInt(String(raw))` stringifies the object.
 
 **Fix:**
 
 1. Do not `BigInt(hook.data)` directly.
-2. Unwrap with a helper — full example in [frontend.md](frontend.md) (`clarityUintToBigInt` + `formatTokenAmount`).
+2. If `data.ok` is false, show the error. If `data.value` is a `bigint`, format that. Full example in [frontend.md](frontend.md) (`clarityUintToBigInt` + `formatTokenAmount`).
 3. Remember SIP-010 amounts are **base units**; divide by `10**decimals` for human display.
 
-**Debug:** `console.log(JSON.stringify(data))` on the hook result to see the shape before writing formatters.
+**Debug:** `JSON.stringify(data, (_, v) => (typeof v === "bigint" ? v.toString() : v))`. Plain `JSON.stringify` throws on `bigint`.
 
 ## Frontend: `Failed to fetch` on read-only calls
 
