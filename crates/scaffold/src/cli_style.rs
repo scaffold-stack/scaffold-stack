@@ -192,7 +192,7 @@ pub fn print_next_steps(name: &str) {
         },
     ];
 
-    let right: [Step; 3] = [
+    let right: [Step; 4] = [
         Step {
             plain: format!("cd {name} && start Docker Desktop"),
             is_cmd: false,
@@ -201,12 +201,17 @@ pub fn print_next_steps(name: &str) {
         Step {
             plain: "stacksdapp dev".into(),
             is_cmd: true,
-            detail: Some("# local chain + Next.js"),
+            detail: Some("# Clarinet, this terminal"),
         },
         Step {
             plain: "stacksdapp deploy --network devnet".into(),
             is_cmd: true,
             detail: Some("# second terminal"),
+        },
+        Step {
+            plain: "stacksdapp dev --network devnet".into(),
+            is_cmd: true,
+            detail: Some("# frontend"),
         },
     ];
 

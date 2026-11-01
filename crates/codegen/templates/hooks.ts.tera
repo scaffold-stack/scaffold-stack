@@ -6,6 +6,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { ClarityValue } from '@stacks/transactions';
 import * as contracts from './contracts';
 import { scaffoldConfig } from '../scaffold.config';
+import { readDevnetTxStatus } from '../lib/devnet';
 
 type TxLifecycleStatus = 'pending' | 'success' | 'abort_by_response' | 'error';
 
@@ -82,6 +83,29 @@ export function use{{ contract.export_name | upper_camel }}_{{ fn.name | upper_c
 
     const poll = async () => {
       try {
+        if (scaffoldConfig.isDevnet) {
+          const outcome = await readDevnetTxStatus(txid);
+          if (!mounted) return;
+          if (outcome.state === 'pending') {
+            setTxStatus('pending');
+            setTxStatusError(null);
+            scheduleRetry();
+            return;
+          }
+          if (outcome.state === 'success') {
+            setTxStatus('success');
+            setTxStatusError(null);
+            return;
+          }
+          if (outcome.state === 'abort') {
+            setTxStatus('abort_by_response');
+            setTxStatusError(outcome.message);
+            return;
+          }
+          setTxStatus('error');
+          setTxStatusError(outcome.message);
+          return;
+        }
         const response = await fetch(
           `${scaffoldConfig.nodeUrl}/extended/v1/tx/${txid}`,
           {
@@ -156,7 +180,7 @@ export function use{{ contract.export_name | upper_camel }}_{{ fn.name | upper_c
     };
   }, [isReadOnly, txid]);
 
-  const explorerUrl = txid
+  const explorerUrl = txid && !scaffoldConfig.isDevnet
     ? `${scaffoldConfig.explorerBaseUrl}${txid}${scaffoldConfig.explorerChainQuery}`
     : null;
 

@@ -1,10 +1,6 @@
-use stacksdapp_deployer::devnet_recovery::{
-    devnet_project_name, fetch_local_core_info_optional, is_devnet_chain_stalled,
-    stop_devnet_containers, try_recover_devnet_chain, RecoveryLevel,
-};
-
 use anyhow::{anyhow, Result};
 use colored::Colorize;
+use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -13,77 +9,209 @@ use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use tokio::{fs, io::AsyncRead};
 
-/// Returns true if Clarinet.toml contains any [[project.requirements]] entries.
-async fn has_requirements() -> bool {
-    let Ok(raw) = fs::read_to_string("contracts/Clarinet.toml").await else {
-        return false;
-    };
-    raw.contains("[[project.requirements]]")
+/// How `stacksdapp dev` should run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DevInvocation {
+    /// `stacksdapp dev` — Clarinet owns this terminal.
+    ClarinetToolchain,
+    /// `stacksdapp dev --network <network>` — Next.js only.
+    FrontendOnly { network: String },
 }
 
-async fn prefetch_requirements() -> Result<()> {
-    if !has_requirements().await {
-        return Ok(());
+pub fn classify_dev_invocation(network: Option<&str>) -> Result<DevInvocation> {
+    match network {
+        None => Ok(DevInvocation::ClarinetToolchain),
+        Some(name @ ("devnet" | "testnet" | "mainnet")) => Ok(DevInvocation::FrontendOnly {
+            network: name.to_string(),
+        }),
+        Some(other) => Err(anyhow!(
+            "Unknown network '{other}'. Use: devnet, testnet, or mainnet"
+        )),
+    }
+}
+
+pub async fn dev(network: Option<&str>, auto_deploy: bool, keep_state: bool) -> Result<()> {
+    ensure_project_root()?;
+
+    match classify_dev_invocation(network)? {
+        DevInvocation::ClarinetToolchain => dev_clarinet_toolchain(auto_deploy, keep_state).await,
+        DevInvocation::FrontendOnly { network } => {
+            if auto_deploy {
+                stacksdapp_shell::warn(format!(
+                    "[dev] --auto-deploy is not used. Deploy from another terminal: stacksdapp deploy --network {network}"
+                ));
+            }
+            if keep_state {
+                stacksdapp_shell::warn(
+                    "[dev] --keep-state does not apply here. Clarinet keeps its own chain state.",
+                );
+            }
+            dev_remote(&network).await
+        }
+    }
+}
+
+/// `stacksdapp dev` with no network flag: Clarinet's own devnet UI in this terminal.
+/// Does not start Next.js, the contract watcher, or a deploy.
+async fn dev_clarinet_toolchain(auto_deploy: bool, keep_state: bool) -> Result<()> {
+    if auto_deploy {
+        stacksdapp_shell::warn(
+            "[dev] --auto-deploy is not used. Deploy from another terminal: stacksdapp deploy --network devnet",
+        );
+    }
+    if keep_state {
+        stacksdapp_shell::warn(
+            "[dev] --keep-state is already how this command works. Reset the chain with `stacksdapp clean`.",
+        );
     }
 
-    let mut child = Command::new("clarinet")
-        .args(["requirements"])
+    ensure_docker()?;
+    // Free ports held by a previous Clarinet devnet before the toolchain takes the terminal.
+    stop_stale_devnet_docker();
+    ensure_devnet_fast_boot_settings().await?;
+
+    if !stacksdapp_shell::is_quiet() && !stacksdapp_shell::is_json() {
+        println!();
+        println!("{}", "Clarinet devnet".truecolor(244, 243, 239));
+        println!(
+            "{}",
+            "  This terminal is the chain. Leave it running.".truecolor(156, 163, 175)
+        );
+        println!(
+            "{}",
+            "  Frontend   stacksdapp dev --network devnet".truecolor(156, 163, 175)
+        );
+        println!(
+            "{}",
+            "  Deploy     stacksdapp deploy --network devnet".truecolor(156, 163, 175)
+        );
+        println!();
+    }
+
+    // Clarinet 3.23 writes `rpc_ssl`, which stacks-node 4.0.5 rejects, and leaves
+    // burnchain.wallet_name empty, which 4.0.5 also rejects. The `pox_5_*` lines
+    // stay: 4.0.5 uses them to find the devnet sBTC contracts. Without them the
+    // miner looks up a mainnet sbtc-registry and cannot build the PoX anchor.
+    // Patch the file as it appears. Clarinet 3.26+ already emits a valid config
+    // and starts its own bitcoin miner, so it is left alone.
+    //
+    // stacks-node 4.0.5 will not extend the restored snapshot tenure. Clarinet
+    // only starts mining bitcoin after contract deployment, and deployment waits
+    // for a Stacks block. Until that miner is running, a quiet chain gets one
+    // bitcoin block so the node can publish a block-commit and leave the snapshot.
+    let nudge_bitcoin = !stacksdapp_deployer::clarinet_version_at_least(3, 26, 0);
+    let patcher = tokio::spawn(async move {
+        let mut wallet_ready = !nudge_bitcoin;
+        let mut stake_started = !nudge_bitcoin;
+        let mut last_nudge_check = Instant::now();
+        let mut observed_height: Option<u64> = None;
+        let mut height_since = Instant::now();
+        let mut miner_address: Option<String> = None;
+        loop {
+            let _ = patch_pox5_fields_in_cache().await;
+            if !wallet_ready {
+                wallet_ready = ensure_bitcoin_miner_wallet();
+            }
+            if nudge_bitcoin && wallet_ready && last_nudge_check.elapsed() >= BITCOIN_NUDGE_POLL {
+                last_nudge_check = Instant::now();
+                if !stake_started && stacks_node_accepts_connections() {
+                    stake_started = spawn_pox5_stake();
+                }
+                nudge_bitcoin_if_chain_is_quiet(
+                    &mut observed_height,
+                    &mut height_since,
+                    &mut miner_address,
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    });
+
+    let mut clarinet = spawn_clarinet_foreground()?;
+    let outcome = wait_for_clarinet_foreground(&mut clarinet).await;
+    patcher.abort();
+    let _ = patcher.await;
+
+    match outcome? {
+        ClarinetStop::Finished(status) if status.success() => Ok(()),
+        ClarinetStop::Finished(status) => {
+            Err(anyhow!("Clarinet devnet exited with status: {status}"))
+        }
+        ClarinetStop::Interrupted => Ok(()),
+    }
+}
+
+enum ClarinetStop {
+    Finished(std::process::ExitStatus),
+    Interrupted,
+}
+
+async fn wait_for_clarinet_foreground(child: &mut Child) -> Result<ClarinetStop> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigint = signal(SignalKind::interrupt())?;
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            status = child.wait() => {
+                let status = status?;
+                if status.success() {
+                    Ok(ClarinetStop::Finished(status))
+                } else if status.code().is_none() || status.code() == Some(130) || status.code() == Some(143) {
+                    Ok(ClarinetStop::Interrupted)
+                } else {
+                    Ok(ClarinetStop::Finished(status))
+                }
+            }
+            _ = sigint.recv() => {
+                finish_clarinet_after_signal(child).await;
+                Ok(ClarinetStop::Interrupted)
+            }
+            _ = sigterm.recv() => {
+                finish_clarinet_after_signal(child).await;
+                Ok(ClarinetStop::Interrupted)
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(ClarinetStop::Finished(child.wait().await?))
+    }
+}
+
+async fn finish_clarinet_after_signal(child: &mut Child) {
+    // Clarinet is in this process group, so it already received the signal and
+    // is shutting its containers down. Wait before forcing a kill.
+    if tokio::time::timeout(Duration::from_secs(30), child.wait())
+        .await
+        .is_err()
+        && child.id().is_some()
+    {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+}
+
+fn spawn_clarinet_foreground() -> Result<Child> {
+    // No --no-dashboard: this command's job is Clarinet's own toolchain view.
+    // Clarinet 3.23+ ships an epoch 4.0 / Clarity 6 snapshot. Older Clarinet needs
+    // --from-genesis so a hybrid snapshot does not stall after one tenure.
+    let mut args = vec!["devnet", "start"];
+    if !stacksdapp_deployer::clarinet_version_at_least(3, 23, 0) {
+        args.push("--from-genesis");
+    }
+    Command::new("clarinet")
+        .args(&args)
         .current_dir("contracts")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|_| {
             anyhow!(
                 "clarinet is required. Install: brew install clarinet  OR  cargo install clarinet"
             )
-        })?;
-
-    attach_filtered_output(
-        &mut child,
-        OutputStyle::Clarinet,
-        std::sync::Arc::new(std::sync::Mutex::new(None)),
-    );
-
-    let status = child.wait().await?;
-    if !status.success() {
-        return Err(anyhow!(
-            "Failed to fetch contract requirements.\n\
-             \n\
-             This usually means:\n\
-             • No internet connection — requirements must be fetched online at least once\n\
-             • Hiro API is temporarily down — try again in a few minutes\n\
-             \n\
-             Once fetched, requirements are cached in contracts/.cache/ and work offline.\n\
-             Check which contracts you depend on in contracts/Clarinet.toml under [[project.requirements]]."
-        ));
-    }
-
-    Ok(())
-}
-
-pub async fn dev(network: &str, auto_deploy: bool, keep_state: bool) -> Result<()> {
-    ensure_project_root()?;
-
-    match network {
-        "devnet" => dev_devnet(auto_deploy, keep_state).await,
-        "testnet" | "mainnet" => {
-            if auto_deploy {
-                stacksdapp_shell::warn(format!(
-                    "[dev] --auto-deploy applies to devnet only; ignoring for {network}."
-                ));
-            }
-            if keep_state {
-                stacksdapp_shell::warn(format!(
-                    "[dev] --keep-state applies to devnet only; ignoring for {network}."
-                ));
-            }
-            dev_remote(network).await
-        }
-        other => Err(anyhow!(
-            "Unknown network '{}'. Use: devnet, testnet, or mainnet",
-            other
-        )),
-    }
+        })
 }
 
 fn ensure_project_root() -> Result<()> {
@@ -118,15 +246,8 @@ fn print_ready_panel(network: &str, local_url: &str, tip_height: Option<u64>) {
     }
     println!();
     if network == "devnet" {
-        stacksdapp_shell::kv(
-            "Deploy",
-            "stacksdapp deploy --network devnet  (or stacksdapp dev --auto-deploy)",
-        );
-        println!(
-            "{}",
-            "  Deploy within ~2 min of ready, or use --auto-deploy — tip stalls ~#71 after PoX cycle 4."
-                .truecolor(156, 163, 175)
-        );
+        stacksdapp_shell::kv("Chain", "stacksdapp dev   (other terminal)");
+        stacksdapp_shell::kv("Deploy", "stacksdapp deploy --network devnet");
     } else {
         stacksdapp_shell::kv("Deploy", &format!("stacksdapp deploy --network {network}"));
     }
@@ -179,192 +300,6 @@ fn notify_dev_ready(
         return;
     }
     print_ready_panel(network, local_url, tip_height);
-}
-
-async fn dev_devnet(auto_deploy: bool, keep_state: bool) -> Result<()> {
-    stacksdapp_shell::print_banner("Development Mode 🌱");
-
-    let step = stacksdapp_shell::begin_step("Environment configured");
-    if let Err(e) = ensure_docker() {
-        step.fail();
-        return Err(e);
-    }
-    // Free ports held by leftover Clarinet Docker from other projects before we start.
-    stop_stale_devnet_docker();
-    if let Err(e) = ensure_devnet_fast_boot_settings().await {
-        step.fail();
-        return Err(e);
-    }
-    if !keep_state {
-        if let Err(e) = reset_local_devnet_state().await {
-            step.fail();
-            return Err(e);
-        }
-    }
-    if let Err(e) = write_network_env("devnet").await {
-        step.fail();
-        return Err(e);
-    }
-    step.finish();
-
-    let connected = format!("Connected to {}", network_display("devnet"));
-    let step = stacksdapp_shell::begin_step(&connected);
-    if let Err(e) = prefetch_requirements().await {
-        step.fail();
-        return Err(e);
-    }
-    step.finish();
-
-    let step = stacksdapp_shell::begin_step("Contract bindings ready");
-    if let Err(e) = stacksdapp_codegen::generate_all_quiet().await {
-        step.fail();
-        return Err(e);
-    }
-    step.finish();
-
-    let mut clarinet = spawn_clarinet_devnet()?;
-    let fatal = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
-    attach_filtered_output(
-        &mut clarinet,
-        OutputStyle::Clarinet,
-        std::sync::Arc::clone(&fatal),
-    );
-
-    // Clarinet 3.21.x writes pox_5_* keys into Stacks.toml that stacks-core 3.4
-    // (Clarinet's default image) rejects, so stacks-node dies instantly. Patch the
-    // generated config as soon as it appears, before Clarinet starts that container.
-    let stacks_toml_patcher = tokio::spawn(patch_generated_stacks_toml_until_ready(
-        std::sync::Arc::clone(&fatal),
-    ));
-
-    let step = stacksdapp_shell::begin_step("Devnet nodes starting (bitcoin + stacks)");
-    let tip_height = match wait_for_devnet_chain_ready(
-        Duration::from_secs(300),
-        &mut clarinet,
-        std::sync::Arc::clone(&fatal),
-    )
-    .await
-    {
-        Ok(height) => {
-            stacks_toml_patcher.abort();
-            let _ = stacks_toml_patcher.await;
-            step.finish();
-            stacksdapp_shell::step_ok(&format!("Devnet ready — stacks tip #{height}"));
-            Some(height)
-        }
-        Err(e) => {
-            stacks_toml_patcher.abort();
-            let _ = stacks_toml_patcher.await;
-            step.fail();
-            let _ = clarinet.start_kill();
-            let _ = clarinet.wait().await;
-            return Err(e);
-        }
-    };
-
-    let health_monitor = {
-        let (respawn_tx, respawn_rx) = tokio::sync::mpsc::channel(1);
-        let monitor = tokio::spawn(monitor_devnet_chain_health(respawn_tx));
-        (monitor, respawn_rx)
-    };
-    let (health_monitor, mut devnet_respawn_rx) = health_monitor;
-
-    let deploy_task = if auto_deploy {
-        Some(tokio::spawn(run_auto_deploy()))
-    } else {
-        None
-    };
-
-    let step = stacksdapp_shell::begin_step("Next.js started");
-    let mut frontend = match spawn_next_dev_process("devnet") {
-        Ok(c) => c,
-        Err(e) => {
-            step.fail();
-            return Err(e);
-        }
-    };
-    let (ready_tx, ready_rx) = oneshot::channel();
-    attach_next_output(&mut frontend, Some(ready_tx));
-    match tokio::time::timeout(Duration::from_secs(120), ready_rx).await {
-        Ok(Ok(url)) => {
-            step.finish();
-            notify_dev_ready("devnet", &url, tip_height, auto_deploy, keep_state);
-        }
-        Ok(Err(_)) => {
-            step.fail();
-            return Err(anyhow!("Frontend dev server closed before becoming ready."));
-        }
-        Err(_) => {
-            step.fail();
-            return Err(anyhow!(
-                "Frontend did not become ready within 120s. Check that ports 3000/3001 are free."
-            ));
-        }
-    }
-
-    let mut watcher = tokio::spawn(stacksdapp_watcher::watch_contracts(Path::new(
-        "contracts/contracts",
-    )));
-
-    let result = loop {
-        break tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            if !stacksdapp_shell::is_quiet() {
-                println!();
-                println!("{}", "Shutting down...".truecolor(156, 163, 175));
-            }
-            Ok(())
-        }
-        _ = devnet_respawn_rx.recv() => {
-            if let Err(e) = restart_clarinet_devnet(
-                &mut clarinet,
-                std::sync::Arc::clone(&fatal),
-            ).await {
-                stacksdapp_shell::println_human_safe(format!(
-                    "[devnet] Clarinet restart after stall failed: {e:#}"
-                ));
-            }
-            continue;
-        }
-        status = clarinet.wait() => {
-            match status {
-                Ok(s) if s.success() => Err(anyhow!("Clarinet devnet exited unexpectedly.")),
-                Ok(s) => Err(anyhow!("Clarinet devnet exited with status: {s}")),
-                Err(e) => Err(anyhow!("Failed to wait for Clarinet devnet process: {e}")),
-            }
-        }
-        status = frontend.wait() => {
-            match status {
-                Ok(s) if s.success() => Err(anyhow!("Frontend dev server exited unexpectedly.")),
-                Ok(s) => Err(anyhow!("Frontend dev server exited with status: {s}")),
-                Err(e) => Err(anyhow!("Failed to wait for frontend dev server: {e}")),
-            }
-        }
-        watcher_result = &mut watcher => {
-            match watcher_result {
-                Ok(Ok(())) => Err(anyhow!("Contract watcher exited unexpectedly.")),
-                Ok(Err(e)) => Err(anyhow!("Contract watcher failed: {e}")),
-                Err(e) => Err(anyhow!("Contract watcher task join failed: {e}")),
-            }
-        }
-        };
-    };
-
-    health_monitor.abort();
-    let _ = health_monitor.await;
-    if let Some(task) = deploy_task {
-        task.abort();
-        let _ = task.await;
-    }
-
-    shutdown_child("clarinet devnet", &mut clarinet).await;
-    shutdown_child("frontend dev server", &mut frontend).await;
-    watcher.abort();
-    let _ = watcher.await;
-
-    result?;
-
-    Ok(())
 }
 
 async fn dev_remote(network: &str) -> Result<()> {
@@ -452,180 +387,13 @@ async fn dev_remote(network: &str) -> Result<()> {
     result
 }
 
-async fn run_auto_deploy() {
-    match stacksdapp_deployer::wait_for_devnet_node().await {
-        Ok(()) => {
-            if let Err(e) =
-                stacksdapp_deployer::deploy("devnet", None, false, false, false, false).await
-            {
-                stacksdapp_shell::println_human_safe(format!("[dev] Auto-deploy failed: {e:#}"));
-                stacksdapp_shell::println_human_safe(
-                    "[dev] You can deploy manually in another terminal: stacksdapp deploy --network devnet",
-                );
-            }
-        }
-        Err(e) => {
-            stacksdapp_shell::println_human_safe(format!(
-                "[dev] Devnet did not become ready for auto-deploy: {e:#}"
-            ));
-        }
-    }
-}
-
-/// Poll local stacks core until tip advances at least twice (proves blocks keep
-/// producing under Nakamoto, not just a single tenure after boot).
-async fn wait_for_devnet_chain_ready(
-    timeout: Duration,
-    clarinet: &mut Child,
-    fatal: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-) -> Result<u64> {
-    let started = Instant::now();
-    let mut first_tip: Option<u64> = None;
-    let mut second_tip: Option<u64> = None;
-    let mut last_status = Instant::now() - Duration::from_secs(30);
-
-    loop {
-        if let Ok(guard) = fatal.lock() {
-            if let Some(msg) = guard.as_ref() {
-                return Err(anyhow!("{msg}"));
-            }
-        }
-
-        match clarinet.try_wait() {
-            Ok(Some(status)) => {
-                let detail = fatal
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.clone())
-                    .unwrap_or_else(|| {
-                        format!("Clarinet exited early with status {status} before stacks-node was ready.")
-                    });
-                return Err(anyhow!(
-                    "{detail}\n\
-                     Free leftover Devnet ports/containers, then retry:\n\
-                       docker ps --filter name=devnet\n\
-                       docker stop $(docker ps -q --filter name=devnet) 2>/dev/null\n\
-                       pkill -f 'clarinet devnet' 2>/dev/null\n\
-                       stacksdapp clean --force && stacksdapp dev"
-                ));
-            }
-            Ok(None) => {}
-            Err(e) => {
-                return Err(anyhow!("Failed to poll Clarinet process: {e}"));
-            }
-        }
-
-        // Only check for crashes after Clarinet has had time to create containers
-        // (avoids false positives from unrelated leftover names; clean already stopped ours).
-        if started.elapsed() >= Duration::from_secs(15) {
-            if let Some(crash) = detect_stacks_node_crash().await {
-                if let Ok(mut slot) = fatal.lock() {
-                    if slot.is_none() {
-                        *slot = Some(crash.clone());
-                    }
-                }
-                return Err(anyhow!("{crash}"));
-            }
-        }
-
-        if started.elapsed() > timeout {
-            return Err(anyhow!(
-                "Devnet did not become ready within {}s.\n\
-                 Stacks core at http://localhost:20443 never kept producing blocks.\n\
-                 Common causes:\n\
-                 • bitcoin_controller_block_time too aggressive (signer cannot keep up)\n\
-                 • Clarinet/stacks-core image mismatch (stacks-node exits on bad Stacks.toml)\n\
-                 • Port conflict (e.g. 20445 / 5432 already in use) — leftover Clarinet/Docker from another project\n\
-                 • Docker low on RAM/CPU — give Docker Desktop more resources\n\
-                 • Stale state — try `stacksdapp clean --force` then `stacksdapp dev`\n\
-                 Fix ports:\n\
-                   docker stop $(docker ps -q --filter name=devnet) 2>/dev/null\n\
-                   pkill -f 'clarinet devnet' 2>/dev/null",
-                timeout.as_secs()
-            ));
-        }
-
-        match fetch_local_stacks_tip().await {
-            Some(height) => match (first_tip, second_tip) {
-                (None, _) => {
-                    first_tip = Some(height);
-                    if last_status.elapsed() >= Duration::from_secs(8) {
-                        stacksdapp_shell::println_human_safe(format!(
-                            "[devnet] stacks core up — tip #{height}, waiting for next block..."
-                        ));
-                        last_status = Instant::now();
-                    }
-                }
-                (Some(first), None) if height > first => {
-                    second_tip = Some(height);
-                    stacksdapp_shell::println_human_safe(format!(
-                        "[devnet] tip advanced to #{height} — confirming sustained block production..."
-                    ));
-                    last_status = Instant::now();
-                }
-                (Some(_), Some(second)) if height > second => return Ok(height),
-                (Some(_), Some(second)) => {
-                    if last_status.elapsed() >= Duration::from_secs(15) {
-                        stacksdapp_shell::println_human_safe(format!(
-                            "[devnet] waiting for tip to keep advancing (still #{second})..."
-                        ));
-                        last_status = Instant::now();
-                    }
-                }
-                (Some(first), None) => {
-                    if last_status.elapsed() >= Duration::from_secs(15) {
-                        stacksdapp_shell::println_human_safe(format!(
-                            "[devnet] waiting for tip to advance (still #{first})..."
-                        ));
-                        last_status = Instant::now();
-                    }
-                }
-            },
-            None => {
-                if last_status.elapsed() >= Duration::from_secs(12) {
-                    stacksdapp_shell::println_human_safe(
-                        "[devnet] waiting for bitcoin-node / stacks-node (this can take 1–3 min)...",
-                    );
-                    last_status = Instant::now();
-                }
-            }
-        }
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
-}
-
-/// Clarinet 3.21 writes `pox_5_*` under `[node]` for PoX-5 / Epoch 4, but its default
-/// Docker image is still stacks-core 3.4.x which rejects those keys and exits immediately.
-/// Strip them from every generated `Stacks.toml` until the tip is reachable.
-async fn patch_generated_stacks_toml_until_ready(
-    fatal: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-) {
-    let mut announced = false;
-    loop {
-        if fatal.lock().ok().and_then(|g| g.clone()).is_some() {
-            return;
-        }
-        match patch_pox5_fields_in_cache().await {
-            Ok(n) if n > 0 && !announced => {
-                stacksdapp_shell::println_human_safe(
-                    "[devnet] Patched Stacks.toml (removed Clarinet pox_5_* keys incompatible with stacks-core 3.4).",
-                );
-                announced = true;
-            }
-            Ok(_) => {}
-            Err(_) => {}
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-async fn patch_pox5_fields_in_cache() -> Result<usize> {
+/// True when a generated Stacks.toml lost a field stacks-node 4.0.5 rejects.
+async fn patch_pox5_fields_in_cache() -> Result<bool> {
     let cache = Path::new("contracts/.cache");
     if !cache.is_dir() {
-        return Ok(0);
+        return Ok(false);
     }
-    let mut patched = 0usize;
+    let mut removed_rejected = false;
     let mut entries = fs::read_dir(cache).await?;
     while let Some(entry) = entries.next_entry().await? {
         let name = entry.file_name();
@@ -638,35 +406,47 @@ async fn patch_pox5_fields_in_cache() -> Result<usize> {
             continue;
         }
         if patch_stacks_toml_file(&stacks_toml).await? {
-            patched += 1;
+            removed_rejected = true;
         }
     }
-    Ok(patched)
+    Ok(removed_rejected)
 }
 
-/// Returns true when the file was rewritten.
+/// Returns true when the file contained a field stacks-node 4.0.5 rejects.
 async fn patch_stacks_toml_file(path: &Path) -> Result<bool> {
     let raw = fs::read_to_string(path).await?;
-    let (updated, changed) = strip_pox5_node_fields(&raw);
+    let (updated, mut changed, removed_rejected) = strip_pox5_node_fields(&raw);
+    let updated = if !stacksdapp_deployer::clarinet_version_at_least(3, 26, 0) {
+        // Clarinet 3.23's proxy on 20445 does not forward /wallet/<name>.
+        // stacks-node 4.0.5 lists miner UTXOs there and will not finish startup
+        // until that call succeeds. The event observer on host:20445 stays put.
+        let (rewritten, rpc_changed) = point_burnchain_rpc_at_bitcoind(&updated);
+        changed |= rpc_changed;
+        rewritten
+    } else {
+        updated
+    };
     if changed {
         fs::write(path, updated).await?;
     }
-    Ok(changed)
+    Ok(removed_rejected)
 }
 
-/// Pure helper: drop Clarinet-injected `pox_5_*` keys that stacks-core 3.4 rejects.
-pub fn strip_pox5_node_fields(raw: &str) -> (String, bool) {
+/// Clarinet 3.23 proxies Bitcoin RPC on port 20445 and does not forward `/wallet/<name>`.
+/// stacks-node 4.0.5 calls that path, so the miner talks to bitcoind's published RPC instead.
+fn point_burnchain_rpc_at_bitcoind(raw: &str) -> (String, bool) {
+    let mut changed = false;
     let mut out = Vec::new();
-    let mut removed = false;
     for line in raw.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("pox_5_") {
-            removed = true;
-            continue;
+        if line.trim() == "rpc_port = 20445" {
+            let indent = &line[..line.len() - line.trim_start().len()];
+            out.push(format!("{indent}rpc_port = 18443"));
+            changed = true;
+        } else {
+            out.push(line.to_string());
         }
-        out.push(line);
     }
-    if !removed {
+    if !changed {
         return (raw.to_string(), false);
     }
     let mut updated = out.join("\n");
@@ -676,399 +456,218 @@ pub fn strip_pox5_node_fields(raw: &str) -> (String, bool) {
     (updated, true)
 }
 
-/// Fail fast when Clarinet starts stacks-node and the container exits (bad config, OOM, etc.).
-async fn detect_stacks_node_crash() -> Option<String> {
-    let list = tokio::process::Command::new("docker")
-        .args([
-            "ps",
-            "-a",
-            "--filter",
-            "name=stacks-node",
-            "--format",
-            "{{.Names}}\t{{.Status}}\t{{.ID}}",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .await
-        .ok()?;
+/// Clarinet's own miner runs every 45s once deployment finishes. Wait slightly
+/// longer than that before adding a block, so the two miners do not both fire.
+const BITCOIN_NUDGE_AFTER: Duration = Duration::from_secs(48);
+const BITCOIN_NUDGE_POLL: Duration = Duration::from_secs(5);
 
-    if !list.status.success() {
-        return None;
+fn nudge_bitcoin_if_chain_is_quiet(
+    observed_height: &mut Option<u64>,
+    height_since: &mut Instant,
+    miner_address: &mut Option<String>,
+) {
+    if !stacks_node_accepts_connections() {
+        return;
     }
-    let text = String::from_utf8_lossy(&list.stdout);
-    let mut crashed_id: Option<String> = None;
-    for line in text.lines() {
-        let lower = line.to_ascii_lowercase();
-        if !lower.contains("stacks-node") || !lower.contains("devnet") {
+    let Some(container) = bitcoin_container_name() else {
+        return;
+    };
+    let Some(height) = bitcoin_block_count(&container) else {
+        return;
+    };
+    if *observed_height != Some(height) {
+        *observed_height = Some(height);
+        *height_since = Instant::now();
+        return;
+    }
+    if height_since.elapsed() < BITCOIN_NUDGE_AFTER {
+        return;
+    }
+    if miner_address.is_none() {
+        *miner_address = bitcoin_miner_address(&container);
+    }
+    let Some(address) = miner_address.clone() else {
+        return;
+    };
+    if generate_to_miner(&container, &address) {
+        *height_since = Instant::now();
+    }
+}
+
+/// The epoch-4 snapshot has no PoX-5 stake for the next reward cycle. Clarinet
+/// does not submit one on a restored chain, and stacks-node then cannot mine
+/// the anchor block. Submit the devnet wallets' stake before the prepare phase.
+fn spawn_pox5_stake() -> bool {
+    let frontend = Path::new("frontend");
+    if !frontend
+        .join("node_modules/@stacks/transactions/package.json")
+        .is_file()
+    {
+        return false;
+    }
+    let script_path = std::env::temp_dir().join("stacksdapp-pox5-stake.mjs");
+    if std::fs::write(&script_path, include_str!("../pox5_stake.mjs")).is_err() {
+        return false;
+    }
+    let log_path = std::env::temp_dir().join("stacksdapp-pox5-stake.log");
+    let Ok(log) = std::fs::File::create(&log_path) else {
+        return false;
+    };
+    let Ok(log_err) = log.try_clone() else {
+        return false;
+    };
+    let frontend_dir = frontend
+        .canonicalize()
+        .unwrap_or_else(|_| frontend.to_path_buf());
+    std::process::Command::new("node")
+        .arg(&script_path)
+        .env("STACKSDAPP_FRONTEND", &frontend_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .spawn()
+        .is_ok()
+}
+
+fn stacks_node_accepts_connections() -> bool {
+    let Ok(addr) = "127.0.0.1:20443".parse::<SocketAddr>() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
+}
+
+/// Drop burnchain fields stacks-node 4.0.5 rejects.
+/// An empty `wallet_name` is also filled: 4.0.5 refuses to mine without one.
+/// `pox_5_*` lines are kept; 4.0.5 still reads them.
+/// `(updated, changed, removed_rejected_field)`.
+pub fn strip_pox5_node_fields(raw: &str) -> (String, bool, bool) {
+    let mut out = Vec::new();
+    let mut removed_rejected = false;
+    let mut changed = false;
+    for line in raw.lines() {
+        let trimmed = line.trim_start();
+        if stacks_node_405_rejects(trimmed) {
+            removed_rejected = true;
+            changed = true;
             continue;
         }
-        if lower.contains("exited") || lower.contains("dead") {
-            let id = line.split('\t').nth(2).unwrap_or("").trim().to_string();
-            if !id.is_empty() {
-                crashed_id = Some(id);
-            }
+        if trimmed == "wallet_name = \"\"" {
+            let indent = &line[..line.len() - trimmed.len()];
+            out.push(format!("{indent}wallet_name = \"miner\""));
+            changed = true;
+            continue;
         }
+        out.push(line.to_string());
     }
-
-    let id = crashed_id?;
-    let logs = tokio::process::Command::new("docker")
-        .args(["logs", "--tail", "40", &id])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .ok()?;
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&logs.stdout),
-        String::from_utf8_lossy(&logs.stderr)
-    );
-    let lower = combined.to_ascii_lowercase();
-    if lower.contains("pox_5_sbtc") || lower.contains("unknown field `pox_5") {
-        // Host conf is usually bind-mounted — patch + restart can recover this boot.
-        let _ = patch_pox5_fields_in_cache().await;
-        let _ = tokio::process::Command::new("docker")
-            .args(["start", &id])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await;
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        // If restart worked, tip poll will succeed; only fail if still dead.
-        let still_dead = tokio::process::Command::new("docker")
-            .args([
-                "ps",
-                "-a",
-                "--filter",
-                &format!("id={id}"),
-                "--format",
-                "{{.Status}}",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .await
-            .ok()
-            .map(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).to_ascii_lowercase();
-                s.contains("exited") || s.contains("dead")
-            })
-            .unwrap_or(true);
-        if !still_dead {
-            stacksdapp_shell::println_human_safe(
-                "[devnet] Restarted stacks-node after patching incompatible pox_5_* config keys.",
-            );
-            return None;
-        }
-        return Some(
-            "Devnet stacks-node crashed: Clarinet wrote pox_5_* keys that stacks-core 3.4 rejects.\n\
-             stacksdapp patches Stacks.toml automatically — retry after `stacksdapp clean --force`.\n\
-             Or upgrade Clarinet (`brew upgrade clarinet`) once a fix release is available."
-                .to_string(),
-        );
+    if !changed {
+        return (raw.to_string(), false, false);
     }
-    if lower.contains("invalid config")
-        || lower.contains("process abort")
-        || lower.contains("fatal:")
-        || lower.contains("invalid toml")
-    {
-        let snippet = combined
-            .lines()
-            .rev()
-            .take(8)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Some(format!(
-            "Devnet stacks-node container exited.\n{snippet}\n\
-             Try: stacksdapp clean --force && stacksdapp dev"
-        ));
+    let mut updated = out.join("\n");
+    if raw.ends_with('\n') && !updated.ends_with('\n') {
+        updated.push('\n');
     }
-    Some(
-        "Devnet stacks-node container exited before becoming ready.\n\
-         Check: docker logs $(docker ps -aq --filter name=stacks-node | head -1)\n\
-         Then: stacksdapp clean --force && stacksdapp dev"
-            .to_string(),
-    )
+    (updated, true, removed_rejected)
 }
 
-/// Poll local devnet and attempt recovery when Bitcoin burn advances but Stacks tip stalls
-/// (common at PoX reward-cycle boundaries on Clarinet 3.23+ Nakamoto devnet).
-async fn monitor_devnet_chain_health(respawn_tx: tokio::sync::mpsc::Sender<()>) {
-    tokio::time::sleep(Duration::from_secs(20)).await;
-
-    let project = devnet_project_name();
-    let mut last_core: Option<stacksdapp_deployer::devnet_recovery::LocalCoreInfo> = None;
-    let mut unchanged_since = Instant::now();
-    let mut last_warning = Instant::now() - Duration::from_secs(120);
-    let mut last_recovery = Instant::now() - Duration::from_secs(300);
-    let mut recovery_attempts = 0u32;
-    let mut last_respawn = Instant::now() - Duration::from_secs(600);
-
-    let recovery_levels = [
-        RecoveryLevel::StacksOnly,
-        RecoveryLevel::WithBitcoin,
-        RecoveryLevel::Full,
+/// Keys removed from stacks-node config in 4.0.5. An unknown field aborts startup.
+fn stacks_node_405_rejects(trimmed: &str) -> bool {
+    const KEYS: &[&str] = &[
+        "rpc_ssl",
+        "commit_anchor_block_within",
+        "max_microblocks",
+        "chain_liveness_poll_time_secs",
+        "max_neighbors_per_host",
+        "max_clients_per_host",
+        "soft_max_neighbors_per_host",
+        "full_inv_sync_interval",
     ];
+    KEYS.iter().any(|key| {
+        trimmed == *key
+            || trimmed.starts_with(&format!("{key} "))
+            || trimmed.starts_with(&format!("{key}="))
+    })
+}
 
-    loop {
-        if let Some(info) = fetch_local_core_info_optional().await {
-            let stacks_stuck = last_core
-                .as_ref()
-                .map(|prev| prev.stacks_tip_height == info.stacks_tip_height)
-                .unwrap_or(false);
-            let burn_advanced = last_core
-                .as_ref()
-                .map(|prev| is_devnet_chain_stalled(prev, &info))
-                .unwrap_or(false);
-
-            if stacks_stuck {
-                if unchanged_since.elapsed() >= Duration::from_secs(45)
-                    && last_warning.elapsed() >= Duration::from_secs(60)
-                {
-                    stacksdapp_shell::println_human_safe(format!(
-                        "[devnet] Warning: Stacks tip stalled at #{}, burn at {}.",
-                        info.stacks_tip_height, info.burn_block_height
-                    ));
-                    if burn_advanced {
-                        stacksdapp_shell::println_human_safe(
-                            "  Bitcoin is still mining — PoX/Nakamoto tenure desync (Missing canonical anchor block).",
-                        );
-                    }
-                    stacksdapp_shell::println_human_safe(
-                        "  Deployments wait for blocks; the CLI will try restarting devnet containers.",
-                    );
-                    last_warning = Instant::now();
-                }
-
-                if burn_advanced
-                    && unchanged_since.elapsed() >= Duration::from_secs(60)
-                    && last_recovery.elapsed() >= Duration::from_secs(90)
-                {
-                    if let Some(ref name) = project {
-                        if recovery_attempts < 3 {
-                            let level = recovery_levels[recovery_attempts as usize];
-                            recovery_attempts += 1;
-                            last_recovery = Instant::now();
-                            stacksdapp_shell::println_human_safe(format!(
-                                "[devnet] Recovering stalled chain (attempt {recovery_attempts}/3): {} for {name}...",
-                                level.label()
-                            ));
-                            if try_recover_devnet_chain(name, level) {
-                                unchanged_since = Instant::now();
-                                last_warning = Instant::now();
-                            }
-                        } else if last_respawn.elapsed() >= Duration::from_secs(300)
-                            && respawn_tx.try_send(()).is_ok()
-                        {
-                            last_respawn = Instant::now();
-                            last_recovery = Instant::now();
-                            recovery_attempts = 0;
-                            stacksdapp_shell::println_human_safe(
-                                "[devnet] Docker recovery insufficient — restarting Clarinet devnet process...",
-                            );
-                        }
-                    }
-                }
-            } else {
-                recovery_attempts = 0;
-                unchanged_since = Instant::now();
-            }
-
-            last_core = Some(info);
-        }
-
-        tokio::time::sleep(Duration::from_secs(10)).await;
+/// stacks-node 4.0.5 mines through a named Bitcoin wallet. Clarinet 3.23 leaves
+/// that wallet unset; create the same watch-only `miner` wallet Clarinet 3.26 creates.
+fn ensure_bitcoin_miner_wallet() -> bool {
+    let Some(name) = bitcoin_container_name() else {
+        return false;
+    };
+    if bitcoin_cli(&name, &["createwallet", "miner", "true"]).is_some() {
+        return true;
     }
+    bitcoin_cli(&name, &["loadwallet", "miner"]).is_some()
 }
 
-async fn fetch_local_stacks_tip() -> Option<u64> {
-    fetch_local_core_info_optional()
-        .await
-        .map(|info| info.stacks_tip_height)
-}
-
-async fn restart_clarinet_devnet(
-    clarinet: &mut Child,
-    fatal: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-) -> Result<()> {
-    let project = devnet_project_name().ok_or_else(|| anyhow!("Missing Clarinet project name"))?;
-    shutdown_child("clarinet devnet", clarinet).await;
-    stop_devnet_containers(&project);
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    if let Ok(mut slot) = fatal.lock() {
-        *slot = None;
-    }
-    *clarinet = spawn_clarinet_devnet()?;
-    attach_filtered_output(
-        clarinet,
-        OutputStyle::Clarinet,
-        std::sync::Arc::clone(&fatal),
-    );
-    let _ = wait_for_devnet_chain_ready(Duration::from_secs(300), clarinet, fatal).await?;
-    stacksdapp_shell::println_human_safe(
-        "[devnet] Clarinet devnet restarted — deploy now while the tip is advancing.",
-    );
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum OutputStyle {
-    Clarinet,
-}
-
-fn attach_filtered_output(
-    child: &mut Child,
-    style: OutputStyle,
-    fatal: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-) {
-    // Clarinet 3.2+ may prompt: "Do you want to continue? (y/N)" when the default
-    // snapshot is incompatible with built-in PoX stacking defaults. Without an answer,
-    // Docker never starts and we hang forever waiting for :20443.
-    let stdin = child
-        .stdin
-        .take()
-        .map(|s| std::sync::Arc::new(tokio::sync::Mutex::new(Some(s))));
-
-    if let Some(stdout) = child.stdout.take() {
-        spawn_filtered_stream(stdout, style, std::sync::Arc::clone(&fatal), stdin.clone());
-    }
-    if let Some(stderr) = child.stderr.take() {
-        spawn_filtered_stream(stderr, style, fatal, stdin);
-    }
-}
-
-fn spawn_filtered_stream<R>(
-    reader: R,
-    style: OutputStyle,
-    fatal: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    stdin: Option<std::sync::Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>>,
-) where
-    R: AsyncRead + Unpin + Send + 'static,
-{
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(reader).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            match style {
-                OutputStyle::Clarinet => {
-                    if clarinet_needs_continue_answer(&line) {
-                        stacksdapp_shell::println_human_safe(
-                            "[devnet] Clarinet snapshot skipped (default PoX stacking) — continuing boot...",
-                        );
-                        if let Some(stdin) = &stdin {
-                            let mut guard = stdin.lock().await;
-                            if let Some(pipe) = guard.as_mut() {
-                                use tokio::io::AsyncWriteExt;
-                                let _ = pipe.write_all(b"y\n").await;
-                                let _ = pipe.flush().await;
-                            }
-                        }
-                        continue;
-                    }
-                    if let Some(fatal_msg) = clarinet_fatal_message(&line) {
-                        stacksdapp_shell::println_human_safe(format!("[devnet] {fatal_msg}"));
-                        if let Ok(mut slot) = fatal.lock() {
-                            if slot.is_none() {
-                                *slot = Some(fatal_msg);
-                            }
-                        }
-                        continue;
-                    }
-                    // Clarinet may rewrite Stacks.toml immediately before starting
-                    // stacks-node — force another strip as soon as we see that log line.
-                    let lower = strip_ansi(&line).to_ascii_lowercase();
-                    if lower.contains("starting stacks-node")
-                        || lower.contains("initiating devnet boot")
-                        || lower.contains("copying stacks snapshot")
-                    {
-                        let _ = patch_pox5_fields_in_cache().await;
-                    }
-                    if let Some(msg) = format_clarinet_line(&line) {
-                        stacksdapp_shell::println_human_safe(msg);
-                    }
-                }
-            }
-        }
-    });
-}
-
-fn clarinet_needs_continue_answer(line: &str) -> bool {
-    let lower = strip_ansi(line).to_ascii_lowercase();
-    lower.contains("do you want to continue?")
-        || (lower.contains("(y/n)") && lower.contains("continue"))
-}
-
-fn clarinet_fatal_message(line: &str) -> Option<String> {
-    let plain = strip_ansi(line);
-    let lower = plain.to_ascii_lowercase();
-    if lower.contains("address already in use")
-        || lower.contains("os error 48")
-        || lower.contains("port is already allocated")
-        || (lower.contains("bind for 0.0.0.0:") && lower.contains("failed"))
-        || lower.contains("fatal:")
-        || lower.contains("unable to start postgres")
-        || (lower.contains("unable to start") && lower.contains("container"))
-    {
-        Some(format!(
-            "Devnet failed to start: {plain}\n\
-             Another Clarinet/Docker Devnet is still holding ports (often 20445 or 5432).\n\
-             Free them, then retry:\n\
-               docker stop $(docker ps -q --filter name=devnet) 2>/dev/null\n\
-               pkill -f 'clarinet devnet' 2>/dev/null\n\
-               stacksdapp clean --force && stacksdapp dev"
-        ))
-    } else {
-        None
-    }
-}
-
-fn strip_ansi(line: &str) -> String {
-    let t = line.trim();
-    t.chars()
-        .filter(|c| *c == '\t' || (*c >= ' ' && *c != '\u{007f}'))
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-fn format_clarinet_line(line: &str) -> Option<String> {
-    let plain = strip_ansi(line);
-    if plain.is_empty() {
+fn bitcoin_container_name() -> Option<String> {
+    let output = std::process::Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}", "--filter", "name=devnet"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
         return None;
     }
-    let lower = plain.to_ascii_lowercase();
+    String::from_utf8(output.stdout)
+        .ok()?
+        .lines()
+        .map(str::trim)
+        .find(|name| name.contains("bitcoin-node"))
+        .map(str::to_string)
+}
 
-    // Boot progress — keep the spinner row from looking stuck.
-    if lower.contains("initiating devnet boot")
-        || lower.contains("starting bitcoin-node")
-        || lower.contains("starting stacks-node")
-        || lower.contains("starting postgres")
-        || lower.contains("starting stacks-api")
-        || lower.contains("starting stacks-signer")
-        || lower.contains("copying bitcoin snapshot")
-        || lower.contains("copying stacks snapshot")
-        || lower.contains("snapshot copied")
-        || lower.contains("continuing with startup")
-        || lower.contains("default snapshot can not be used")
-        || lower.contains("local devnet network ready")
-        || lower.contains("stacks block #")
-        || lower.contains("bitcoin-node - mining")
-        || lower.contains("stacks-node - mining")
-        || lower.contains("blockchain verification completed")
-    {
-        return Some(format!("[devnet] {plain}"));
+fn bitcoin_cli(container: &str, args: &[&str]) -> Option<String> {
+    let mut cmd = vec![
+        "exec",
+        container,
+        "bitcoin-cli",
+        "-regtest",
+        "-rpcuser=devnet",
+        "-rpcpassword=devnet",
+    ];
+    cmd.extend_from_slice(args);
+    let output = std::process::Command::new("docker")
+        .args(&cmd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-    if lower.contains("error")
-        || lower.contains("failed")
-        || lower.contains("panic")
-        || lower.contains("unable to")
-    {
-        return Some(format!("[devnet] {plain}"));
-    }
-    None
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|text| text.trim().to_string())
+}
+
+fn bitcoin_block_count(container: &str) -> Option<u64> {
+    bitcoin_cli(container, &["getblockcount"])?.parse().ok()
+}
+
+fn bitcoin_miner_address(container: &str) -> Option<String> {
+    let hash = bitcoin_cli(container, &["getbestblockhash"])?;
+    let block = bitcoin_cli(container, &["getblock", &hash, "2"])?;
+    coinbase_address_from_block(&block)
+}
+
+fn generate_to_miner(container: &str, address: &str) -> bool {
+    bitcoin_cli(container, &["generatetoaddress", "1", address]).is_some()
+}
+
+/// Coinbase payout of the latest regtest block. Clarinet mines to this address.
+pub fn coinbase_address_from_block(raw: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let txs = value.get("tx")?.as_array()?;
+    let coinbase = txs.iter().find(|tx| {
+        tx.get("vin")
+            .and_then(|vin| vin.as_array())
+            .map(|vin| vin.iter().any(|input| input.get("coinbase").is_some()))
+            .unwrap_or(false)
+    })?;
+    coinbase.get("vout")?.as_array()?.iter().find_map(|output| {
+        output
+            .pointer("/scriptPubKey/address")
+            .and_then(|address| address.as_str())
+            .map(str::to_string)
+    })
 }
 
 fn attach_next_output(child: &mut Child, ready: Option<oneshot::Sender<String>>) {
@@ -1348,6 +947,579 @@ fn ensure_docker() -> Result<()> {
     Ok(())
 }
 
+/// Containers for this project's local devnet, if Clarinet has them running.
+pub fn running_project_devnet_containers() -> Vec<String> {
+    let Some(project) = clarinet_project_name(Path::new("contracts/Clarinet.toml")) else {
+        return Vec::new();
+    };
+    let network_name = devnet_network_name(&project, Path::new("contracts/settings/Devnet.toml"));
+    running_devnet_containers(&network_name).unwrap_or_default()
+}
+
+/// Restore the running local devnet to Clarinet's snapshot so the next deploy
+/// can publish the current contract name. The devnet process stays up.
+///
+/// Returns the on-disk session directory that must be kept so the containers
+/// still have their config and chain mounts. `Ok(None)` when no devnet is running.
+pub async fn reset_running_devnet_chain() -> Result<Option<std::path::PathBuf>> {
+    if which::which("docker").is_err() {
+        return Ok(None);
+    }
+    let project = clarinet_project_name(Path::new("contracts/Clarinet.toml"))
+        .ok_or_else(|| anyhow!("Could not read the project name from contracts/Clarinet.toml"))?;
+    let network_name = devnet_network_name(&project, Path::new("contracts/settings/Devnet.toml"));
+    let names = running_devnet_containers(&network_name)?;
+    if names.is_empty() {
+        return Ok(None);
+    }
+
+    let snapshot = select_snapshot_dir(&snapshot_cache_root()).ok_or_else(|| {
+        anyhow!(
+            "No Clarinet devnet snapshot in ~/.clarinet/cache/devnet. Start `stacksdapp dev` once so Clarinet can download it, then run `stacksdapp clean` again."
+        )
+    })?;
+    let stacks_snapshot = snapshot.join("stacks");
+    let bitcoin_snapshot = snapshot.join("bitcoin").join("regtest");
+    if !stacks_snapshot.join("krypton").is_dir() || !bitcoin_snapshot.is_dir() {
+        return Err(anyhow!(
+            "The Clarinet devnet snapshot at {} is incomplete.",
+            snapshot.display()
+        ));
+    }
+
+    stacksdapp_shell::println_human_safe(
+        "[clean] Resetting the running devnet chain to the snapshot. The devnet process stays up.",
+    );
+
+    let stacks = names.iter().find(|name| name.starts_with("stacks-node."));
+    let bitcoin = names.iter().find(|name| name.starts_with("bitcoin-node."));
+    let stacks_mount = stacks
+        .as_ref()
+        .and_then(|name| bind_mount(name, is_stacks_dest));
+    let bitcoin_mount = bitcoin
+        .as_ref()
+        .and_then(|name| bind_mount(name, is_bitcoin_dest));
+
+    if stacks.is_none() && stacks_mount.is_none() {
+        return Err(anyhow!(
+            "The devnet stacks-node container is not running, so the chain could not be reset."
+        ));
+    }
+
+    let pause_targets: Vec<&str> = names
+        .iter()
+        .filter(|name| {
+            name.starts_with("stacks-node.")
+                || name.starts_with("bitcoin-node.")
+                || name.starts_with("stacks-signer-")
+        })
+        .map(String::as_str)
+        .collect();
+    let host_mounts = stacks_mount.is_some() || bitcoin_mount.is_some();
+    if host_mounts && !pause_targets.is_empty() {
+        let mut args = vec!["pause"];
+        args.extend(pause_targets.iter().copied());
+        let _ = docker_status(&args);
+    }
+
+    let replaced = (|| -> Result<()> {
+        if let Some(dest) = &stacks_mount {
+            reset_directory_from_snapshot(dest, &stacks_snapshot)?;
+        }
+        if let Some(dest) = &bitcoin_mount {
+            reset_directory_from_snapshot(&dest.join("regtest"), &bitcoin_snapshot)?;
+        }
+        Ok(())
+    })();
+    if host_mounts && !pause_targets.is_empty() {
+        let mut args = vec!["unpause"];
+        args.extend(pause_targets.iter().copied());
+        let _ = docker_status(&args);
+    }
+    replaced?;
+
+    if stacks_mount.is_none() {
+        if let Some(container) = stacks {
+            reset_container_dir(container, "/devnet", &stacks_snapshot)?;
+        }
+    }
+    if bitcoin_mount.is_none() {
+        if let Some(container) = bitcoin {
+            reset_container_dir(
+                container,
+                "/home/bitcoin/.bitcoin/regtest",
+                &bitcoin_snapshot,
+            )?;
+        }
+    }
+
+    let session = stacks_mount
+        .as_ref()
+        .and_then(|path| devnet_session_dir(path));
+
+    // Restart bitcoin and stacks-node first. The signer is restarted only after
+    // the node is serving, with an empty database, so it adopts the snapshot
+    // tenure. Restarting them together leaves the signer on a newer Bitcoin
+    // tenure and it rejects every block (SortitionViewMismatch).
+    restart_containers(&names, &["bitcoin-node.", "stacks-node."])?;
+    let port = stacks_rpc_port(Path::new("contracts/settings/Devnet.toml"));
+    wait_for_stacks_rpc(port).await?;
+    wipe_signer_state(&names, session.as_deref());
+    restart_containers(&names, &["stacks-signer-"])?;
+    wait_for_stacks_tip_advance(port, &names, session.as_deref()).await?;
+    stacksdapp_shell::println_human_safe(
+        "[clean] Devnet is mining again. This project's contracts are no longer on the chain.",
+    );
+    Ok(session)
+}
+
+/// Delete `path`, but keep `live_session` when it lives inside that directory.
+pub fn remove_dev_cache(path: &Path, live_session: Option<&Path>) -> std::io::Result<()> {
+    let Some(session) = live_session else {
+        return std::fs::remove_dir_all(path);
+    };
+    if !dev_cache_holds_session(path, session) {
+        return std::fs::remove_dir_all(path);
+    }
+    let path_abs = path.canonicalize()?;
+    let session_abs = session
+        .canonicalize()
+        .unwrap_or_else(|_| session.to_path_buf());
+    remove_except(&path_abs, &session_abs)
+}
+
+pub fn dev_cache_holds_session(path: &Path, session: &Path) -> bool {
+    let Some(path_abs) = path.canonicalize().ok() else {
+        return false;
+    };
+    let session_abs = session
+        .canonicalize()
+        .unwrap_or_else(|_| session.to_path_buf());
+    session_abs.starts_with(path_abs)
+}
+
+fn clarinet_project_name(path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    assignment_in_table(&raw, "project", "name")
+}
+
+fn devnet_network_name(project: &str, devnet_toml: &Path) -> String {
+    let raw = std::fs::read_to_string(devnet_toml).unwrap_or_default();
+    let network =
+        assignment_in_table(&raw, "network", "name").unwrap_or_else(|| "devnet".to_string());
+    match assignment_in_table(&raw, "devnet", "network_id") {
+        Some(id) => format!("{project}.{id}.{network}"),
+        None => format!("{project}.{network}"),
+    }
+}
+
+fn assignment_in_table(raw: &str, table: &str, key: &str) -> Option<String> {
+    let mut current = "";
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some(header) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            current = header.trim();
+            continue;
+        }
+        if current != table {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix(key) else {
+            continue;
+        };
+        let rest = rest.trim();
+        if !rest.starts_with('=') {
+            continue;
+        }
+        let value = rest
+            .trim_start_matches('=')
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'');
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn stacks_rpc_port(path: &Path) -> u16 {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return 20443;
+    };
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("stacks_node_rpc_port") else {
+            continue;
+        };
+        let rest = rest.trim().trim_start_matches('=').trim();
+        if let Ok(port) = rest.parse::<u16>() {
+            return port;
+        }
+    }
+    20443
+}
+
+fn snapshot_cache_root() -> std::path::PathBuf {
+    dirs_home().join(".clarinet").join("cache").join("devnet")
+}
+
+fn dirs_home() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+}
+
+fn select_snapshot_dir(root: &Path) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(root).ok()?;
+    let mut found: Vec<std::path::PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter(|path| path.join("stacks").join("krypton").is_dir())
+        .filter(|path| path.join("bitcoin").join("regtest").is_dir())
+        .collect();
+    found.sort_by_key(|path| {
+        std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .ok()
+    });
+    found.pop()
+}
+
+fn running_devnet_containers(network_name: &str) -> Result<Vec<String>> {
+    let output = std::process::Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}"])
+        .output()
+        .map_err(|e| anyhow!("Could not list Docker containers: {e}"))?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|name| container_belongs_to_devnet(name, network_name))
+        .map(str::to_string)
+        .collect())
+}
+
+fn container_belongs_to_devnet(name: &str, network_name: &str) -> bool {
+    let suffix = format!(".{network_name}");
+    if !name.ends_with(&suffix) {
+        return false;
+    }
+    name.starts_with("stacks-node.")
+        || name.starts_with("bitcoin-node.")
+        || name.starts_with("stacks-signer-")
+}
+
+fn bind_mount(container: &str, dest_matches: fn(&str) -> bool) -> Option<std::path::PathBuf> {
+    let output = std::process::Command::new("docker")
+        .args(["inspect", "--format", "{{json .Mounts}}", container])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mounts: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).ok()?;
+    mounts.iter().find_map(|mount| {
+        if mount.get("Type").and_then(|v| v.as_str()) != Some("bind") {
+            return None;
+        }
+        let dest = mount.get("Destination").and_then(|v| v.as_str())?;
+        if !dest_matches(dest) {
+            return None;
+        }
+        let source = mount.get("Source").and_then(|v| v.as_str())?;
+        Some(host_bind_path(source))
+    })
+}
+
+/// Docker Desktop reports some bind sources as `/host_mnt/Users/...`, which is
+/// not a path on the Mac. The files are at `/Users/...`.
+fn host_bind_path(source: &str) -> std::path::PathBuf {
+    let raw = std::path::PathBuf::from(source);
+    if raw.exists() {
+        return raw;
+    }
+    if let Some(stripped) = source.strip_prefix("/host_mnt") {
+        let host = std::path::PathBuf::from(stripped);
+        if host.exists() {
+            return host;
+        }
+    }
+    raw
+}
+
+fn is_stacks_dest(dest: &str) -> bool {
+    dest.trim_end_matches('/') == "/devnet"
+}
+
+fn is_bitcoin_dest(dest: &str) -> bool {
+    let dest = dest.trim_end_matches('/');
+    dest.ends_with(".bitcoin") || dest.ends_with("/bitcoin")
+}
+
+fn devnet_session_dir(stacks_data: &Path) -> Option<std::path::PathBuf> {
+    let boot = stacks_data.parent()?;
+    let data = boot.parent()?;
+    if data.file_name()? != "data" {
+        return None;
+    }
+    data.parent().map(std::path::Path::to_path_buf)
+}
+
+fn reset_directory_from_snapshot(dest: &Path, snapshot: &Path) -> Result<()> {
+    if !snapshot.is_dir() {
+        return Err(anyhow!(
+            "Snapshot directory {} is missing.",
+            snapshot.display()
+        ));
+    }
+    std::fs::create_dir_all(dest)?;
+    clear_dir_children(dest)?;
+    copy_dir_contents(snapshot, dest)?;
+    Ok(())
+}
+
+fn clear_dir_children(dir: &Path) -> Result<()> {
+    for entry in
+        std::fs::read_dir(dir).map_err(|e| anyhow!("Could not read {}: {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| anyhow!("Could not read {}: {e}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .map_err(|e| anyhow!("Could not remove {}: {e}", path.display()))?;
+        } else {
+            std::fs::remove_file(&path)
+                .map_err(|e| anyhow!("Could not remove {}: {e}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_contents(src: &Path, dest: &Path) -> Result<()> {
+    for entry in
+        std::fs::read_dir(src).map_err(|e| anyhow!("Could not read {}: {e}", src.display()))?
+    {
+        let entry = entry.map_err(|e| anyhow!("Could not read {}: {e}", src.display()))?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if from.is_dir() {
+            std::fs::create_dir_all(&to)?;
+            copy_dir_contents(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to).map_err(|e| {
+                anyhow!("Could not copy {} to {}: {e}", from.display(), to.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn reset_container_dir(container: &str, dest: &str, snapshot: &Path) -> Result<()> {
+    let script = format!("rm -rf {dest} && mkdir -p {dest}");
+    docker_must(
+        &["exec", container, "sh", "-c", &script],
+        "clear chain data in the devnet container",
+    )?;
+    let src = format!("{}/.", snapshot.display());
+    let target = format!("{container}:{dest}");
+    docker_must(
+        &["cp", &src, &target],
+        "copy the snapshot into the devnet container",
+    )?;
+    Ok(())
+}
+
+fn wipe_signer_state(names: &[String], session: Option<&Path>) {
+    for name in names
+        .iter()
+        .filter(|name| name.starts_with("stacks-signer-"))
+    {
+        let _ = docker_status(&[
+            "exec",
+            name,
+            "sh",
+            "-c",
+            "rm -f stacks-signer-*.sqlite stacks-signer-*.sqlite-shm stacks-signer-*.sqlite-wal /stacks-signer-*.sqlite /stacks-signer-*.sqlite-shm /stacks-signer-*.sqlite-wal",
+        ]);
+    }
+    let Some(session) = session else {
+        return;
+    };
+    let Ok(boots) = std::fs::read_dir(session.join("data")) else {
+        return;
+    };
+    for boot in boots.flatten() {
+        let signer = boot.path().join("signer");
+        if signer.is_dir() {
+            let _ = std::fs::remove_dir_all(&signer);
+            let _ = std::fs::create_dir_all(&signer);
+        }
+    }
+}
+
+fn remove_except(dir: &Path, keep: &Path) -> std::io::Result<()> {
+    if dir == keep {
+        return Ok(());
+    }
+    if !keep.starts_with(dir) {
+        return std::fs::remove_dir_all(dir);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let child = entry?.path();
+        if child == keep {
+            continue;
+        }
+        if keep.starts_with(&child) {
+            if child.is_dir() {
+                remove_except(&child, keep)?;
+            }
+            continue;
+        }
+        if child.is_dir() {
+            std::fs::remove_dir_all(&child)?;
+        } else {
+            std::fs::remove_file(&child)?;
+        }
+    }
+    Ok(())
+}
+
+fn docker_status(args: &[&str]) -> Result<()> {
+    let status = std::process::Command::new("docker")
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| anyhow!("docker {} failed to start: {e}", args.join(" ")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("docker {} failed", args.join(" ")))
+    }
+}
+
+fn restart_containers(names: &[String], prefixes: &[&str]) -> Result<()> {
+    let mut args = vec!["restart".to_string(), "-t".to_string(), "30".to_string()];
+    for prefix in prefixes {
+        for name in names {
+            if name.starts_with(prefix) {
+                args.push(name.clone());
+            }
+        }
+    }
+    if args.len() == 3 {
+        return Ok(());
+    }
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    docker_must(&borrowed, "restart devnet containers")
+}
+
+fn docker_must(args: &[&str], action: &str) -> Result<()> {
+    let output = std::process::Command::new("docker")
+        .args(args)
+        .output()
+        .map_err(|e| anyhow!("Could not {action}: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(anyhow!("Could not {action}: {}", stderr.trim()))
+}
+
+async fn wait_for_stacks_rpc(port: u16) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| anyhow!("Could not build an HTTP client: {e}"))?;
+    let url = format!("http://127.0.0.1:{port}/v2/info");
+    let started = Instant::now();
+    let mut announced = false;
+    loop {
+        if started.elapsed() > Duration::from_secs(180) {
+            return Err(anyhow!(
+                "The devnet chain was reset, but stacks-node did not answer on port {port} within 180s."
+            ));
+        }
+        if let Ok(response) = client.get(&url).send().await {
+            if response.status().is_success() {
+                return Ok(());
+            }
+        }
+        if !announced && started.elapsed() > Duration::from_secs(5) {
+            stacksdapp_shell::println_human_safe(
+                "[clean] Waiting for the devnet node to come back...",
+            );
+            announced = true;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn wait_for_stacks_tip_advance(
+    port: u16,
+    names: &[String],
+    session: Option<&Path>,
+) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| anyhow!("Could not build an HTTP client: {e}"))?;
+    let url = format!("http://127.0.0.1:{port}/v2/info");
+    let start = stacks_tip_height(&client, &url).await?;
+    let started = Instant::now();
+    let mut healed = false;
+    loop {
+        if let Ok(tip) = stacks_tip_height(&client, &url).await {
+            if tip > start {
+                stacksdapp_shell::println_human_safe(format!(
+                    "[clean] Stacks tip advanced to {tip}."
+                ));
+                return Ok(());
+            }
+        }
+        if !healed && started.elapsed() > Duration::from_secs(35) {
+            stacksdapp_shell::println_human_safe(
+                "[clean] Stacks tip has not moved. Resetting the signer so it can accept blocks.",
+            );
+            wipe_signer_state(names, session);
+            restart_containers(names, &["stacks-signer-"])?;
+            healed = true;
+        }
+        if started.elapsed() > Duration::from_secs(120) {
+            return Err(anyhow!(
+                "The devnet chain was reset, but Stacks tip stayed at {start}. The signer is not accepting blocks."
+            ));
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn stacks_tip_height(client: &reqwest::Client, url: &str) -> Result<u64> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not read the devnet tip: {e}"))?;
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| anyhow!("Could not parse the devnet tip: {e}"))?;
+    json.get("stacks_tip_height")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow!("The devnet tip response has no stacks_tip_height."))
+}
+
 /// Stop leftover Clarinet Devnet containers that hold ports (5432, 20445, 3999, …).
 /// Safe for testnet/mainnet: only matches Docker names containing `devnet`.
 pub fn stop_stale_devnet_docker() {
@@ -1387,12 +1559,20 @@ async fn ensure_devnet_fast_boot_settings() -> Result<()> {
         return Ok(());
     }
     let raw = fs::read_to_string(path).await?;
-    let (updated, changed) = optimize_devnet_toml_for_fast_boot(&raw);
+    // Clarinet 3.26+ already starts stacks-node 4.0.5. Older Clarinet defaults to 4.0.1,
+    // whose signer halts at the first PoX reward-cycle boundary after the epoch 4.0 snapshot.
+    let pin_stacks_405 = !stacksdapp_deployer::clarinet_version_at_least(3, 26, 0);
+    let (updated, changed) = optimize_devnet_toml_for_fast_boot_with(&raw, pin_stacks_405);
     if changed {
         fs::write(path, updated).await?;
-        stacksdapp_shell::println_human_safe(
-            "[devnet] Applied fast-boot settings (snapshot-compatible PoX stacking; explorers off).",
-        );
+        let detail = if pin_stacks_405 {
+            "snapshot-compatible PoX stacking; stacks-node 4.0.5; explorers off"
+        } else {
+            "snapshot-compatible PoX stacking; explorers off"
+        };
+        stacksdapp_shell::println_human_safe(format!(
+            "[devnet] Applied fast-boot settings ({detail})."
+        ));
     }
     Ok(())
 }
@@ -1444,8 +1624,18 @@ sbtc_balance = 1_000_000_000
 derivation = "m/44'/5757'/0'/0/0"
 "#;
 
-/// Pure rewrite helper (unit-tested). Returns `(new_contents, did_change)`.
+/// stacks-node / signer that can extend a tenure across a PoX reward-cycle boundary.
+const STACKS_NODE_IMAGE_405: &str = "ghcr.io/stacks-network/stacks-core:4.0.5-alpine";
+const STACKS_SIGNER_IMAGE_405: &str = "ghcr.io/stacks-network/stacks-signer:4.0.5-alpine";
+
+/// Pure rewrite helper (unit-tested). Does not pin stacks images.
 pub fn optimize_devnet_toml_for_fast_boot(raw: &str) -> (String, bool) {
+    optimize_devnet_toml_for_fast_boot_with(raw, false)
+}
+
+/// When `pin_stacks_405` is set, Clarinet older than 3.26 is pointed at stacks-node 4.0.5.
+/// A newer official tag, or any non-official image, is left as written.
+pub fn optimize_devnet_toml_for_fast_boot_with(raw: &str, pin_stacks_405: bool) -> (String, bool) {
     let mut out: Vec<String> = Vec::new();
     let mut in_devnet = false;
     let mut saw_devnet = false;
@@ -1453,6 +1643,8 @@ pub fn optimize_devnet_toml_for_fast_boot(raw: &str) -> (String, bool) {
     let mut has_stacks_explorer = false;
     let mut has_stacks_api = false;
     let mut has_block_time = false;
+    let mut has_node_image = false;
+    let mut has_signer_image = false;
 
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -1486,6 +1678,26 @@ pub fn optimize_devnet_toml_for_fast_boot(raw: &str) -> (String, bool) {
                 out.push("bitcoin_controller_block_time = 45_000".to_string());
                 continue;
             }
+            if pin_stacks_405 {
+                if let Some(line) = rewrite_stacks_image_line(
+                    trimmed,
+                    "stacks_node_image_url",
+                    STACKS_NODE_IMAGE_405,
+                ) {
+                    has_node_image = true;
+                    out.push(line);
+                    continue;
+                }
+                if let Some(line) = rewrite_stacks_image_line(
+                    trimmed,
+                    "stacks_signer_image_url",
+                    STACKS_SIGNER_IMAGE_405,
+                ) {
+                    has_signer_image = true;
+                    out.push(line);
+                    continue;
+                }
+            }
         }
 
         out.push(line.to_string());
@@ -1514,6 +1726,18 @@ pub fn optimize_devnet_toml_for_fast_boot(raw: &str) -> (String, bool) {
                     final_out.push("bitcoin_controller_block_time = 45_000".to_string());
                     injected = true;
                 }
+                if pin_stacks_405 && !has_node_image {
+                    final_out.push(format!(
+                        "stacks_node_image_url = \"{STACKS_NODE_IMAGE_405}\""
+                    ));
+                    injected = true;
+                }
+                if pin_stacks_405 && !has_signer_image {
+                    final_out.push(format!(
+                        "stacks_signer_image_url = \"{STACKS_SIGNER_IMAGE_405}\""
+                    ));
+                    injected = true;
+                }
             }
         }
         out = final_out;
@@ -1524,6 +1748,14 @@ pub fn optimize_devnet_toml_for_fast_boot(raw: &str) -> (String, bool) {
         out.push("disable_stacks_explorer = true".to_string());
         out.push("disable_stacks_api = true".to_string());
         out.push("bitcoin_controller_block_time = 45_000".to_string());
+        if pin_stacks_405 {
+            out.push(format!(
+                "stacks_node_image_url = \"{STACKS_NODE_IMAGE_405}\""
+            ));
+            out.push(format!(
+                "stacks_signer_image_url = \"{STACKS_SIGNER_IMAGE_405}\""
+            ));
+        }
         injected = true;
     }
 
@@ -1559,6 +1791,43 @@ pub fn optimize_devnet_toml_for_fast_boot(raw: &str) -> (String, bool) {
     (updated, changed)
 }
 
+fn rewrite_stacks_image_line(trimmed: &str, key: &str, pinned: &str) -> Option<String> {
+    let rest = trimmed.strip_prefix(key)?;
+    if !(rest.starts_with(' ') || rest.starts_with('=')) {
+        return None;
+    }
+    let value = trimmed
+        .split_once('=')
+        .map(|(_, value)| value.trim().trim_matches('"'))
+        .unwrap_or("");
+    if official_stacks_image_older_than_405(value) {
+        Some(format!("{key} = \"{pinned}\""))
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn official_stacks_image_older_than_405(url: &str) -> bool {
+    if !url.starts_with("ghcr.io/stacks-network/stacks-") {
+        return false;
+    }
+    let Some(tag) = url.rsplit(':').next() else {
+        return false;
+    };
+    let tag = tag.strip_suffix("-alpine").unwrap_or(tag);
+    let mut parts = tag.split('.');
+    let Some(major) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+        return false;
+    };
+    let Some(minor) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+        return false;
+    };
+    let Some(patch) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+        return false;
+    };
+    (major, minor, patch) < (4, 0, 5)
+}
+
 fn snapshot_pox_orders_complete(raw: &str) -> bool {
     [
         "mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC",
@@ -1587,33 +1856,6 @@ fn strip_pox_stacking_order_blocks(raw: &str) -> String {
         updated.push('\n');
     }
     updated
-}
-
-fn spawn_clarinet_devnet() -> Result<Child> {
-    // --no-dashboard is required: Clarinet's TUI corrupts our spinner/ready panel.
-    // Clarinet 3.23+ ships an epoch 4.0 / Clarity 6 snapshot (burn ≥ 163) — use it.
-    // Older Clarinet: --from-genesis avoids a hybrid snapshot that stalls after one tenure.
-    let mut args = vec!["devnet", "start", "--no-dashboard"];
-    if !stacksdapp_deployer::clarinet_version_at_least(3, 23, 0) {
-        args.push("--from-genesis");
-    }
-    let child = Command::new("clarinet")
-        .args(&args)
-        .current_dir("contracts")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    Ok(child)
-}
-
-async fn reset_local_devnet_state() -> Result<()> {
-    for path in ["contracts/.cache", "contracts/.devnet"] {
-        if fs::metadata(path).await.is_ok() {
-            fs::remove_dir_all(path).await?;
-        }
-    }
-    Ok(())
 }
 
 fn spawn_next_dev_process(network: &str) -> Result<Child> {
@@ -1652,11 +1894,12 @@ async fn shutdown_child(name: &str, child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::{
-        optimize_devnet_toml_for_fast_boot, strip_pox5_node_fields, upsert_env_assignment,
+        coinbase_address_from_block, optimize_devnet_toml_for_fast_boot,
+        optimize_devnet_toml_for_fast_boot_with, strip_pox5_node_fields, upsert_env_assignment,
     };
 
     #[test]
-    fn strip_pox5_node_fields_removes_clarinet_keys() {
+    fn strip_pox5_node_fields_keeps_devnet_sbtc_contracts() {
         let raw = r#"[node]
 working_dir = "/devnet"
 rpc_bind = "0.0.0.0:20443"
@@ -1667,9 +1910,10 @@ pox_5_bond_admin = "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM"
 [connection_options]
 auth_token = "12345"
 "#;
-        let (updated, changed) = strip_pox5_node_fields(raw);
-        assert!(changed);
-        assert!(!updated.contains("pox_5_"));
+        let (updated, changed, rejected) = strip_pox5_node_fields(raw);
+        assert!(!changed);
+        assert!(!rejected);
+        assert!(updated.contains("pox_5_sbtc_registry_contract"));
         assert!(updated.contains("rpc_bind = \"0.0.0.0:20443\""));
         assert!(updated.contains("auth_token = \"12345\""));
     }
@@ -1677,9 +1921,50 @@ auth_token = "12345"
     #[test]
     fn strip_pox5_node_fields_noop_when_absent() {
         let raw = "[node]\nrpc_bind = \"0.0.0.0:20443\"\n";
-        let (updated, changed) = strip_pox5_node_fields(raw);
+        let (updated, changed, rejected) = strip_pox5_node_fields(raw);
         assert!(!changed);
+        assert!(!rejected);
         assert_eq!(updated, raw);
+    }
+
+    #[test]
+    fn strip_pox5_node_fields_drops_keys_stacks_node_405_rejects() {
+        let raw = "[burnchain]\nmode = \"krypton\"\nrpc_ssl = false\nusername = \"devnet\"\n";
+        let (updated, changed, rejected) = strip_pox5_node_fields(raw);
+        assert!(changed);
+        assert!(rejected);
+        assert!(!updated.contains("rpc_ssl"));
+        assert!(updated.contains("mode = \"krypton\""));
+        assert!(updated.contains("username = \"devnet\""));
+    }
+
+    #[test]
+    fn coinbase_address_from_block_reads_miner_payout() {
+        let raw = r#"{"tx":[{"vin":[{"coinbase":"00"}],"vout":[{"value":50,"scriptPubKey":{"address":"mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC"}}]}]}"#;
+        assert_eq!(
+            coinbase_address_from_block(raw).as_deref(),
+            Some("mr1iPkD9N3RJZZxXRk7xF9d36gffa6exNC")
+        );
+    }
+
+    #[test]
+    fn burnchain_rpc_targets_bitcoind_when_proxy_cannot_serve_wallets() {
+        let raw = "[burnchain]\nrpc_port = 20445\npeer_port = 18444\nendpoint = \"host.docker.internal:20445\"\n";
+        let (updated, changed) = super::point_burnchain_rpc_at_bitcoind(raw);
+        assert!(changed);
+        assert!(updated.contains("rpc_port = 18443"));
+        assert!(updated.contains("host.docker.internal:20445"));
+        assert!(!updated.contains("rpc_port = 20445"));
+    }
+
+    #[test]
+    fn strip_pox5_node_fields_sets_miner_wallet_name() {
+        let raw = "[burnchain]\nmode = \"krypton\"\nwallet_name = \"\"\nusername = \"devnet\"\n";
+        let (updated, changed, rejected) = strip_pox5_node_fields(raw);
+        assert!(changed);
+        assert!(!rejected);
+        assert!(updated.contains("wallet_name = \"miner\""));
+        assert!(!updated.contains("wallet_name = \"\""));
     }
 
     #[test]
@@ -1843,6 +2128,76 @@ bitcoin_controller_block_time = 1_000
     }
 
     #[test]
+    fn optimize_devnet_toml_pins_stacks_node_405_on_older_clarinet() {
+        let raw = r#"[network]
+name = "devnet"
+
+[devnet]
+disable_bitcoin_explorer = true
+disable_stacks_explorer = true
+disable_stacks_api = true
+bitcoin_controller_block_time = 45_000
+stacks_node_image_url = "ghcr.io/stacks-network/stacks-core:4.0.1-alpine"
+stacks_signer_image_url = "ghcr.io/stacks-network/stacks-signer:4.0.1-alpine"
+"#;
+        let (updated, changed) = optimize_devnet_toml_for_fast_boot_with(raw, true);
+        assert!(changed);
+        assert!(updated.contains(
+            "stacks_node_image_url = \"ghcr.io/stacks-network/stacks-core:4.0.5-alpine\""
+        ));
+        assert!(updated.contains(
+            "stacks_signer_image_url = \"ghcr.io/stacks-network/stacks-signer:4.0.5-alpine\""
+        ));
+        assert!(!updated.contains("4.0.1"));
+    }
+
+    #[test]
+    fn optimize_devnet_toml_leaves_custom_and_newer_stacks_images() {
+        let raw = r#"[network]
+name = "devnet"
+
+[devnet]
+stacks_node_image_url = "ghcr.io/example/stacks-core:9.0.0"
+stacks_signer_image_url = "ghcr.io/stacks-network/stacks-signer:4.0.6-alpine"
+"#;
+        let (updated, _) = optimize_devnet_toml_for_fast_boot_with(raw, true);
+        assert!(updated.contains("ghcr.io/example/stacks-core:9.0.0"));
+        assert!(updated.contains("stacks-signer:4.0.6-alpine"));
+        assert!(!updated.contains("stacks-core:4.0.5-alpine"));
+    }
+
+    #[test]
+    fn bare_dev_is_the_clarinet_toolchain() {
+        assert_eq!(
+            super::classify_dev_invocation(None).unwrap(),
+            super::DevInvocation::ClarinetToolchain
+        );
+    }
+
+    #[test]
+    fn network_flag_is_frontend_only_including_devnet() {
+        assert_eq!(
+            super::classify_dev_invocation(Some("devnet")).unwrap(),
+            super::DevInvocation::FrontendOnly {
+                network: "devnet".into()
+            }
+        );
+        assert_eq!(
+            super::classify_dev_invocation(Some("testnet")).unwrap(),
+            super::DevInvocation::FrontendOnly {
+                network: "testnet".into()
+            }
+        );
+        assert_eq!(
+            super::classify_dev_invocation(Some("mainnet")).unwrap(),
+            super::DevInvocation::FrontendOnly {
+                network: "mainnet".into()
+            }
+        );
+        assert!(super::classify_dev_invocation(Some("simnet")).is_err());
+    }
+
+    #[test]
     fn dev_ready_json_payload_uses_ready_status_not_starting() {
         let payload =
             super::dev_ready_json_payload("devnet", "http://localhost:3000", Some(42), true, false);
@@ -1855,5 +2210,112 @@ bitcoin_controller_block_time = 1_000
         assert_eq!(payload["tip_height"], 42);
         assert_eq!(payload["auto_deploy"], true);
         assert_eq!(payload["keep_state"], false);
+    }
+
+    #[test]
+    fn devnet_network_name_appends_optional_network_id() {
+        let dir = std::env::temp_dir().join(format!("stacksdapp-net-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Devnet.toml");
+        std::fs::write(
+            &path,
+            "[network]\nname = \"devnet\"\n\n[devnet]\nnetwork_id = \"lab\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::devnet_network_name("countercontract", &path),
+            "countercontract.lab.devnet"
+        );
+        std::fs::write(&path, "[network]\nname = \"devnet\"\n").unwrap();
+        assert_eq!(
+            super::devnet_network_name("countercontract", &path),
+            "countercontract.devnet"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn container_match_is_limited_to_this_projects_chain() {
+        assert!(super::container_belongs_to_devnet(
+            "stacks-node.countercontract.devnet",
+            "countercontract.devnet"
+        ));
+        assert!(super::container_belongs_to_devnet(
+            "stacks-signer-0.countercontract.devnet",
+            "countercontract.devnet"
+        ));
+        assert!(super::container_belongs_to_devnet(
+            "bitcoin-node.countercontract.devnet",
+            "countercontract.devnet"
+        ));
+        assert!(!super::container_belongs_to_devnet(
+            "stacks-api.countercontract.devnet",
+            "countercontract.devnet"
+        ));
+        assert!(!super::container_belongs_to_devnet(
+            "stacks-node.other.devnet",
+            "countercontract.devnet"
+        ));
+    }
+
+    #[test]
+    fn session_dir_is_the_parent_of_the_data_mount() {
+        let stacks =
+            std::path::Path::new("/tmp/proj/contracts/.cache/stacks-devnet-1/data/1/stacks");
+        assert_eq!(
+            super::devnet_session_dir(stacks).unwrap(),
+            std::path::PathBuf::from("/tmp/proj/contracts/.cache/stacks-devnet-1")
+        );
+    }
+
+    #[test]
+    fn remove_dev_cache_keeps_the_live_session() {
+        let root = std::env::temp_dir().join(format!("stacksdapp-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let cache = root.join(".cache");
+        let session = cache.join("stacks-devnet-9");
+        std::fs::create_dir_all(session.join("conf")).unwrap();
+        std::fs::write(session.join("conf").join("Stacks.toml"), "keep").unwrap();
+        std::fs::write(cache.join("abi-export-cache.json"), "{}").unwrap();
+        std::fs::create_dir_all(cache.join("requirements")).unwrap();
+
+        super::remove_dev_cache(&cache, Some(&session)).unwrap();
+
+        assert!(session.join("conf").join("Stacks.toml").is_file());
+        assert!(!cache.join("abi-export-cache.json").exists());
+        assert!(!cache.join("requirements").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn select_snapshot_dir_requires_stacks_and_bitcoin() {
+        let root = std::env::temp_dir().join(format!("stacksdapp-snap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let incomplete = root.join("incomplete");
+        std::fs::create_dir_all(incomplete.join("stacks").join("krypton")).unwrap();
+        let complete = root.join("complete");
+        std::fs::create_dir_all(complete.join("stacks").join("krypton")).unwrap();
+        std::fs::create_dir_all(complete.join("bitcoin").join("regtest")).unwrap();
+        assert_eq!(super::select_snapshot_dir(&root).unwrap(), complete);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn host_bind_path_strips_docker_desktop_prefix() {
+        let dir = std::env::temp_dir().join(format!("stacksdapp-bind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let canonical = dir.canonicalize().unwrap();
+        let prefixed = format!("/host_mnt{}", canonical.display());
+        assert!(!std::path::Path::new(&prefixed).exists());
+        assert_eq!(super::host_bind_path(&prefixed), canonical);
+        assert_eq!(
+            super::host_bind_path(&canonical.display().to_string()),
+            canonical
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

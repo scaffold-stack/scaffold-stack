@@ -410,7 +410,7 @@ function ContractPanel({ name, children }: { name: string; children: React.React
 {% for fn in contract.functions %}
 {% if fn.access == "public" or fn.access == "read_only" %}
 function FunctionCard_{{ contract.export_name | upper_camel }}_{{ fn.name | upper_camel }}({ num, isOpen, onToggle }: { num: string, isOpen: boolean, onToggle: () => void }) {
-  const { data, loading, txid, txStatus, txStatusError, explorerUrl, call } = use{{ contract.export_name | upper_camel }}_{{ fn.name | upper_camel }}();
+  const { data, loading, error, txid, txStatus, txStatusError, explorerUrl, call } = use{{ contract.export_name | upper_camel }}_{{ fn.name | upper_camel }}();
   const isReadOnly = {% if fn.access == "read_only" %}true{% else %}false{% endif %};
 
   {% if fn.args %}
@@ -435,7 +435,7 @@ function FunctionCard_{{ contract.export_name | upper_camel }}_{{ fn.name | uppe
       </div>
 
       <div style={Object.assign({}, S.formContainer, { maxHeight: isOpen ? '1000px' : '0px', opacity: isOpen ? 1 : 0, marginTop: isOpen ? '20px' : '0px' })}>
-        <form style={S.form} onSubmit={async (e) => { e.preventDefault(); await call([{% if fn.args %}{% for arg in fn.args %}toClarityValue(args['{{ arg.name }}'] ?? '', {{ arg.type | json_encode | safe }}, '{{ arg.name }}'),{% endfor %}{% endif %}]); }}>
+        <form style={S.form} onSubmit={async (e) => { e.preventDefault(); try { await call([{% if fn.args %}{% for arg in fn.args %}toClarityValue(args['{{ arg.name }}'] ?? '', {{ arg.type | json_encode | safe }}, '{{ arg.name }}'),{% endfor %}{% endif %}]); } catch { /* error is rendered below */ } }}>
           {% if fn.args %}
             {% for arg in fn.args %}
             <div>
@@ -456,6 +456,9 @@ function FunctionCard_{{ contract.export_name | upper_camel }}_{{ fn.name | uppe
           <button type="submit" disabled={loading} style={Object.assign({}, isReadOnly ? S.btnRead : S.btnWrite, { opacity: loading ? 0.5 : 1 })}>
             {loading ? 'PROCESSING...' : (isReadOnly ? 'READ' : 'CALL')}
           </button>
+          {!!error && (
+            <p style={Object.assign({}, S.resPre, { color: '#fca5a5' })}>{error.message}</p>
+          )}
           {!!data && (
             <div style={Object.assign({}, S.resBox, { borderColor: isReadOnly ? '#2E2D2E' : '#2E2D2E' })}>
               <p style={S.resLabel}>RESULT</p>

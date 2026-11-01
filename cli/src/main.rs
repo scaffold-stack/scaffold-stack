@@ -28,7 +28,7 @@ const CLI_BEFORE_HELP: &str = r#"
     version,
     about = "Full-stack toolkit for Stacks: scaffold, run, and ship Clarity + Next.js apps.",
     before_help = CLI_BEFORE_HELP,
-    after_help = "Examples:\n  stacksdapp new my-dapp && cd my-dapp && stacksdapp dev\n  stacksdapp generate\n  stacksdapp deploy --network testnet\n  stacksdapp doctor --json\n  cd frontend && stacksdapp check   # walks up to project root\n  stacksdapp --root ../my-dapp test\n  stacksdapp completions zsh > ~/.zfunc/_stacksdapp"
+    after_help = "Examples:\n  stacksdapp new my-dapp && cd my-dapp && stacksdapp dev\n  stacksdapp dev --network devnet\n  stacksdapp generate\n  stacksdapp deploy --network testnet\n  stacksdapp doctor --json\n  cd frontend && stacksdapp check   # walks up to project root\n  stacksdapp --root ../my-dapp test\n  stacksdapp completions zsh > ~/.zfunc/_stacksdapp"
 )]
 struct Cli {
     /// Verbosity (-v, -vv, …). Higher values print more diagnostic detail.
@@ -65,19 +65,19 @@ enum Commands {
         #[arg(long)]
         no_git: bool,
     },
-    /// Start dev environment — devnet/testnet/mainnet
+    /// Start Clarinet, or the Next.js app for a chosen network
     ///
-    /// devnet  (default): spins up local Clarinet chain + Next.js + watcher
-    /// testnet/mainnet:   runs Next.js pointed at remote network (no local chain)
-    /// Use --auto-deploy with devnet to deploy contracts once the local chain is ready.
+    /// `stacksdapp dev`                  Clarinet devnet in this terminal (Docker)
+    /// `stacksdapp dev --network devnet` Next.js against that local chain
+    /// `stacksdapp dev --network testnet|mainnet` Next.js against the public network
     Dev {
-        /// Network to target: devnet | testnet | mainnet
+        /// Frontend target. Omit to run the Clarinet devnet toolchain in this terminal.
         #[arg(long, value_parser = ["devnet", "testnet", "mainnet"])]
         network: Option<String>,
-        /// After devnet is ready, deploy contracts automatically (devnet only)
+        /// Unused. Deploy with `stacksdapp deploy` in another terminal.
         #[arg(long)]
         auto_deploy: bool,
-        /// Preserve local devnet state/cache between runs (devnet only)
+        /// Unused. Clarinet keeps its own chain state; reset with `stacksdapp clean`.
         #[arg(long)]
         keep_state: bool,
     },
@@ -131,7 +131,7 @@ enum Commands {
     Test,
     /// Type-check all Clarity contracts
     Check,
-    /// Remove generated files and devnet state
+    /// Remove generated files and reset a running local devnet chain to the snapshot. Does not stop the devnet process.
     Clean {
         /// Skip confirmation prompt
         #[arg(long)]
@@ -221,8 +221,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
             auto_deploy,
             keep_state,
         } => {
-            let network = resolve_default_network(network.as_deref())?;
-            stacksdapp_process_supervisor::dev(&network, auto_deploy, keep_state).await
+            // Bare `stacksdapp dev` is the Clarinet toolchain. A network flag
+            // starts only the frontend, including `--network devnet`.
+            stacksdapp_process_supervisor::dev(network.as_deref(), auto_deploy, keep_state).await
         }
         Commands::Generate { watch } => run_generate(watch).await,
         Commands::Init => {
@@ -718,23 +719,36 @@ async fn run_clean(force: bool) -> Result<()> {
         }
     }
 
-    if targets.is_empty() {
-        // Still stop leftover containers — common when only Docker state remains.
-        stacksdapp_process_supervisor::stop_stale_devnet_docker();
-        status("[clean] Nothing to remove.".green().to_string());
+    let devnet_up = !stacksdapp_process_supervisor::running_project_devnet_containers().is_empty();
+    if targets.is_empty() && !devnet_up {
+        status(
+            "[clean] Nothing to remove. A running devnet was left up."
+                .green()
+                .to_string(),
+        );
         if shell::is_json() {
             shell::emit_json(&json!({
                 "ok": true,
                 "command": "clean",
                 "removed": [],
+                "chain_reset": false,
             }));
         }
         return Ok(());
     }
 
-    status("[clean] Will remove:".cyan().to_string());
-    for (path, kind) in &targets {
-        status(format!("  • {} ({kind})", path.display()));
+    if !targets.is_empty() {
+        status("[clean] Will remove:".cyan().to_string());
+        for (path, kind) in &targets {
+            status(format!("  • {} ({kind})", path.display()));
+        }
+    }
+    if devnet_up {
+        status(
+            "[clean] Will reset the running devnet chain to the snapshot. The devnet process stays up."
+                .cyan()
+                .to_string(),
+        );
     }
 
     if !force {
@@ -761,21 +775,37 @@ async fn run_clean(force: bool) -> Result<()> {
             .to_string(),
     );
 
-    // Free Clarinet Docker ports (5432/20445/…) — file cleanup alone is not enough.
-    stacksdapp_process_supervisor::stop_stale_devnet_docker();
+    let live_session = stacksdapp_process_supervisor::reset_running_devnet_chain().await?;
 
     let mut removed = Vec::new();
     for (path, kind) in &targets {
-        match *kind {
-            "directory" => fs::remove_dir_all(path).await?,
-            _ => fs::remove_file(path).await?,
-        }
-        removed.push(path.display().to_string());
-        status(
-            format!("[clean] Removed {}", path.display())
+        let keep_session = live_session.as_deref().is_some_and(|session| {
+            *kind == "directory"
+                && (path.ends_with(".cache") || path.ends_with(".devnet"))
+                && stacksdapp_process_supervisor::dev_cache_holds_session(path, session)
+        });
+        if keep_session {
+            stacksdapp_process_supervisor::remove_dev_cache(path, live_session.as_deref())?;
+            status(
+                format!(
+                    "[clean] Removed old files in {} and kept the live devnet session",
+                    path.display()
+                )
                 .yellow()
                 .to_string(),
-        );
+            );
+        } else {
+            match *kind {
+                "directory" => fs::remove_dir_all(path).await?,
+                _ => fs::remove_file(path).await?,
+            }
+            status(
+                format!("[clean] Removed {}", path.display())
+                    .yellow()
+                    .to_string(),
+            );
+        }
+        removed.push(path.display().to_string());
     }
 
     fs::create_dir_all(&generated_dir).await?;
@@ -785,16 +815,25 @@ async fn run_clean(force: bool) -> Result<()> {
     )
     .await?;
 
-    status(
-        "[clean] Done. Run `stacksdapp generate` to regenerate bindings."
-            .green()
-            .to_string(),
-    );
+    if live_session.is_some() {
+        status(
+            "[clean] Done. The running devnet was reset to the snapshot and left up. The next deploy uses the current contract name. Run `stacksdapp generate` to regenerate bindings."
+                .green()
+                .to_string(),
+        );
+    } else {
+        status(
+            "[clean] Done. No devnet was running. The next `stacksdapp dev` starts a fresh chain. Run `stacksdapp generate` to regenerate bindings."
+                .green()
+                .to_string(),
+        );
+    }
     if shell::is_json() {
         shell::emit_json(&json!({
             "ok": true,
             "command": "clean",
             "removed": removed,
+            "chain_reset": live_session.is_some(),
         }));
     }
     Ok(())
