@@ -680,7 +680,12 @@ fn deployment_auto_versions(network: &str) -> bool {
 fn contract_name_conflict_error(network: &str, renames: &[PlannedRename]) -> anyhow::Error {
     let conflicts: Vec<String> = renames
         .iter()
-        .map(|r| format!("{} (network has {}; would rename to {})", r.from, r.from, r.to))
+        .map(|r| {
+            format!(
+                "{} (network has {}; would rename to {})",
+                r.from, r.from, r.to
+            )
+        })
         .collect();
     anyhow!(
         "Contract name conflict on {network}: {}.\n\
@@ -2790,9 +2795,9 @@ fn capitalize(s: &str) -> String {
 mod tests {
     use super::{
         deployment_auto_versions, interpret_contract_lookup, map_contract_name_after_renames,
-        parse_broadcast_line,
-        parse_local_deps, reorder_clarinet_toml, replace_contract_reference, restore_deploy_writes,
-        snapshot_deploy_writes, strip_version_suffix, topological_sort, PlannedRename,
+        parse_broadcast_line, parse_local_deps, reorder_clarinet_toml, replace_contract_reference,
+        restore_deploy_writes, snapshot_deploy_writes, strip_version_suffix, topological_sort,
+        PlannedRename,
     };
     use reqwest::StatusCode;
     use std::collections::{HashMap, HashSet};

@@ -9,7 +9,6 @@ use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use tokio::{fs, io::AsyncRead};
 
-
 /// How `stacksdapp dev` should run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DevInvocation {
@@ -388,7 +387,6 @@ async fn dev_remote(network: &str) -> Result<()> {
     result
 }
 
-
 /// True when a generated Stacks.toml lost a field stacks-node 4.0.5 rejects.
 async fn patch_pox5_fields_in_cache() -> Result<bool> {
     let cache = Path::new("contracts/.cache");
@@ -518,7 +516,9 @@ fn spawn_pox5_stake() -> bool {
     let Ok(log_err) = log.try_clone() else {
         return false;
     };
-    let frontend_dir = frontend.canonicalize().unwrap_or_else(|_| frontend.to_path_buf());
+    let frontend_dir = frontend
+        .canonicalize()
+        .unwrap_or_else(|_| frontend.to_path_buf());
     std::process::Command::new("node")
         .arg(&script_path)
         .env("STACKSDAPP_FRONTEND", &frontend_dir)
@@ -626,11 +626,16 @@ fn bitcoin_cli(container: &str, args: &[&str]) -> Option<String> {
         "-rpcpassword=devnet",
     ];
     cmd.extend_from_slice(args);
-    let output = std::process::Command::new("docker").args(&cmd).output().ok()?;
+    let output = std::process::Command::new("docker")
+        .args(&cmd)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
-    String::from_utf8(output.stdout).ok().map(|text| text.trim().to_string())
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|text| text.trim().to_string())
 }
 
 fn bitcoin_block_count(container: &str) -> Option<u64> {
@@ -657,16 +662,12 @@ pub fn coinbase_address_from_block(raw: &str) -> Option<String> {
             .map(|vin| vin.iter().any(|input| input.get("coinbase").is_some()))
             .unwrap_or(false)
     })?;
-    coinbase
-        .get("vout")?
-        .as_array()?
-        .iter()
-        .find_map(|output| {
-            output
-                .pointer("/scriptPubKey/address")
-                .and_then(|address| address.as_str())
-                .map(str::to_string)
-        })
+    coinbase.get("vout")?.as_array()?.iter().find_map(|output| {
+        output
+            .pointer("/scriptPubKey/address")
+            .and_then(|address| address.as_str())
+            .map(str::to_string)
+    })
 }
 
 fn attach_next_output(child: &mut Child, ready: Option<oneshot::Sender<String>>) {
@@ -1105,9 +1106,11 @@ pub fn optimize_devnet_toml_for_fast_boot_with(raw: &str, pin_stacks_405: bool) 
                 continue;
             }
             if pin_stacks_405 {
-                if let Some(line) =
-                    rewrite_stacks_image_line(trimmed, "stacks_node_image_url", STACKS_NODE_IMAGE_405)
-                {
+                if let Some(line) = rewrite_stacks_image_line(
+                    trimmed,
+                    "stacks_node_image_url",
+                    STACKS_NODE_IMAGE_405,
+                ) {
                     has_node_image = true;
                     out.push(line);
                     continue;
@@ -1151,12 +1154,15 @@ pub fn optimize_devnet_toml_for_fast_boot_with(raw: &str, pin_stacks_405: bool) 
                     injected = true;
                 }
                 if pin_stacks_405 && !has_node_image {
-                    final_out.push(format!("stacks_node_image_url = \"{STACKS_NODE_IMAGE_405}\""));
+                    final_out.push(format!(
+                        "stacks_node_image_url = \"{STACKS_NODE_IMAGE_405}\""
+                    ));
                     injected = true;
                 }
                 if pin_stacks_405 && !has_signer_image {
-                    final_out
-                        .push(format!("stacks_signer_image_url = \"{STACKS_SIGNER_IMAGE_405}\""));
+                    final_out.push(format!(
+                        "stacks_signer_image_url = \"{STACKS_SIGNER_IMAGE_405}\""
+                    ));
                     injected = true;
                 }
             }
@@ -1170,8 +1176,12 @@ pub fn optimize_devnet_toml_for_fast_boot_with(raw: &str, pin_stacks_405: bool) 
         out.push("disable_stacks_api = true".to_string());
         out.push("bitcoin_controller_block_time = 45_000".to_string());
         if pin_stacks_405 {
-            out.push(format!("stacks_node_image_url = \"{STACKS_NODE_IMAGE_405}\""));
-            out.push(format!("stacks_signer_image_url = \"{STACKS_SIGNER_IMAGE_405}\""));
+            out.push(format!(
+                "stacks_node_image_url = \"{STACKS_NODE_IMAGE_405}\""
+            ));
+            out.push(format!(
+                "stacks_signer_image_url = \"{STACKS_SIGNER_IMAGE_405}\""
+            ));
         }
         injected = true;
     }
@@ -1275,7 +1285,6 @@ fn strip_pox_stacking_order_blocks(raw: &str) -> String {
     updated
 }
 
-
 fn spawn_next_dev_process(network: &str) -> Result<Child> {
     let frontend_dir = Path::new("frontend");
     let next_bin = frontend_dir.join("node_modules/next/dist/bin/next");
@@ -1312,8 +1321,8 @@ async fn shutdown_child(name: &str, child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::{
-        optimize_devnet_toml_for_fast_boot, optimize_devnet_toml_for_fast_boot_with,
-        coinbase_address_from_block, strip_pox5_node_fields, upsert_env_assignment,
+        coinbase_address_from_block, optimize_devnet_toml_for_fast_boot,
+        optimize_devnet_toml_for_fast_boot_with, strip_pox5_node_fields, upsert_env_assignment,
     };
 
     #[test]

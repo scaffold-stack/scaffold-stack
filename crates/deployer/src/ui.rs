@@ -389,7 +389,9 @@ impl DeployUi {
             let local_url = detect_local_frontend_url();
             println!(
                 "{}",
-                "stacksdapp dev --network devnet".truecolor(52, 211, 153).bold()
+                "stacksdapp dev --network devnet"
+                    .truecolor(52, 211, 153)
+                    .bold()
             );
             println!(
                 "{}",
