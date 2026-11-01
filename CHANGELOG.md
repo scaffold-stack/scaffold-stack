@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.4] — 2026-11-01
 
+Released on crates.io.
+
 `stacksdapp` and `stacksdapp-scaffold` are **0.2.4**. `stacksdapp-codegen` and `stacksdapp-deployer` are **0.2.2**. `stacksdapp-process-supervisor` is **0.2.1**. Parser, shell, and watcher stay at 0.2.0.
 
 ### Changed
