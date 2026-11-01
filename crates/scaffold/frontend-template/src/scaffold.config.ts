@@ -22,7 +22,26 @@ const nodeUrl =
     ? (process.env.NEXT_PUBLIC_STACKS_NODE_URL ?? 'https://api.hiro.so')
     : network === 'testnet'
     ? (process.env.NEXT_PUBLIC_STACKS_NODE_URL ?? 'https://api.testnet.hiro.so')
-    : (process.env.NEXT_PUBLIC_STACKS_NODE_URL ?? 'http://localhost:3999');
+    : (process.env.NEXT_PUBLIC_STACKS_NODE_URL ?? 'http://127.0.0.1:20443');
+
+/** Stacks core RPC. In the browser this is proxied so devnet calls are not blocked by CORS. */
+export function devnetCoreBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    return `${window.location.origin}/devnet-node`;
+  }
+  return nodeUrl;
+}
+
+export function getDevnetCoreNetwork(): StacksNetwork {
+  const core = createNetwork('devnet');
+  return {
+    ...core,
+    client: {
+      ...core.client,
+      baseUrl: devnetCoreBaseUrl(),
+    },
+  };
+}
 
 export const scaffoldConfig = {
   network,
@@ -41,9 +60,10 @@ export const scaffoldConfig = {
 
 /** Network object for @stacks/transactions read-only calls (optional Hiro API key). */
 export function getReadOnlyNetwork(): StacksNetworkName | StacksNetwork {
-  const networkName: StacksNetworkName = scaffoldConfig.isDevnet
-    ? 'devnet'
-    : scaffoldConfig.targetNetwork;
+  if (scaffoldConfig.isDevnet) {
+    return getDevnetCoreNetwork();
+  }
+  const networkName: StacksNetworkName = scaffoldConfig.targetNetwork;
   if (scaffoldConfig.hiroApiKey) {
     return createNetwork(networkName, scaffoldConfig.hiroApiKey);
   }

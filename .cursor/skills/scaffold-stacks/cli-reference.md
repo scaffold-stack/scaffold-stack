@@ -96,9 +96,10 @@ Remove `contracts/.cache/`, devnet state, generated frontend bindings.
 
 | Flag | Description |
 |------|-------------|
-| `--network devnet\|testnet\|mainnet` | Default: devnet (Docker). Remote networks = frontend only |
-| `--auto-deploy` | Devnet only: deploy once chain healthy |
-| `--keep-state` | Devnet: preserve cache between runs |
+| (no flag) | Clarinet devnet in this terminal (Docker) |
+| `--network devnet\|testnet\|mainnet` | Next.js only. `devnet` expects `stacksdapp dev` already running |
+| `--auto-deploy` | Unused. Deploy with `stacksdapp deploy` |
+| `--keep-state` | Unused. Reset the chain with `stacksdapp clean` |
 
 ### `stacksdapp deploy`
 

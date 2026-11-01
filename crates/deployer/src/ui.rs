@@ -389,13 +389,11 @@ impl DeployUi {
             let local_url = detect_local_frontend_url();
             println!(
                 "{}",
-                format!("Open {local_url} in your browser")
-                    .truecolor(52, 211, 153)
-                    .bold()
+                "stacksdapp dev --network devnet".truecolor(52, 211, 153).bold()
             );
             println!(
                 "{}",
-                "(Devnet is already running from `stacksdapp dev` — use the Debug Contracts panel to interact.)"
+                format!("Then open {local_url} and choose a funded devnet wallet.")
                     .truecolor(156, 163, 175)
             );
         } else {

@@ -28,7 +28,7 @@ const CLI_BEFORE_HELP: &str = r#"
     version,
     about = "Full-stack toolkit for Stacks: scaffold, run, and ship Clarity + Next.js apps.",
     before_help = CLI_BEFORE_HELP,
-    after_help = "Examples:\n  stacksdapp new my-dapp && cd my-dapp && stacksdapp dev\n  stacksdapp generate\n  stacksdapp deploy --network testnet\n  stacksdapp doctor --json\n  cd frontend && stacksdapp check   # walks up to project root\n  stacksdapp --root ../my-dapp test\n  stacksdapp completions zsh > ~/.zfunc/_stacksdapp"
+    after_help = "Examples:\n  stacksdapp new my-dapp && cd my-dapp && stacksdapp dev\n  stacksdapp dev --network devnet\n  stacksdapp generate\n  stacksdapp deploy --network testnet\n  stacksdapp doctor --json\n  cd frontend && stacksdapp check   # walks up to project root\n  stacksdapp --root ../my-dapp test\n  stacksdapp completions zsh > ~/.zfunc/_stacksdapp"
 )]
 struct Cli {
     /// Verbosity (-v, -vv, …). Higher values print more diagnostic detail.
@@ -65,19 +65,19 @@ enum Commands {
         #[arg(long)]
         no_git: bool,
     },
-    /// Start dev environment — devnet/testnet/mainnet
+    /// Start Clarinet, or the Next.js app for a chosen network
     ///
-    /// devnet  (default): spins up local Clarinet chain + Next.js + watcher
-    /// testnet/mainnet:   runs Next.js pointed at remote network (no local chain)
-    /// Use --auto-deploy with devnet to deploy contracts once the local chain is ready.
+    /// `stacksdapp dev`                  Clarinet devnet in this terminal (Docker)
+    /// `stacksdapp dev --network devnet` Next.js against that local chain
+    /// `stacksdapp dev --network testnet|mainnet` Next.js against the public network
     Dev {
-        /// Network to target: devnet | testnet | mainnet
+        /// Frontend target. Omit to run the Clarinet devnet toolchain in this terminal.
         #[arg(long, value_parser = ["devnet", "testnet", "mainnet"])]
         network: Option<String>,
-        /// After devnet is ready, deploy contracts automatically (devnet only)
+        /// Unused. Deploy with `stacksdapp deploy` in another terminal.
         #[arg(long)]
         auto_deploy: bool,
-        /// Preserve local devnet state/cache between runs (devnet only)
+        /// Unused. Clarinet keeps its own chain state; reset with `stacksdapp clean`.
         #[arg(long)]
         keep_state: bool,
     },
@@ -221,8 +221,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
             auto_deploy,
             keep_state,
         } => {
-            let network = resolve_default_network(network.as_deref())?;
-            stacksdapp_process_supervisor::dev(&network, auto_deploy, keep_state).await
+            // Bare `stacksdapp dev` is the Clarinet toolchain. A network flag
+            // starts only the frontend, including `--network devnet`.
+            stacksdapp_process_supervisor::dev(network.as_deref(), auto_deploy, keep_state).await
         }
         Commands::Generate { watch } => run_generate(watch).await,
         Commands::Init => {

@@ -168,14 +168,20 @@ stacksdapp dev --network mainnet
 For offline development or simulating the full Bitcoin + Stacks stack locally. Requires Docker Desktop.
 
 ```bash
-# Terminal 1 — start local chain + frontend + watcher
+# Terminal 1 — Clarinet devnet, in Clarinet's own view
 stacksdapp dev
 
-# Terminal 2 — deploy to local chain (once node is ready ~30s)
+# Terminal 2 — deploy once the chain is up
+# A name already on this chain is versioned (counter → counter-v2), including after a toolchain restart.
 stacksdapp deploy --network devnet
+
+# Terminal 3 — Next.js debug UI against that chain
+stacksdapp dev --network devnet
 ```
 
-Pre-funded accounts from `contracts/settings/Devnet.toml` are available immediately. No real STX or wallet needed — the debug UI uses the devnet burner accounts.
+Pre-funded accounts from `contracts/settings/Devnet.toml` are available immediately. No real STX or wallet needed — on devnet the debug UI says **Choose Wallet** and lists those accounts.
+
+Clarinet older than 3.26 starts stacks-node 4.0.1, which stops mining at the first PoX reward-cycle boundary. `stacksdapp dev` points that devnet at stacks-node and stacks-signer 4.0.5, keeps Clarinet's devnet sBTC settings, stakes the devnet wallets before the next reward cycle, and mines a bitcoin block when the chain has been quiet. Clarinet's own miner takes over once it is running. Clarinet 3.26+ already ships this node. Testnet and mainnet are unchanged.
 
 ```bash
 stacksdapp clean   # stop devnet and reset generated files
@@ -223,8 +229,8 @@ my-app/
 | `stacksdapp completions <shell>` | Print shell completions (`bash`, `zsh`, `fish`, `powershell`, `elvish`) |
 | `stacksdapp dev --network testnet` | Run frontend against testnet (no Docker) |
 | `stacksdapp dev --network mainnet` | Run frontend against mainnet (no Docker) |
-| `stacksdapp dev` | Start local devnet + frontend + watcher (Docker required) |
-| `stacksdapp dev --auto-deploy` | Devnet + auto-deploy contracts once the chain is ready |
+| `stacksdapp dev` | Clarinet devnet in this terminal (Docker required) |
+| `stacksdapp dev --network devnet` | Next.js against the local devnet (chain already running) |
 | `stacksdapp deploy --network testnet` | Deploy to testnet |
 | `stacksdapp deploy --network testnet --contract <name>` | Deploy only one contract by name |
 | `stacksdapp deploy --network testnet --dry-run` | Generate plan + estimated fee without broadcasting |

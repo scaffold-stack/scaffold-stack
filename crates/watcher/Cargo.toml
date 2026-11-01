@@ -11,7 +11,7 @@ homepage    = "https://github.com/scaffold-stack/scaffold-stack"
 anyhow.workspace = true
 notify.workspace = true
 tokio.workspace  = true
-stacksdapp-codegen = {version = "0.2.0", path = "../codegen" }
+stacksdapp-codegen = {version = "0.2.2", path = "../codegen" }
 stacksdapp-shell = { version = "0.2.0", path = "../shell" }
 
 [dev-dependencies]

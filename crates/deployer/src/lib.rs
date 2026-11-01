@@ -497,7 +497,9 @@ async fn run_deploy_pipeline_inner(
 
     let mut effective_contract = contract.map(str::to_string);
 
-    if network == "testnet" || network == "mainnet" {
+    // Devnet chain state survives a toolchain restart, so an existing name has
+    // to be versioned here too. Testnet and mainnet keep their confirm step.
+    if deployment_auto_versions(network) {
         let step = ui.begin_step("Checking existing contracts...");
         let renames = match plan_conflicting_contract_renames(network, contract).await {
             Ok(r) => r,
@@ -515,51 +517,120 @@ async fn run_deploy_pipeline_inner(
             ui.step_detail("no conflicts");
         }
 
-        let (total_micro_stx, contracts) =
-            build_deployment_preview(network, fee_flag, contract).await?;
+        let remote = network == "testnet" || network == "mainnet";
+        if remote {
+            let (total_micro_stx, contracts) =
+                build_deployment_preview(network, fee_flag, contract).await?;
+
+            if dry_run {
+                ui.dry_run_done(&contracts, total_micro_stx);
+                if !renames.is_empty() {
+                    ui.step_detail(
+                        "dry run note: conflicting contract names would be versioned on apply",
+                    );
+                }
+                return Ok(DeployOutcome {
+                    status: "dry-run",
+                    block_height: None,
+                });
+            }
+
+            if no_auto_version && !renames.is_empty() {
+                return Err(contract_name_conflict_error(network, &renames));
+            }
+
+            let deployer = get_deployer_from_plan(network).await?;
+            ui.print_summary(&deployer, &contracts, total_micro_stx);
+            if !ui.confirm_continue(yes)? {
+                return Err(anyhow!(
+                    "{} deployment aborted by user.",
+                    capitalize(network)
+                ));
+            }
+
+            if !renames.is_empty() {
+                ensure_rename_snapshot(contracts_dir, rename_snapshot).await?;
+                let step = ui.begin_step("Applying versioned contract names");
+                if let Err(e) = apply_contract_renames(&renames).await {
+                    step.fail();
+                    return Err(e);
+                }
+                step.finish();
+                effective_contract = effective_contract
+                    .as_deref()
+                    .map(|name| map_contract_name_after_renames(name, &renames));
+            }
+
+            let clarinet_output = run_generate_and_apply(
+                ui,
+                network,
+                fee_flag,
+                effective_contract.as_deref(),
+                false,
+                true,
+                true,
+            )
+            .await?;
+
+            if clarinet_output.contains("ContractAlreadyExists") {
+                ui.step_detail("Conflict after versioning — retrying...");
+                let retry_renames =
+                    plan_conflicting_contract_renames(network, effective_contract.as_deref())
+                        .await?;
+                if !retry_renames.is_empty() {
+                    if no_auto_version {
+                        return Err(anyhow!(
+                            "Contract still exists on {network} after versioning. \
+                             Remove --no-auto-version or choose a new contract name."
+                        ));
+                    }
+                    ensure_rename_snapshot(contracts_dir, rename_snapshot).await?;
+                    apply_contract_renames(&retry_renames).await?;
+                    effective_contract = effective_contract
+                        .as_deref()
+                        .map(|name| map_contract_name_after_renames(name, &retry_renames));
+                }
+                let clarinet_output2 = run_generate_and_apply(
+                    ui,
+                    network,
+                    fee_flag,
+                    effective_contract.as_deref(),
+                    false,
+                    true,
+                    true,
+                )
+                .await?;
+                return write_deployments_json_from_output(
+                    ui,
+                    network,
+                    &clarinet_output2,
+                    effective_contract.as_deref(),
+                    wait_confirm,
+                    stacks_node,
+                )
+                .await;
+            }
+
+            return write_deployments_json_from_output(
+                ui,
+                network,
+                &clarinet_output,
+                effective_contract.as_deref(),
+                wait_confirm,
+                stacks_node,
+            )
+            .await;
+        }
 
         if dry_run {
-            ui.dry_run_done(&contracts, total_micro_stx);
             if !renames.is_empty() {
                 ui.step_detail(
                     "dry run note: conflicting contract names would be versioned on apply",
                 );
             }
-            return Ok(DeployOutcome {
-                status: "dry-run",
-                block_height: None,
-            });
-        }
-
-        if no_auto_version && !renames.is_empty() {
-            let conflicts: Vec<String> = renames
-                .iter()
-                .map(|r| {
-                    format!(
-                        "{} (network has {}; would rename to {})",
-                        r.from, r.from, r.to
-                    )
-                })
-                .collect();
-            return Err(anyhow!(
-                "Contract name conflict on {network}: {}.\n\
-                 Omit --no-auto-version to allow auto-versioning (e.g. counter → counter-v2), \
-                 or pick a new contract name.\n\
-                 Tip: commit your project before deploying to testnet/mainnet.",
-                conflicts.join(", ")
-            ));
-        }
-
-        let deployer = get_deployer_from_plan(network).await?;
-        ui.print_summary(&deployer, &contracts, total_micro_stx);
-        if !ui.confirm_continue(yes)? {
-            return Err(anyhow!(
-                "{} deployment aborted by user.",
-                capitalize(network)
-            ));
-        }
-
-        if !renames.is_empty() {
+        } else if no_auto_version && !renames.is_empty() {
+            return Err(contract_name_conflict_error(network, &renames));
+        } else if !renames.is_empty() {
             ensure_rename_snapshot(contracts_dir, rename_snapshot).await?;
             let step = ui.begin_step("Applying versioned contract names");
             if let Err(e) = apply_contract_renames(&renames).await {
@@ -571,69 +642,18 @@ async fn run_deploy_pipeline_inner(
                 .as_deref()
                 .map(|name| map_contract_name_after_renames(name, &renames));
         }
-
-        let clarinet_output = run_generate_and_apply(
-            ui,
-            network,
-            fee_flag,
-            effective_contract.as_deref(),
-            false,
-            true,
-            true,
-        )
-        .await?;
-
-        if clarinet_output.contains("ContractAlreadyExists") {
-            ui.step_detail("Conflict after versioning — retrying...");
-            let retry_renames =
-                plan_conflicting_contract_renames(network, effective_contract.as_deref()).await?;
-            if !retry_renames.is_empty() {
-                if no_auto_version {
-                    return Err(anyhow!(
-                        "Contract still exists on {network} after versioning. \
-                         Remove --no-auto-version or choose a new contract name."
-                    ));
-                }
-                ensure_rename_snapshot(contracts_dir, rename_snapshot).await?;
-                apply_contract_renames(&retry_renames).await?;
-                effective_contract = effective_contract
-                    .as_deref()
-                    .map(|name| map_contract_name_after_renames(name, &retry_renames));
-            }
-            let clarinet_output2 = run_generate_and_apply(
-                ui,
-                network,
-                fee_flag,
-                effective_contract.as_deref(),
-                false,
-                true,
-                true,
-            )
-            .await?;
-            return write_deployments_json_from_output(
-                ui,
-                network,
-                &clarinet_output2,
-                effective_contract.as_deref(),
-                wait_confirm,
-                stacks_node,
-            )
-            .await;
-        }
-
-        return write_deployments_json_from_output(
-            ui,
-            network,
-            &clarinet_output,
-            effective_contract.as_deref(),
-            wait_confirm,
-            stacks_node,
-        )
-        .await;
     }
 
-    let clarinet_output =
-        run_generate_and_apply(ui, network, fee_flag, contract, dry_run, yes, false).await?;
+    let clarinet_output = run_generate_and_apply(
+        ui,
+        network,
+        fee_flag,
+        effective_contract.as_deref(),
+        dry_run,
+        yes,
+        false,
+    )
+    .await?;
 
     if dry_run {
         return Ok(DeployOutcome {
@@ -646,11 +666,29 @@ async fn run_deploy_pipeline_inner(
         ui,
         network,
         &clarinet_output,
-        contract,
+        effective_contract.as_deref(),
         wait_confirm,
         stacks_node,
     )
     .await
+}
+
+fn deployment_auto_versions(network: &str) -> bool {
+    matches!(network, "devnet" | "testnet" | "mainnet")
+}
+
+fn contract_name_conflict_error(network: &str, renames: &[PlannedRename]) -> anyhow::Error {
+    let conflicts: Vec<String> = renames
+        .iter()
+        .map(|r| format!("{} (network has {}; would rename to {})", r.from, r.from, r.to))
+        .collect();
+    anyhow!(
+        "Contract name conflict on {network}: {}.\n\
+         Omit --no-auto-version to allow auto-versioning (e.g. counter → counter-v2), \
+         or pick a new contract name.\n\
+         Tip: commit your project before deploying to {network}.",
+        conflicts.join(", ")
+    )
 }
 
 async fn reorder_clarinet_toml(
@@ -960,8 +998,14 @@ async fn run_apply_devnet(
         match run_clarinet_deployments_apply(ui, network, contracts, single_contract, None).await {
             Ok(stdout) => return Ok(stdout),
             Err(clarinet_err) => {
+                let message = format!("{clarinet_err:#}");
+                // A taken name is a versioning problem, not a transport failure.
+                // Direct broadcast would see the contract and skip it.
+                if message.contains("ContractAlreadyExists") {
+                    return Err(clarinet_err);
+                }
                 stacksdapp_shell::println_human_safe(format!(
-                    "[deploy] Clarinet devnet apply failed ({clarinet_err:#}); trying direct broadcast..."
+                    "[deploy] Clarinet devnet apply failed ({message}); trying direct broadcast..."
                 ));
             }
         }
@@ -1049,7 +1093,8 @@ async fn run_clarinet_deployments_apply(
             let _ = child.kill().await;
             return Err(anyhow!(
                 "Contract already exists on devnet.\n\
-                 Run `stacksdapp clean` and restart `stacksdapp dev`, or redeploy with a new contract name.\n\
+                 The local chain keeps deployed contracts after the toolchain restarts.\n\
+                 Redeploy without --no-auto-version so the name is versioned (counter → counter-v2), or choose a new contract name.\n\
                  Output:\n{}",
                 captured_stdout.trim()
             ));
@@ -1908,7 +1953,7 @@ async fn find_next_free_name(
     base_name: &str,
 ) -> Result<String> {
     // Check unversioned first (e.g. "counter")
-    let url = format!("{node}/v2/contracts/source/{deployer}/{base_name}");
+    let url = format!("{node}/v2/contracts/source/{deployer}/{base_name}?proof=0");
     let base_taken = contract_exists(client, &url).await?;
 
     if !base_taken {
@@ -1919,7 +1964,7 @@ async fn find_next_free_name(
     let mut version = 2u32;
     loop {
         let candidate = format!("{base_name}-v{version}");
-        let url = format!("{node}/v2/contracts/source/{deployer}/{candidate}");
+        let url = format!("{node}/v2/contracts/source/{deployer}/{candidate}?proof=0");
         let taken = contract_exists(client, &url).await?;
         if !taken {
             return Ok(candidate);
@@ -2744,7 +2789,8 @@ fn capitalize(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        interpret_contract_lookup, map_contract_name_after_renames, parse_broadcast_line,
+        deployment_auto_versions, interpret_contract_lookup, map_contract_name_after_renames,
+        parse_broadcast_line,
         parse_local_deps, reorder_clarinet_toml, replace_contract_reference, restore_deploy_writes,
         snapshot_deploy_writes, strip_version_suffix, topological_sort, PlannedRename,
     };
@@ -2999,6 +3045,14 @@ passes = ["check_checker"]
         assert!(idx_a < idx_b);
         assert!(idx_b < idx_suffix);
         assert!(updated.contains("passes = [\"check_checker\"]"));
+    }
+
+    #[test]
+    fn devnet_redeploy_auto_versions_like_public_networks() {
+        assert!(deployment_auto_versions("devnet"));
+        assert!(deployment_auto_versions("testnet"));
+        assert!(deployment_auto_versions("mainnet"));
+        assert!(!deployment_auto_versions("simnet"));
     }
 
     #[test]

@@ -133,7 +133,7 @@ Details: [workflows.md](workflows.md) · [troubleshooting.md](troubleshooting.md
 ## Deploy behavior
 
 - **Testnet/mainnet:** Direct broadcast via `@stacks/transactions`; auto-versioning on redeploy (`counter` → `counter-v2`) unless `--no-auto-version`
-- **Devnet:** Epoch burn gating for C5/C6; waits for core node `:20443`
+- **Devnet:** Epoch burn gating for C5/C6; waits for core node `:20443`. Redeploy auto-versions a name already on chain (`counter` → `counter-v2`), including after a toolchain restart, unless `--no-auto-version`
 - **`--dry-run`:** Plan + fee estimate only
 - **`--wait-confirm`:** Poll until on-chain (testnet/mainnet; slower)
 
