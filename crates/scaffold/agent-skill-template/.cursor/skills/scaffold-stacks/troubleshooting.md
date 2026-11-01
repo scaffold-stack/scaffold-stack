@@ -46,7 +46,7 @@ No scaffold-stacks project found...
 | Symptom | Action |
 |---------|--------|
 | Deploy never confirms | Chain may be stalled; use `--auto-deploy` or testnet |
-| Port in use | Stop parallel `clarinet devnet start`; `stacksdapp clean --force` |
+| Port in use | Stop parallel `clarinet devnet start`: `docker ps --filter name=devnet -q \| xargs docker stop`. `stacksdapp clean` resets a running chain to the snapshot and does not stop Docker |
 | Epoch burn wait | Expected for C5/C6; wait or use testnet |
 
 ## Devnet boot stuck

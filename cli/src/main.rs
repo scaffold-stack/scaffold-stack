@@ -131,7 +131,7 @@ enum Commands {
     Test,
     /// Type-check all Clarity contracts
     Check,
-    /// Remove generated files and devnet state
+    /// Remove generated files and reset a running local devnet chain to the snapshot. Does not stop the devnet process.
     Clean {
         /// Skip confirmation prompt
         #[arg(long)]
@@ -719,23 +719,36 @@ async fn run_clean(force: bool) -> Result<()> {
         }
     }
 
-    if targets.is_empty() {
-        // Still stop leftover containers — common when only Docker state remains.
-        stacksdapp_process_supervisor::stop_stale_devnet_docker();
-        status("[clean] Nothing to remove.".green().to_string());
+    let devnet_up = !stacksdapp_process_supervisor::running_project_devnet_containers().is_empty();
+    if targets.is_empty() && !devnet_up {
+        status(
+            "[clean] Nothing to remove. A running devnet was left up."
+                .green()
+                .to_string(),
+        );
         if shell::is_json() {
             shell::emit_json(&json!({
                 "ok": true,
                 "command": "clean",
                 "removed": [],
+                "chain_reset": false,
             }));
         }
         return Ok(());
     }
 
-    status("[clean] Will remove:".cyan().to_string());
-    for (path, kind) in &targets {
-        status(format!("  • {} ({kind})", path.display()));
+    if !targets.is_empty() {
+        status("[clean] Will remove:".cyan().to_string());
+        for (path, kind) in &targets {
+            status(format!("  • {} ({kind})", path.display()));
+        }
+    }
+    if devnet_up {
+        status(
+            "[clean] Will reset the running devnet chain to the snapshot. The devnet process stays up."
+                .cyan()
+                .to_string(),
+        );
     }
 
     if !force {
@@ -762,21 +775,37 @@ async fn run_clean(force: bool) -> Result<()> {
             .to_string(),
     );
 
-    // Free Clarinet Docker ports (5432/20445/…) — file cleanup alone is not enough.
-    stacksdapp_process_supervisor::stop_stale_devnet_docker();
+    let live_session = stacksdapp_process_supervisor::reset_running_devnet_chain().await?;
 
     let mut removed = Vec::new();
     for (path, kind) in &targets {
-        match *kind {
-            "directory" => fs::remove_dir_all(path).await?,
-            _ => fs::remove_file(path).await?,
-        }
-        removed.push(path.display().to_string());
-        status(
-            format!("[clean] Removed {}", path.display())
+        let keep_session = live_session.as_deref().is_some_and(|session| {
+            *kind == "directory"
+                && (path.ends_with(".cache") || path.ends_with(".devnet"))
+                && stacksdapp_process_supervisor::dev_cache_holds_session(path, session)
+        });
+        if keep_session {
+            stacksdapp_process_supervisor::remove_dev_cache(path, live_session.as_deref())?;
+            status(
+                format!(
+                    "[clean] Removed old files in {} and kept the live devnet session",
+                    path.display()
+                )
                 .yellow()
                 .to_string(),
-        );
+            );
+        } else {
+            match *kind {
+                "directory" => fs::remove_dir_all(path).await?,
+                _ => fs::remove_file(path).await?,
+            }
+            status(
+                format!("[clean] Removed {}", path.display())
+                    .yellow()
+                    .to_string(),
+            );
+        }
+        removed.push(path.display().to_string());
     }
 
     fs::create_dir_all(&generated_dir).await?;
@@ -786,16 +815,25 @@ async fn run_clean(force: bool) -> Result<()> {
     )
     .await?;
 
-    status(
-        "[clean] Done. Run `stacksdapp generate` to regenerate bindings."
-            .green()
-            .to_string(),
-    );
+    if live_session.is_some() {
+        status(
+            "[clean] Done. The running devnet was reset to the snapshot and left up. The next deploy uses the current contract name. Run `stacksdapp generate` to regenerate bindings."
+                .green()
+                .to_string(),
+        );
+    } else {
+        status(
+            "[clean] Done. No devnet was running. The next `stacksdapp dev` starts a fresh chain. Run `stacksdapp generate` to regenerate bindings."
+                .green()
+                .to_string(),
+        );
+    }
     if shell::is_json() {
         shell::emit_json(&json!({
             "ok": true,
             "command": "clean",
             "removed": removed,
+            "chain_reset": live_session.is_some(),
         }));
     }
     Ok(())

@@ -12,7 +12,7 @@ pub struct LocalCoreInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryLevel {
-    /// Restart stacks-signer + stacks-node only.
+    /// Drop the signer database and restart the signer. Leave stacks-node running.
     StacksOnly,
     /// Restart bitcoin-node, then stacks-signer + stacks-node.
     WithBitcoin,
@@ -23,7 +23,7 @@ pub enum RecoveryLevel {
 impl RecoveryLevel {
     pub fn label(self) -> &'static str {
         match self {
-            Self::StacksOnly => "stacks-node + signer",
+            Self::StacksOnly => "signer",
             Self::WithBitcoin => "bitcoin-node + stacks-node + signer",
             Self::Full => "full devnet stack",
         }
@@ -159,10 +159,22 @@ pub fn try_recover_devnet_chain(project: &str, level: RecoveryLevel) -> bool {
     let mut any = false;
     match level {
         RecoveryLevel::StacksOnly => {
-            for name in &stacks {
-                if docker_restart_container(name) {
-                    any = true;
-                }
+            // Restarting stacks-node here desynchronizes the signer from the
+            // miner and the tip stays at the snapshot height.
+            let signer = &stacks[0];
+            let _ = std::process::Command::new("docker")
+                .args([
+                    "exec",
+                    signer,
+                    "sh",
+                    "-c",
+                    "rm -f /stacks-signer-0.sqlite /stacks-signer-0.sqlite-wal /stacks-signer-0.sqlite-shm",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if docker_restart_container(signer) {
+                any = true;
             }
         }
         RecoveryLevel::WithBitcoin => {
@@ -226,13 +238,19 @@ pub async fn ensure_devnet_chain_mining(context: &str) -> Result<()> {
         if second.stacks_tip_height > first.stacks_tip_height {
             return Ok(());
         }
-        if !is_devnet_chain_stalled(&first, &second)
-            && wait_for_stacks_tip_above(first.stacks_tip_height, Duration::from_secs(45)).await
-        {
+        // One Bitcoin block often lands before the first Stacks block after a
+        // snapshot reset. Restarting the node at that moment desynchronizes the
+        // signer (SortitionViewMismatch) and the tip stays stuck.
+        let waited = if is_devnet_chain_stalled(&first, &second) {
+            wait_for_stacks_tip_above(first.stacks_tip_height, Duration::from_secs(75)).await
+        } else {
+            wait_for_stacks_tip_above(first.stacks_tip_height, Duration::from_secs(45)).await
+        };
+        if waited {
             return Ok(());
         }
-        // Stalled sample — fall through to recovery using latest observation.
-        return recover_devnet_chain_mining(&project, context, &second).await;
+        let latest = fetch_local_core_info_optional().await.unwrap_or(second);
+        return recover_devnet_chain_mining(&project, context, &latest).await;
     }
 
     recover_devnet_chain_mining(&project, context, &first).await

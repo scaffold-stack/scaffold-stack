@@ -86,7 +86,7 @@ Run Vitest in `contracts/` (initSimnet) and frontend tests.
 
 ### `stacksdapp clean`
 
-Remove `contracts/.cache/`, devnet state, generated frontend bindings.
+Remove generated frontend bindings and local devnet cache files. Does not stop a running devnet. When a devnet is running, clean restores that chain to the snapshot so the next deploy uses the current contract name.
 
 | Flag | Description |
 |------|-------------|

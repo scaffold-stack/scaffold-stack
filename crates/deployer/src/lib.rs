@@ -1845,15 +1845,18 @@ async fn plan_conflicting_contract_renames(
         if contract.is_some() && contract != Some(current_name.as_str()) {
             continue;
         }
-        let base_name = strip_version_suffix(current_name);
-
-        // Find the next available name on the network
-        let correct_name =
-            find_next_free_name(&client, &config.stacks_node, &deployer, &base_name).await?;
-
-        if current_name == &correct_name {
+        let current_url = format!(
+            "{}/v2/contracts/source/{deployer}/{current_name}?proof=0",
+            config.stacks_node
+        );
+        // A free current name is deployed as-is. Clean resets the chain so the
+        // name in the project can be published again. Only a name that is
+        // actually on chain is versioned forward (counter-v2 → counter-v3).
+        if !contract_exists(&client, &current_url).await? {
             continue;
         }
+        let correct_name =
+            next_free_version_name(&client, &config.stacks_node, &deployer, current_name).await?;
         renames.push(PlannedRename {
             from: current_name.clone(),
             to: correct_name,
@@ -1951,38 +1954,6 @@ async fn get_deployer_from_plan(network: &str) -> Result<String> {
     ))
 }
 
-async fn find_next_free_name(
-    client: &reqwest::Client,
-    node: &str,
-    deployer: &str,
-    base_name: &str,
-) -> Result<String> {
-    // Check unversioned first (e.g. "counter")
-    let url = format!("{node}/v2/contracts/source/{deployer}/{base_name}?proof=0");
-    let base_taken = contract_exists(client, &url).await?;
-
-    if !base_taken {
-        return Ok(base_name.to_string());
-    }
-
-    // Find next free versioned name
-    let mut version = 2u32;
-    loop {
-        let candidate = format!("{base_name}-v{version}");
-        let url = format!("{node}/v2/contracts/source/{deployer}/{candidate}?proof=0");
-        let taken = contract_exists(client, &url).await?;
-        if !taken {
-            return Ok(candidate);
-        }
-        version += 1;
-        if version > 99 {
-            return Err(anyhow!(
-                "Could not find a free version for '{base_name}' (tried up to v99).                  Consider using a fresh deployer address."
-            ));
-        }
-    }
-}
-
 async fn contract_exists(client: &reqwest::Client, url: &str) -> Result<bool> {
     let response = client
         .get(url)
@@ -2000,6 +1971,40 @@ fn interpret_contract_lookup(status: StatusCode, url: &str) -> Result<bool> {
             "Remote contract lookup at {url} returned unexpected status {other}. Refusing to guess whether the name is free."
         )),
     }
+}
+
+/// Next contract name after `name`: `counter` → `counter-v2`, `counter-v2` → `counter-v3`.
+fn version_after(name: &str) -> String {
+    let base = strip_version_suffix(name);
+    if base == name {
+        return format!("{base}-v2");
+    }
+    let suffix = &name[base.len() + 2..];
+    match suffix.parse::<u32>() {
+        Ok(n) => format!("{base}-v{}", n.saturating_add(1)),
+        Err(_) => format!("{base}-v2"),
+    }
+}
+
+/// First name after `current` that is not already on chain. Never steps backward
+/// to an unused base name (`counter-v2` stays `counter-v2` until that name is taken).
+async fn next_free_version_name(
+    client: &reqwest::Client,
+    node: &str,
+    deployer: &str,
+    current: &str,
+) -> Result<String> {
+    let mut candidate = version_after(current);
+    for _ in 0..98 {
+        let url = format!("{node}/v2/contracts/source/{deployer}/{candidate}?proof=0");
+        if !contract_exists(client, &url).await? {
+            return Ok(candidate);
+        }
+        candidate = version_after(&candidate);
+    }
+    Err(anyhow!(
+        "Could not find a free version after '{current}' (tried up to v99)."
+    ))
 }
 
 /// Strip trailing -vN suffix: "counter-v2" → "counter", "foo-v10" → "foo"
@@ -2797,7 +2802,7 @@ mod tests {
         deployment_auto_versions, interpret_contract_lookup, map_contract_name_after_renames,
         parse_broadcast_line, parse_local_deps, reorder_clarinet_toml, replace_contract_reference,
         restore_deploy_writes, snapshot_deploy_writes, strip_version_suffix, topological_sort,
-        PlannedRename,
+        version_after, PlannedRename,
     };
     use reqwest::StatusCode;
     use std::collections::{HashMap, HashSet};
@@ -2846,6 +2851,14 @@ mod tests {
             "# NEXT_PUBLIC_NETWORK=devnet"
         ));
         assert!(!super::line_sets_hosted_network("NEXT_PUBLIC_API=testnet"));
+    }
+
+    #[test]
+    fn version_after_steps_forward_only() {
+        assert_eq!(version_after("counter"), "counter-v2");
+        assert_eq!(version_after("counter-v2"), "counter-v3");
+        assert_eq!(version_after("counter-v10"), "counter-v11");
+        assert_eq!(version_after("my-token-v2"), "my-token-v3");
     }
 
     #[test]

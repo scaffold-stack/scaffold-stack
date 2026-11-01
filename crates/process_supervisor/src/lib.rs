@@ -947,6 +947,579 @@ fn ensure_docker() -> Result<()> {
     Ok(())
 }
 
+/// Containers for this project's local devnet, if Clarinet has them running.
+pub fn running_project_devnet_containers() -> Vec<String> {
+    let Some(project) = clarinet_project_name(Path::new("contracts/Clarinet.toml")) else {
+        return Vec::new();
+    };
+    let network_name = devnet_network_name(&project, Path::new("contracts/settings/Devnet.toml"));
+    running_devnet_containers(&network_name).unwrap_or_default()
+}
+
+/// Restore the running local devnet to Clarinet's snapshot so the next deploy
+/// can publish the current contract name. The devnet process stays up.
+///
+/// Returns the on-disk session directory that must be kept so the containers
+/// still have their config and chain mounts. `Ok(None)` when no devnet is running.
+pub async fn reset_running_devnet_chain() -> Result<Option<std::path::PathBuf>> {
+    if which::which("docker").is_err() {
+        return Ok(None);
+    }
+    let project = clarinet_project_name(Path::new("contracts/Clarinet.toml"))
+        .ok_or_else(|| anyhow!("Could not read the project name from contracts/Clarinet.toml"))?;
+    let network_name = devnet_network_name(&project, Path::new("contracts/settings/Devnet.toml"));
+    let names = running_devnet_containers(&network_name)?;
+    if names.is_empty() {
+        return Ok(None);
+    }
+
+    let snapshot = select_snapshot_dir(&snapshot_cache_root()).ok_or_else(|| {
+        anyhow!(
+            "No Clarinet devnet snapshot in ~/.clarinet/cache/devnet. Start `stacksdapp dev` once so Clarinet can download it, then run `stacksdapp clean` again."
+        )
+    })?;
+    let stacks_snapshot = snapshot.join("stacks");
+    let bitcoin_snapshot = snapshot.join("bitcoin").join("regtest");
+    if !stacks_snapshot.join("krypton").is_dir() || !bitcoin_snapshot.is_dir() {
+        return Err(anyhow!(
+            "The Clarinet devnet snapshot at {} is incomplete.",
+            snapshot.display()
+        ));
+    }
+
+    stacksdapp_shell::println_human_safe(
+        "[clean] Resetting the running devnet chain to the snapshot. The devnet process stays up.",
+    );
+
+    let stacks = names.iter().find(|name| name.starts_with("stacks-node."));
+    let bitcoin = names.iter().find(|name| name.starts_with("bitcoin-node."));
+    let stacks_mount = stacks
+        .as_ref()
+        .and_then(|name| bind_mount(name, is_stacks_dest));
+    let bitcoin_mount = bitcoin
+        .as_ref()
+        .and_then(|name| bind_mount(name, is_bitcoin_dest));
+
+    if stacks.is_none() && stacks_mount.is_none() {
+        return Err(anyhow!(
+            "The devnet stacks-node container is not running, so the chain could not be reset."
+        ));
+    }
+
+    let pause_targets: Vec<&str> = names
+        .iter()
+        .filter(|name| {
+            name.starts_with("stacks-node.")
+                || name.starts_with("bitcoin-node.")
+                || name.starts_with("stacks-signer-")
+        })
+        .map(String::as_str)
+        .collect();
+    let host_mounts = stacks_mount.is_some() || bitcoin_mount.is_some();
+    if host_mounts && !pause_targets.is_empty() {
+        let mut args = vec!["pause"];
+        args.extend(pause_targets.iter().copied());
+        let _ = docker_status(&args);
+    }
+
+    let replaced = (|| -> Result<()> {
+        if let Some(dest) = &stacks_mount {
+            reset_directory_from_snapshot(dest, &stacks_snapshot)?;
+        }
+        if let Some(dest) = &bitcoin_mount {
+            reset_directory_from_snapshot(&dest.join("regtest"), &bitcoin_snapshot)?;
+        }
+        Ok(())
+    })();
+    if host_mounts && !pause_targets.is_empty() {
+        let mut args = vec!["unpause"];
+        args.extend(pause_targets.iter().copied());
+        let _ = docker_status(&args);
+    }
+    replaced?;
+
+    if stacks_mount.is_none() {
+        if let Some(container) = stacks {
+            reset_container_dir(container, "/devnet", &stacks_snapshot)?;
+        }
+    }
+    if bitcoin_mount.is_none() {
+        if let Some(container) = bitcoin {
+            reset_container_dir(
+                container,
+                "/home/bitcoin/.bitcoin/regtest",
+                &bitcoin_snapshot,
+            )?;
+        }
+    }
+
+    let session = stacks_mount
+        .as_ref()
+        .and_then(|path| devnet_session_dir(path));
+
+    // Restart bitcoin and stacks-node first. The signer is restarted only after
+    // the node is serving, with an empty database, so it adopts the snapshot
+    // tenure. Restarting them together leaves the signer on a newer Bitcoin
+    // tenure and it rejects every block (SortitionViewMismatch).
+    restart_containers(&names, &["bitcoin-node.", "stacks-node."])?;
+    let port = stacks_rpc_port(Path::new("contracts/settings/Devnet.toml"));
+    wait_for_stacks_rpc(port).await?;
+    wipe_signer_state(&names, session.as_deref());
+    restart_containers(&names, &["stacks-signer-"])?;
+    wait_for_stacks_tip_advance(port, &names, session.as_deref()).await?;
+    stacksdapp_shell::println_human_safe(
+        "[clean] Devnet is mining again. This project's contracts are no longer on the chain.",
+    );
+    Ok(session)
+}
+
+/// Delete `path`, but keep `live_session` when it lives inside that directory.
+pub fn remove_dev_cache(path: &Path, live_session: Option<&Path>) -> std::io::Result<()> {
+    let Some(session) = live_session else {
+        return std::fs::remove_dir_all(path);
+    };
+    if !dev_cache_holds_session(path, session) {
+        return std::fs::remove_dir_all(path);
+    }
+    let path_abs = path.canonicalize()?;
+    let session_abs = session
+        .canonicalize()
+        .unwrap_or_else(|_| session.to_path_buf());
+    remove_except(&path_abs, &session_abs)
+}
+
+pub fn dev_cache_holds_session(path: &Path, session: &Path) -> bool {
+    let Some(path_abs) = path.canonicalize().ok() else {
+        return false;
+    };
+    let session_abs = session
+        .canonicalize()
+        .unwrap_or_else(|_| session.to_path_buf());
+    session_abs.starts_with(path_abs)
+}
+
+fn clarinet_project_name(path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    assignment_in_table(&raw, "project", "name")
+}
+
+fn devnet_network_name(project: &str, devnet_toml: &Path) -> String {
+    let raw = std::fs::read_to_string(devnet_toml).unwrap_or_default();
+    let network =
+        assignment_in_table(&raw, "network", "name").unwrap_or_else(|| "devnet".to_string());
+    match assignment_in_table(&raw, "devnet", "network_id") {
+        Some(id) => format!("{project}.{id}.{network}"),
+        None => format!("{project}.{network}"),
+    }
+}
+
+fn assignment_in_table(raw: &str, table: &str, key: &str) -> Option<String> {
+    let mut current = "";
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some(header) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            current = header.trim();
+            continue;
+        }
+        if current != table {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix(key) else {
+            continue;
+        };
+        let rest = rest.trim();
+        if !rest.starts_with('=') {
+            continue;
+        }
+        let value = rest
+            .trim_start_matches('=')
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'');
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn stacks_rpc_port(path: &Path) -> u16 {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return 20443;
+    };
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("stacks_node_rpc_port") else {
+            continue;
+        };
+        let rest = rest.trim().trim_start_matches('=').trim();
+        if let Ok(port) = rest.parse::<u16>() {
+            return port;
+        }
+    }
+    20443
+}
+
+fn snapshot_cache_root() -> std::path::PathBuf {
+    dirs_home().join(".clarinet").join("cache").join("devnet")
+}
+
+fn dirs_home() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+}
+
+fn select_snapshot_dir(root: &Path) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(root).ok()?;
+    let mut found: Vec<std::path::PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter(|path| path.join("stacks").join("krypton").is_dir())
+        .filter(|path| path.join("bitcoin").join("regtest").is_dir())
+        .collect();
+    found.sort_by_key(|path| {
+        std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .ok()
+    });
+    found.pop()
+}
+
+fn running_devnet_containers(network_name: &str) -> Result<Vec<String>> {
+    let output = std::process::Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}"])
+        .output()
+        .map_err(|e| anyhow!("Could not list Docker containers: {e}"))?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|name| container_belongs_to_devnet(name, network_name))
+        .map(str::to_string)
+        .collect())
+}
+
+fn container_belongs_to_devnet(name: &str, network_name: &str) -> bool {
+    let suffix = format!(".{network_name}");
+    if !name.ends_with(&suffix) {
+        return false;
+    }
+    name.starts_with("stacks-node.")
+        || name.starts_with("bitcoin-node.")
+        || name.starts_with("stacks-signer-")
+}
+
+fn bind_mount(container: &str, dest_matches: fn(&str) -> bool) -> Option<std::path::PathBuf> {
+    let output = std::process::Command::new("docker")
+        .args(["inspect", "--format", "{{json .Mounts}}", container])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mounts: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).ok()?;
+    mounts.iter().find_map(|mount| {
+        if mount.get("Type").and_then(|v| v.as_str()) != Some("bind") {
+            return None;
+        }
+        let dest = mount.get("Destination").and_then(|v| v.as_str())?;
+        if !dest_matches(dest) {
+            return None;
+        }
+        let source = mount.get("Source").and_then(|v| v.as_str())?;
+        Some(host_bind_path(source))
+    })
+}
+
+/// Docker Desktop reports some bind sources as `/host_mnt/Users/...`, which is
+/// not a path on the Mac. The files are at `/Users/...`.
+fn host_bind_path(source: &str) -> std::path::PathBuf {
+    let raw = std::path::PathBuf::from(source);
+    if raw.exists() {
+        return raw;
+    }
+    if let Some(stripped) = source.strip_prefix("/host_mnt") {
+        let host = std::path::PathBuf::from(stripped);
+        if host.exists() {
+            return host;
+        }
+    }
+    raw
+}
+
+fn is_stacks_dest(dest: &str) -> bool {
+    dest.trim_end_matches('/') == "/devnet"
+}
+
+fn is_bitcoin_dest(dest: &str) -> bool {
+    let dest = dest.trim_end_matches('/');
+    dest.ends_with(".bitcoin") || dest.ends_with("/bitcoin")
+}
+
+fn devnet_session_dir(stacks_data: &Path) -> Option<std::path::PathBuf> {
+    let boot = stacks_data.parent()?;
+    let data = boot.parent()?;
+    if data.file_name()? != "data" {
+        return None;
+    }
+    data.parent().map(std::path::Path::to_path_buf)
+}
+
+fn reset_directory_from_snapshot(dest: &Path, snapshot: &Path) -> Result<()> {
+    if !snapshot.is_dir() {
+        return Err(anyhow!(
+            "Snapshot directory {} is missing.",
+            snapshot.display()
+        ));
+    }
+    std::fs::create_dir_all(dest)?;
+    clear_dir_children(dest)?;
+    copy_dir_contents(snapshot, dest)?;
+    Ok(())
+}
+
+fn clear_dir_children(dir: &Path) -> Result<()> {
+    for entry in
+        std::fs::read_dir(dir).map_err(|e| anyhow!("Could not read {}: {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| anyhow!("Could not read {}: {e}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .map_err(|e| anyhow!("Could not remove {}: {e}", path.display()))?;
+        } else {
+            std::fs::remove_file(&path)
+                .map_err(|e| anyhow!("Could not remove {}: {e}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_contents(src: &Path, dest: &Path) -> Result<()> {
+    for entry in
+        std::fs::read_dir(src).map_err(|e| anyhow!("Could not read {}: {e}", src.display()))?
+    {
+        let entry = entry.map_err(|e| anyhow!("Could not read {}: {e}", src.display()))?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if from.is_dir() {
+            std::fs::create_dir_all(&to)?;
+            copy_dir_contents(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to).map_err(|e| {
+                anyhow!("Could not copy {} to {}: {e}", from.display(), to.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn reset_container_dir(container: &str, dest: &str, snapshot: &Path) -> Result<()> {
+    let script = format!("rm -rf {dest} && mkdir -p {dest}");
+    docker_must(
+        &["exec", container, "sh", "-c", &script],
+        "clear chain data in the devnet container",
+    )?;
+    let src = format!("{}/.", snapshot.display());
+    let target = format!("{container}:{dest}");
+    docker_must(
+        &["cp", &src, &target],
+        "copy the snapshot into the devnet container",
+    )?;
+    Ok(())
+}
+
+fn wipe_signer_state(names: &[String], session: Option<&Path>) {
+    for name in names
+        .iter()
+        .filter(|name| name.starts_with("stacks-signer-"))
+    {
+        let _ = docker_status(&[
+            "exec",
+            name,
+            "sh",
+            "-c",
+            "rm -f stacks-signer-*.sqlite stacks-signer-*.sqlite-shm stacks-signer-*.sqlite-wal /stacks-signer-*.sqlite /stacks-signer-*.sqlite-shm /stacks-signer-*.sqlite-wal",
+        ]);
+    }
+    let Some(session) = session else {
+        return;
+    };
+    let Ok(boots) = std::fs::read_dir(session.join("data")) else {
+        return;
+    };
+    for boot in boots.flatten() {
+        let signer = boot.path().join("signer");
+        if signer.is_dir() {
+            let _ = std::fs::remove_dir_all(&signer);
+            let _ = std::fs::create_dir_all(&signer);
+        }
+    }
+}
+
+fn remove_except(dir: &Path, keep: &Path) -> std::io::Result<()> {
+    if dir == keep {
+        return Ok(());
+    }
+    if !keep.starts_with(dir) {
+        return std::fs::remove_dir_all(dir);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let child = entry?.path();
+        if child == keep {
+            continue;
+        }
+        if keep.starts_with(&child) {
+            if child.is_dir() {
+                remove_except(&child, keep)?;
+            }
+            continue;
+        }
+        if child.is_dir() {
+            std::fs::remove_dir_all(&child)?;
+        } else {
+            std::fs::remove_file(&child)?;
+        }
+    }
+    Ok(())
+}
+
+fn docker_status(args: &[&str]) -> Result<()> {
+    let status = std::process::Command::new("docker")
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| anyhow!("docker {} failed to start: {e}", args.join(" ")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("docker {} failed", args.join(" ")))
+    }
+}
+
+fn restart_containers(names: &[String], prefixes: &[&str]) -> Result<()> {
+    let mut args = vec!["restart".to_string(), "-t".to_string(), "30".to_string()];
+    for prefix in prefixes {
+        for name in names {
+            if name.starts_with(prefix) {
+                args.push(name.clone());
+            }
+        }
+    }
+    if args.len() == 3 {
+        return Ok(());
+    }
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    docker_must(&borrowed, "restart devnet containers")
+}
+
+fn docker_must(args: &[&str], action: &str) -> Result<()> {
+    let output = std::process::Command::new("docker")
+        .args(args)
+        .output()
+        .map_err(|e| anyhow!("Could not {action}: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(anyhow!("Could not {action}: {}", stderr.trim()))
+}
+
+async fn wait_for_stacks_rpc(port: u16) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| anyhow!("Could not build an HTTP client: {e}"))?;
+    let url = format!("http://127.0.0.1:{port}/v2/info");
+    let started = Instant::now();
+    let mut announced = false;
+    loop {
+        if started.elapsed() > Duration::from_secs(180) {
+            return Err(anyhow!(
+                "The devnet chain was reset, but stacks-node did not answer on port {port} within 180s."
+            ));
+        }
+        if let Ok(response) = client.get(&url).send().await {
+            if response.status().is_success() {
+                return Ok(());
+            }
+        }
+        if !announced && started.elapsed() > Duration::from_secs(5) {
+            stacksdapp_shell::println_human_safe(
+                "[clean] Waiting for the devnet node to come back...",
+            );
+            announced = true;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn wait_for_stacks_tip_advance(
+    port: u16,
+    names: &[String],
+    session: Option<&Path>,
+) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| anyhow!("Could not build an HTTP client: {e}"))?;
+    let url = format!("http://127.0.0.1:{port}/v2/info");
+    let start = stacks_tip_height(&client, &url).await?;
+    let started = Instant::now();
+    let mut healed = false;
+    loop {
+        if let Ok(tip) = stacks_tip_height(&client, &url).await {
+            if tip > start {
+                stacksdapp_shell::println_human_safe(format!(
+                    "[clean] Stacks tip advanced to {tip}."
+                ));
+                return Ok(());
+            }
+        }
+        if !healed && started.elapsed() > Duration::from_secs(35) {
+            stacksdapp_shell::println_human_safe(
+                "[clean] Stacks tip has not moved. Resetting the signer so it can accept blocks.",
+            );
+            wipe_signer_state(names, session);
+            restart_containers(names, &["stacks-signer-"])?;
+            healed = true;
+        }
+        if started.elapsed() > Duration::from_secs(120) {
+            return Err(anyhow!(
+                "The devnet chain was reset, but Stacks tip stayed at {start}. The signer is not accepting blocks."
+            ));
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn stacks_tip_height(client: &reqwest::Client, url: &str) -> Result<u64> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not read the devnet tip: {e}"))?;
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| anyhow!("Could not parse the devnet tip: {e}"))?;
+    json.get("stacks_tip_height")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow!("The devnet tip response has no stacks_tip_height."))
+}
+
 /// Stop leftover Clarinet Devnet containers that hold ports (5432, 20445, 3999, …).
 /// Safe for testnet/mainnet: only matches Docker names containing `devnet`.
 pub fn stop_stale_devnet_docker() {
@@ -1637,5 +2210,112 @@ stacks_signer_image_url = "ghcr.io/stacks-network/stacks-signer:4.0.6-alpine"
         assert_eq!(payload["tip_height"], 42);
         assert_eq!(payload["auto_deploy"], true);
         assert_eq!(payload["keep_state"], false);
+    }
+
+    #[test]
+    fn devnet_network_name_appends_optional_network_id() {
+        let dir = std::env::temp_dir().join(format!("stacksdapp-net-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Devnet.toml");
+        std::fs::write(
+            &path,
+            "[network]\nname = \"devnet\"\n\n[devnet]\nnetwork_id = \"lab\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::devnet_network_name("countercontract", &path),
+            "countercontract.lab.devnet"
+        );
+        std::fs::write(&path, "[network]\nname = \"devnet\"\n").unwrap();
+        assert_eq!(
+            super::devnet_network_name("countercontract", &path),
+            "countercontract.devnet"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn container_match_is_limited_to_this_projects_chain() {
+        assert!(super::container_belongs_to_devnet(
+            "stacks-node.countercontract.devnet",
+            "countercontract.devnet"
+        ));
+        assert!(super::container_belongs_to_devnet(
+            "stacks-signer-0.countercontract.devnet",
+            "countercontract.devnet"
+        ));
+        assert!(super::container_belongs_to_devnet(
+            "bitcoin-node.countercontract.devnet",
+            "countercontract.devnet"
+        ));
+        assert!(!super::container_belongs_to_devnet(
+            "stacks-api.countercontract.devnet",
+            "countercontract.devnet"
+        ));
+        assert!(!super::container_belongs_to_devnet(
+            "stacks-node.other.devnet",
+            "countercontract.devnet"
+        ));
+    }
+
+    #[test]
+    fn session_dir_is_the_parent_of_the_data_mount() {
+        let stacks =
+            std::path::Path::new("/tmp/proj/contracts/.cache/stacks-devnet-1/data/1/stacks");
+        assert_eq!(
+            super::devnet_session_dir(stacks).unwrap(),
+            std::path::PathBuf::from("/tmp/proj/contracts/.cache/stacks-devnet-1")
+        );
+    }
+
+    #[test]
+    fn remove_dev_cache_keeps_the_live_session() {
+        let root = std::env::temp_dir().join(format!("stacksdapp-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let cache = root.join(".cache");
+        let session = cache.join("stacks-devnet-9");
+        std::fs::create_dir_all(session.join("conf")).unwrap();
+        std::fs::write(session.join("conf").join("Stacks.toml"), "keep").unwrap();
+        std::fs::write(cache.join("abi-export-cache.json"), "{}").unwrap();
+        std::fs::create_dir_all(cache.join("requirements")).unwrap();
+
+        super::remove_dev_cache(&cache, Some(&session)).unwrap();
+
+        assert!(session.join("conf").join("Stacks.toml").is_file());
+        assert!(!cache.join("abi-export-cache.json").exists());
+        assert!(!cache.join("requirements").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn select_snapshot_dir_requires_stacks_and_bitcoin() {
+        let root = std::env::temp_dir().join(format!("stacksdapp-snap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let incomplete = root.join("incomplete");
+        std::fs::create_dir_all(incomplete.join("stacks").join("krypton")).unwrap();
+        let complete = root.join("complete");
+        std::fs::create_dir_all(complete.join("stacks").join("krypton")).unwrap();
+        std::fs::create_dir_all(complete.join("bitcoin").join("regtest")).unwrap();
+        assert_eq!(super::select_snapshot_dir(&root).unwrap(), complete);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn host_bind_path_strips_docker_desktop_prefix() {
+        let dir = std::env::temp_dir().join(format!("stacksdapp-bind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let canonical = dir.canonicalize().unwrap();
+        let prefixed = format!("/host_mnt{}", canonical.display());
+        assert!(!std::path::Path::new(&prefixed).exists());
+        assert_eq!(super::host_bind_path(&prefixed), canonical);
+        assert_eq!(
+            super::host_bind_path(&canonical.display().to_string()),
+            canonical
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

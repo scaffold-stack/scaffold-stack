@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.2.5] — 2026-11-01
+
+`stacksdapp` is **0.2.5**. Chain reset for `stacksdapp clean` lives in the process supervisor; the other crate versions are unchanged.
+
+### Fixed
+
+- `stacksdapp clean` removes generated files and, when a local devnet is running, restores that chain to Clarinet's snapshot so the next deploy uses the current contract name. The devnet process stays up. Clean waits until Stacks is mining again, and restarts only the signer if the tip does not move. When no devnet is running, clean still deletes the local cache so the next `stacksdapp dev` starts fresh. `stacksdapp dev` still stops leftover containers when it starts.
+- A contract name that is not on chain is deployed as-is. Auto-version only steps forward (`counter-v2` to `counter-v3`) when that exact name is already deployed. Deploy waits for a Stacks block before it restarts any container.
+
+---
+
 ## [0.2.4] — 2026-11-01
 
 Released on crates.io.

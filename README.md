@@ -184,7 +184,7 @@ Pre-funded accounts from `contracts/settings/Devnet.toml` are available immediat
 Clarinet older than 3.26 starts stacks-node 4.0.1, which stops mining at the first PoX reward-cycle boundary. `stacksdapp dev` points that devnet at stacks-node and stacks-signer 4.0.5, keeps Clarinet's devnet sBTC settings, stakes the devnet wallets before the next reward cycle, and mines a bitcoin block when the chain has been quiet. Clarinet's own miner takes over once it is running. Clarinet 3.26+ already ships this node. Testnet and mainnet are unchanged.
 
 ```bash
-stacksdapp clean   # stop devnet and reset generated files
+stacksdapp clean   # reset a running devnet chain to the snapshot and clear generated files; does not stop Docker
 ```
 
 ---
