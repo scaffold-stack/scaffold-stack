@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.2.4] — 2026-11-01
+
+`stacksdapp` and `stacksdapp-scaffold` are **0.2.4**. `stacksdapp-codegen` and `stacksdapp-deployer` are **0.2.2**. `stacksdapp-process-supervisor` is **0.2.1**. Parser, shell, and watcher stay at 0.2.0.
+
+### Changed
+
+- `stacksdapp dev` with no network flag is only Clarinet's devnet in that terminal. It does not start Next.js, watch contracts, or deploy.
+- `stacksdapp dev --network devnet` starts the Next.js app against a chain that is already running. `--network testnet` and `--network mainnet` stay frontend-only.
+- `--auto-deploy` and `--keep-state` are accepted and ignored. Deploy with `stacksdapp deploy --network devnet`. Reset local chain cache with `stacksdapp clean`.
+- On devnet the debug UI says **Choose Wallet** and lists the funded accounts from `Devnet.toml`. Testnet and mainnet still use **Connect Wallet** (Leather or Xverse).
+- Redeploy auto-versions a name that is already on chain (`counter` → `counter-v2`) on devnet as well as testnet and mainnet. Devnet chain state survives a toolchain restart. `--no-auto-version` fails instead of renaming.
+- Clarinet older than 3.26 is pointed at stacks-node and stacks-signer 4.0.5, keeps Clarinet's devnet sBTC settings, stakes the devnet wallets before the next PoX reward cycle, and mines a Bitcoin block when the chain has been quiet. Clarinet 3.26 and newer run their own devnet. Testnet and mainnet are unchanged.
+
+### Fixed
+
+- Devnet debug UI reads and writes go through the local stacks-node. The browser uses the Next.js `/devnet-node` rewrite to `127.0.0.1:20443`.
+- A devnet deploy no longer stops on `ContractAlreadyExists` and then skips the contract. The name is versioned before broadcast.
+
+---
+
 ## [0.2.3] — 2026-10-03
 
 Released on crates.io. Git tag **`v0.2.3`**.
