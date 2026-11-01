@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.5] — 2026-11-01
 
-`stacksdapp` is **0.2.5**. Chain reset for `stacksdapp clean` lives in the process supervisor; the other crate versions are unchanged.
+`stacksdapp` and `stacksdapp-scaffold` are **0.2.5**. `stacksdapp-deployer` is **0.2.3**. `stacksdapp-process-supervisor` is **0.2.2**. Codegen stays at 0.2.2. Parser, shell, and watcher stay at 0.2.0.
 
 ### Fixed
 

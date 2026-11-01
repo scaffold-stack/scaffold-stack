@@ -2037,7 +2037,7 @@ dependencies = [
 
 [[package]]
 name = "stacksdapp-deployer"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "bip39",
@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "stacksdapp-process-supervisor"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "colored",
@@ -2084,7 +2084,7 @@ dependencies = [
 
 [[package]]
 name = "stacksdapp-scaffold"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "colored",
